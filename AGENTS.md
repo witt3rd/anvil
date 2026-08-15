@@ -18,9 +18,21 @@ guest **prints** or **returns** comes back into the transcript.
 The LLM does not *use tools*. It *decides what to strike*. smith is the
 person at the block. anvil is the block. The hammer hits.
 
-We grow by **dogfooding** (live in smith) and **demand paging** (fault
-in a capability the first time a day in smith trips over its absence,
-then compact). We do not build a platform in advance of a bruise.
+We grow by **radical dogfooding** (live in smith for hours; a papercut
+is felt, then fixed) and **demand paging** (fault in a capability the
+first time a day in smith trips over its absence, then compact). We do
+not build a platform in advance of a bruise.
+
+The operator is the most demanding user (Raymond: scratch your own
+itch). Taste is the spec, not a committee (auteur). The menu is
+curated — every dependency and keybinding is a chef's choice; others
+may eat it or walk away (DHH: omakase; **Omarchy** is that palate as a
+Linux daily driver). smith should feel like one pair of hands made it.
+
+We have sat in other people's shops: Claude Code, Hermes, Prime, OpenCode,
+pi, jcode, tmux, herdr, Zellij. We keep a contract or a scar from each.
+We do not become them. Libraries yes; their *system* as host or
+dependency, no.
 
 ## Merits
 
@@ -99,6 +111,7 @@ builds of `feat/providers` on `PATH`.
 | zellij (`~/src/ext/zellij`) | Textbook for tiles/PTY/SSH-scars. Never `exec` or `cargo add`. |
 | jcode | Anti-exemplar for providers (keep: named profiles, `grok login`). |
 | Prime | Keep: generic `!` → shell. Drop: IPython kernel, bare-word env lookup. |
+| Omarchy | DHH's daily Linux. Precedent for omakase: one chef, one machine, no committee desktop. |
 
 Subagents are more smiths, each with their own anvil and hammer. No
 special protocol beyond “another process.”
