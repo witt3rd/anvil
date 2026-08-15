@@ -18,13 +18,10 @@ guest **prints** or **returns** comes back into the transcript.
 The LLM does not *use tools*. It *decides what to strike*. smith is the
 person at the block. anvil is the block. The hammer hits.
 
-We grow by **radical dogfooding** and **demand paging**. Radical
-dogfooding is dogfooding taken to the extreme: the creator lives inside
-smith for hours every day, so every papercut, rough edge, or
-inefficiency is felt immediately and fixed with personal urgency.
-Demand paging: fault in a capability the first time a day in smith
-trips over its absence, then compact. We do not build a platform in
-advance of a bruise.
+We grow by **radical dogfooding** (live in smith for hours; a papercut
+is felt, then fixed) and **demand paging** (fault in a capability the
+first time a day in smith trips over its absence, then compact). We do
+not build a platform in advance of a bruise.
 
 The operator is the most demanding user (Raymond: scratch your own
 itch). Taste is the spec, not a committee (auteur). The menu is
@@ -39,39 +36,37 @@ dependency, no.
 
 ## Merits
 
-1. **Radical dogfooding.** Hours in smith, every day. A papercut is the
-   backlog. Fix it with personal urgency — not a ticket for “users.”
-2. **One package, one seat.** You type `smith`. anvil and hammer are not
+1. **One package, one seat.** You type `smith`. anvil and hammer are not
    products you switch to. OSS libraries (ratatui, serde, ureq, later a
    PTY/VTE crate) are fine. Third-party *systems* (zellij, herdr, tmux,
    jcode, Prime) are not dependencies and not hosts. smith is not a
    plugin, not Agent #24, not a tile in someone else's mux.
-3. **Two processes.** The guest will die. If it is also the agent, the
+2. **Two processes.** The guest will die. If it is also the agent, the
    session dies with it. anvil (Rust) stays up; hammer (CPython) is
    replaceable. The store is on disk.
-4. **Stock CPython, not IPython.** No Jupyter protocol, no magics, no
+3. **Stock CPython, not IPython.** No Jupyter protocol, no magics, no
    `In[12]`. One JSON line in, one JSON line out.
-5. **The prompt is an I/O channel.** Namespace, files, and job output
+4. **The prompt is an I/O channel.** Namespace, files, and job output
    live in the store. A strike's `stdout` / `value` / `error` are the
    only egress. Waffle is not an answer.
-6. **Unsandboxed on purpose.** A strike is the operator's (or model's)
+5. **Unsandboxed on purpose.** A strike is the operator's (or model's)
    hands on this machine. Same trust as a shell. Do not pretend
    otherwise.
-7. **Providers are data.** Named entries in YAML, equal. Do not grow a
+6. **Providers are data.** Named entries in YAML, equal. Do not grow a
    MultiProvider or a first-class vendor enum.
-8. **Secrets stay out of the binary and out of logs.** A leading `!`
+7. **Secrets stay out of the binary and out of logs.** A leading `!`
    means `sh -c` the rest (trimmed stdout). `$NAME` / `${NAME}` is env.
    Bare words are literals, not env names. Never print the resolved
    value. This is Prime's upstream contract (`resolve-config-value.ts`,
    Mario Zechner, on `PrimeIntellect-ai/prime-agent`), not a fork patch
    and not Doppler-specific. `!doppler …` is just a command we happen
    to write.
-9. **We do not implement OAuth.** Vendor login is the vendor's CLI
+8. **We do not implement OAuth.** Vendor login is the vendor's CLI
    (`grok login`). Cached creds stay where the vendor put them.
-10. **SSH is the inter-machine bus.** sshd brokers; our binary is the
+9. **SSH is the inter-machine bus.** sshd brokers; our binary is the
    command (`ssh prince smith`). No HTTP/WS remote, no pairing tokens,
    no anvil-specific wire. Local attach is a unix socket first.
-11. **Names are jobs.** smith, anvil, hammer, strike, store. Do not add
+10. **Names are jobs.** smith, anvil, hammer, strike, store. Do not add
     `forge`, `apprentice`, or Matrix process names.
 
 ## Shape (envisioned)
