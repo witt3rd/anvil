@@ -1,172 +1,180 @@
 ---
 name: session-frame
-description: Design for sessions, workspaces, jigs (logical) and casings, sashes, panes (UI).
+description: Conceptual vs UX taxonomy for anvil (session/member/workspace/catalog; pane/sash/window/layout/casing).
 ---
 
 # Session frame
 
 Two vocabularies. Keep them apart. They map, mostly 1:1, not entirely.
 
-You launch **smith**. That starts a **casing** (UI). The casing
-projects a **jig** (logical). The jig pulls **workspaces** from a
-**catalog**. Each workspace is a named bag of **sessions** (and later
-other members). Sessions do not belong to a sash, a casing, or a
-Hyprland workspace. Herdr's left rail is the scar. Herdr is not the
-host.
+Opposite lifetime rules. That is the distinction.
 
-## Logical
+You launch a **casing** (binary `smith`). It loads a **layout**. The
+layout is an arrangement of a **catalog**. The catalog names
+**workspaces**. Each workspace is a bag of **members**. An anvil
+**session** is one kind of member. Herdr's left rail is the scar.
+Herdr is not the host.
 
-These exist with no smith open. Persist them. Act on them through
-any projection.
+## Conceptual
+
+Independent objects. Destroying a collection does **not** destroy
+its occupants. An occupant may appear in any number of collections.
 
 | Word | What it is |
 |---|---|
-| **session** | Highest grain of work. The work piece on the anvil: store, transcript, provider, cwd, hammer when hot. Fox, hatchling. Exists whether anyone is looking. |
-| **pool** | All sessions one `anvil serve` owns on one host. |
-| **hot / cold** | Hammer alive vs disk only. Attach can warm. Reboot starts cold. |
-| **member** | One occupant of a workspace: a session, later a bash/pty or other tile. |
-| **workspace** | A named grouping of members. Lives in the catalog. Not a Hyprland workspace. Not a sash. |
-| **catalog** | The set of named workspaces on this serve. A jig pulls from it. |
-| **jig** | A named intent: *which* workspaces. `home system management` vs `compute saturation`. Not a casing. Not a layout. |
+| **session** | Anvil-specific: one coherent agentic process. Store, transcript, provider, cwd, hammer when hot. |
+| **member** | A machine process. Usually a session. Also a bash terminal, a web client, … |
+| **workspace** | A collection of members. Everyday: the **bench**. Not a Hyprland workspace. Not a sash. |
+| **catalog** | A collection of workspaces. A named intent (`home system management`, `compute saturation`). |
 
-Example — workspace `fleet-os`:
-
-- anvil session: audit of all machines
-- anvil session: research on organizing a heterogeneous fleet
-- bash: manual poking
-
-You name it. It sits in the catalog. Any jig can pull it.
-
-Viewing a session is reading what the anvil already has: status,
-context, activity, streaming output. Acting is a **request** to that
-session: a prompt, Ctrl+C (IRQ), rename, … Many actors, one queue.
-The anvil sequences them. There is no compose lock, no “seat
-conflict.” Which workspace or jig currently includes the session
-does not change that.
-
-Many-to-many, all on this side:
+`fleet-os` is a workspace: audit session + research session + bash.
+It sits in as many catalogs as want it.
 
 ```
-session  ──┬──  workspace  ──┬──  jig
-           └──  workspace  ──┘
-                    └──  jig
+session  ⊂  member  ──┬──  workspace  ──┬──  catalog
+                      └──  workspace  ──┘
+                               └──  catalog
 ```
 
-- One session can be a member of many workspaces.
-- One workspace can be pulled into many jigs.
-- Two jigs can share a workspace and still be different intents.
+- Destroy the workspace: members remain. A member may be in many
+  workspaces.
+- Destroy the catalog: workspaces remain. A workspace may be in many
+  catalogs.
 
-Jig **home system management** and jig **compute saturation** might
-both pull `fleet-os`. The other workspaces differ. The audit session
-is the same work piece in both. A new jig can involve the same
-sessions without cloning them.
+Viewing a session is reading what the anvil already has. Acting is a
+**request** on that session (prompt, IRQ, rename, …). Many actors,
+one queue. No compose lock. Which workspace or catalog includes the
+session does not change that.
 
-## UI
+**hot / cold** is process state on a member (hammer alive vs disk
+only), not a UX word. The serve owns the processes. Reboot starts
+cold.
 
-These exist only while a smith is sitting there. They *project*
-logical things. Closing them does not delete the logical thing.
+There is no **jig**. Catalog is which workspaces. Layout (UI) is how
+a catalog is arranged.
+
+## UX
+
+A tree. Destroying a parent **does** destroy its children. A child
+belongs to exactly one parent.
 
 | Word | What it is | Everyday |
 |---|---|---|
-| **pane** | One view/interaction surface. | a panel |
-| **sash** | A tab: a collection of panes. | a tab’s layout |
-| **window** | A collection of sashes. A column of the casing. Typical: rail \| main. | a column of the app |
-| **casing** | A collection of windows. What `smith` launches. One terminal instance. | the app frame |
-| **focus** | Which sash is front, which pane, which roster row. **Per casing.** | the local cursor |
+| **pane** | Exposes a member for view and interaction. | a panel |
+| **sash** | A collection of panes. | a tab, a list |
+| **window** | A collection of sashes. | a column of the app |
+| **layout** | A saved instance and arrangement of windows, sashes, and panes **of a catalog**. | the shop drawing, on disk |
+| **casing** | The live surface of a layout. What `smith` launches. | the app |
+| **focus** | Which sash/pane/row is front. **Per casing.** | the local cursor |
 
-Typical casing, projecting jig `compute saturation`, workspace
+When the member is an anvil session, that pane is a **smith**.
+
+```
+pane  ∈₁  sash  ∈₁  window  ∈₁  casing
+                 layout  →  many casings (local or remote)
+```
+
+- Destroy the pane: the member remains. A member may appear in any
+  number of panes.
+- Destroy the sash: its panes die. A pane lives in exactly one sash.
+- Destroy the window: its sashes die. A sash lives in exactly one
+  window.
+- Destroy the casing: its windows die. A window lives in exactly one
+  casing. The layout on disk remains. Any number of casings can load
+  it.
+
+Typical casing, layout of catalog `compute saturation`, workspace
 `fleet-os` front:
 
 ```
 ┌─ window: rail ──┬─ window: main ────────────────────────────────┐
-│ sash (one)      │ sash: fleet-os   [sash: gpu-jobs …]           │
-│ ┌─ pane ──────┐ │ ┌─ pane (session: audit) ───────────────────┐ │
-│ │ catalog     │ │ │ you / thinking / strike / answer          │ │
-│ │  fleet-os ● │ │ └───────────────────────────────────────────┘ │
-│ │  gpu-jobs   │ │ ┌─ pane (session: research) ────────────────┐ │
+│ sash (list)     │ sash: fleet-os   [sash: gpu-jobs …]           │
+│ ┌─ pane ──────┐ │ ┌─ pane / smith (session: audit) ───────────┐ │
+│ │ catalogs    │ │ │ you / thinking / strike / answer          │ │
+│ │  compute ●  │ │ └───────────────────────────────────────────┘ │
+│ │  home       │ │ ┌─ pane / smith (session: research) ────────┐ │
 │ ├─ pane ──────┤ │ │ …                                         │ │
-│ │ pool        │ │ └───────────────────────────────────────────┘ │
-│ │  audit  ●   │ │ ┌─ pane (bash) ─────────────────────────────┐ │
-│ │  research ● │ │ │ $                                          │ │
+│ │ workspaces  │ │ └───────────────────────────────────────────┘ │
+│ │  fleet-os ● │ │ ┌─ pane (member: bash) ─────────────────────┐ │
+│ │  gpu-jobs   │ │ │ $                                          │ │
 │ └─────────────┘ │ └───────────────────────────────────────────┘ │
 └─────────────────┴───────────────────────────────────────────────┘
 ```
 
 `smith` and `smith` on another tty (or `smith --remote prince`) each
-get their **own casing**. Same jig → same *logical* set of workspaces.
-Each casing rebuilds its own chrome. Focus does not travel. That is
-tmux `new-session -t`, not `attach -t` the same session.
+get their **own casing**. Same layout file → same arrangement of the
+same catalog. Focus does not travel.
 
 ## Mapping (mostly 1:1, not entirely)
 
 ```
-logical:   session / member     workspace      catalog / pool     jig
-               ↕                    ↕               ↕              ↕
-ui:            pane                sash         rail panes       casing
+conceptual:  member          workspace         catalog
+                 ↕                ↕            ↕        ↕
+ux:            pane             sash         layout    casing
 ```
 
-| Logical | Usually projects as | Not 1:1 because |
+| Conceptual | Usually maps to | Not 1:1 because |
 |---|---|---|
-| **session** / **member** | **pane** | Many panes can show one session. A pane can be a roster or catalog list — no session behind it. A bash member is not an anvil session. |
-| **workspace** | **sash** | Closing the sash does not delete the workspace. One workspace can appear in many casings (many sashes). A sash might show a *slice* of a workspace. |
-| **catalog** | rail catalog pane | The catalog is the set. The rail is one browser. |
-| **pool** | rail sessions pane | Same: the set vs one browser. |
-| **jig** | **casing** | Many casings project one jig. A casing also has chrome (rail, focus) that is not the jig. |
+| **member** | **pane** | Many panes can expose one member. Destroying the pane does not destroy the member. |
+| **session** | **smith** (a pane) | Smith is the pane only when the member is an anvil session. Bash is a pane, not a smith. |
+| **workspace** | **sash** | Sash owns its panes (tree). Workspace does not own its members (shared). Closing the sash does not destroy the workspace. |
+| **catalog** | **layout** + **casing** | Two UX words: layout is the saved arrangement of that catalog; casing is one live instance. Many casings, one layout. |
 
-**Window** has no logical twin. It is how a casing is split (rail |
-main). Do not invent a logical noun for it.
+**Window** has no conceptual twin. It is how a layout is split
+(rail | main). Do not invent a conceptual noun for it.
 
-A workspace may carry a **default projection** of its members
-(fleet-os opens as three stacked panes). That is presentation hung
-on a logical object, not a sash, and not part of the jig. The jig
-names *which* workspaces. The casing maps them to sashes. Override
-per casing is a later bruise.
+A sash that is a **list** (the rail) browses catalogs and workspaces.
+That is chrome of the layout, not a member.
 
 Mutations stay on the side they belong to:
 
 - **Workspace mutates** (add the bash, drop the research session):
-  every jig that pulls it sees new membership. Persist with the serve.
-- **Jig mutates** (pull `gpu-jobs`, drop `backups`): every casing
-  projecting that jig converges on the new set. Persist with the serve.
-- **Focus mutates**: local to the casing. Never persist as if it were
-  the jig.
-
-`link`-style portals fall out of many-to-many membership. They are
-not a special UI invention.
+  every catalog that includes it sees new membership.
+- **Catalog mutates** (pull `gpu-jobs`, drop `backups`): every layout
+  of that catalog names a new set. Layouts may need a pass.
+- **Layout mutates** (split, retab): casings loading that layout
+  converge. Focus stays per casing.
 
 ## tmux, for the record
 
 | tmux | We say |
 |---|---|
-| window (the work + its panes) | **session** (logical). Tiles inside a session-pane wait. |
-| `new-session` / client | **casing** (UI) |
-| session group (`-t`) | many casings projecting one **jig** |
+| window (the work + its panes) | **session** (conceptual). Tiles inside a smith wait. |
+| `new-session` / client | **casing** |
+| session group (`-t`) | many casings of one **layout** |
 | `attach -t` same session (shared cursor) | **do not** |
-| `link-window` | a session in more than one workspace, or a workspace in more than one jig |
-| pane cannot leave its window | our atom is the **session**; cards are not linkable |
+| `link-window` | a member in more than one workspace, or a workspace in more than one catalog |
+| pane cannot leave its window | UI tree is exclusive; the **member** is not |
 
 ## Persist (reboot)
 
-Logical (serve, survive no casing):
+Conceptual (serve, survive no casing):
 
 ```
-~/.anvil/sessions/<id>/     meta, namespace.pkl, transcript
-~/.anvil/workspaces/<name>  members
-~/.anvil/jigs/<name>        which workspaces
+~/.anvil/sessions/<id>/      session member (meta, namespace.pkl, transcript)
+~/.anvil/workspaces/<name>   members
+~/.anvil/catalogs/<name>     which workspaces
 ```
 
-UI (optional, later): a casing's last focus, split sizes. Do not
-stuff those into the jig file.
+UX, saved:
 
-On boot, serve loads sessions (cold), the catalog, and the jigs.
-Nothing hot until a casing projects a workspace and a member session
-needs a hammer. Do not dump the transcript into the next ask.
+```
+~/.anvil/layouts/<name>      arrangement of a catalog (windows, sashes, panes)
+```
+
+Focus and live split drag stay on the casing. Do not stuff them into
+the catalog.
+
+On boot, serve loads members (cold), workspaces, catalogs, layouts.
+Nothing hot until a casing exposes a session that needs a hammer.
+Do not dump the transcript into the next ask.
 
 ## Attach / remote
 
 - Serve on `$XDG_RUNTIME_DIR/anvil.sock`.
-- `smith` starts a casing projecting a jig; starts serve if needed.
-- Close the casing: serve, catalog, jigs, and hot hammers stay.
+- `smith` starts a casing on a layout; starts serve if needed.
+- Close the casing: serve, members, workspaces, catalogs, layouts,
+  and hot hammers stay.
 - Remote: `smith --remote prince` or `ssh prince smith`. Sessions stay
   on prince. One host per casing first.
 
@@ -174,19 +182,16 @@ needs a hammer. Do not dump the transcript into the next ask.
 
 1. **Session on disk** — today’s store becomes session `default`.
 2. **Serve** — casing is a client; detach does not kill work.
-3. **Workspace catalog** — name a grouping; rail lists it; one sash
-   projects it.
-4. **Named jigs** — intents that pull workspaces; many casings, local
-   focus; all inputs queue on the session.
-5. **Reboot** — systemd user unit; cold until projected.
+3. **Workspace + catalog** — name a bench; name an intent that
+   includes it; one sash exposes it.
+4. **Layout + many casings** — saved arrangement; local focus; all
+   inputs queue on the member.
+5. **Reboot** — systemd user unit; cold until exposed.
 6. **Remote** — SSH bridge.
-7. **Mixed members** — bash/pty as a workspace member. Textbook: Zellij.
+7. **Mixed members** — bash / web as workspace members. Textbook: Zellij.
 
 ## Open
 
 - Session names: always typed vs mint a word if omitted.
-- After reboot: all cold, or warm whatever the front jig still
+- After reboot: all cold, or warm whatever the front layout still
   names when the first casing attaches?
-- Workspace membership exclusive or many-to-many? Model is
-  many-to-many (sessions are independent). Revisit if a day in
-  smith wants exclusive.
