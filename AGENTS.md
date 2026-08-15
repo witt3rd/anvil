@@ -148,14 +148,16 @@ smith -p nim                     # daily seat
 `ANVIL_STORE` default `$HOME/.anvil/default`. `ANVIL_HAMMER` overrides
 the guest. `ANVIL_CONFIG` default `~/.config/anvil/config.yaml`.
 
-PATH launchers (this box):
+PATH: `~/.local/bin/{smith,anvil}` are the same wrapper (`scripts/launch`).
+It execs `target/release/<name>` from **stable** (primary clone) or **dev**
+(a worktree). Not git. Default channel is stable.
 
+```bash
+anvil channel                 # show
+anvil channel stable          # daily: ~/src/witt3rd/anvil/target/release
+anvil channel dev ~/src/witt3rd/anvil.wt/feat--foo
+cargo build --release --bins  # in that tree, then smith picks it up
 ```
-~/.local/bin/smith → …/anvil.wt/feat--providers/target/release/smith
-~/.local/bin/anvil → …/anvil.wt/feat--providers/target/release/anvil
-```
-
-Rebuild after a change: `cargo build --release --bins` in that worktree.
 
 ## Providers
 
@@ -188,9 +190,8 @@ House rules (`git` skill). This file only names what is true *here*.
   `git wt-rm`. Verify `origin/main` has not moved first. Do not make
   `feat/providers` a permanent second mainline; it is a branch like any
   other until it lands.
-- **Daily binaries** are not git. They are release builds the operator
-  pointed `~/.local/bin/{smith,anvil}` at. After a land, rebuild from
-  `main`. Until then, rebuild from the worktree that has the bruise.
+- **Daily binaries** are the launch wrapper + `anvil channel`. Stable is
+  a release build of `main`. Dev is a release build of a worktree.
 
 `gh` routes to `witt3rd` for this remote. Account switching is the
 `git` skill, not this file.

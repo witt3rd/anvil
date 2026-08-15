@@ -14,10 +14,16 @@ from anywhere in the repo; never commit on `~/src/witt3rd/anvil` (`main`).
 ## Run
 
 ```bash
-cargo build --bins
-./target/debug/anvil strike '2 + 2'          # value 4
-./target/debug/smith                         # TUI, store ~/.anvil/default
+# in a worktree
+cargo build --release --bins
+anvil channel dev "$(pwd)"
+smith -p nim
+
+# back to main
+anvil channel stable
 ```
+
+Debug without the wrapper: `./target/debug/anvil strike '2 + 2'`.
 
 Enter sends a strike. Ctrl+J is a newline. Ctrl+C quits. The hammer
 respawns if it exits; the store is the namespace.

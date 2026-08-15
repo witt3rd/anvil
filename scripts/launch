@@ -1,0 +1,69 @@
+#!/bin/sh
+# PATH entry for `smith` and `anvil`. Picks stable (main clone) or dev
+# (a worktree). Channel is not git — it is which release binary we exec.
+set -eu
+
+name=$(basename "$0")
+stable_root="${ANVIL_STABLE_ROOT:-$HOME/src/witt3rd/anvil}"
+chan_file="${ANVIL_CHANNEL_FILE:-$HOME/.anvil/channel}"
+dev_file="${ANVIL_DEV_ROOT_FILE:-$HOME/.anvil/dev-root}"
+
+if [ "$name" = "anvil" ] && [ "${1:-}" = "channel" ]; then
+  shift
+  case "${1:-show}" in
+    show | "")
+      chan=$(cat "$chan_file" 2>/dev/null || echo stable)
+      printf 'channel=%s\n' "$chan"
+      printf 'stable=%s\n' "$stable_root"
+      if [ -f "$dev_file" ]; then
+        printf 'dev=%s\n' "$(cat "$dev_file")"
+      else
+        printf 'dev=(unset)\n'
+      fi
+      ;;
+    stable)
+      mkdir -p "$(dirname "$chan_file")"
+      printf 'stable\n' >"$chan_file"
+      printf 'now stable (%s)\n' "$stable_root"
+      ;;
+    dev)
+      mkdir -p "$(dirname "$chan_file")" "$(dirname "$dev_file")"
+      if [ -n "${2:-}" ]; then
+        printf '%s\n' "$2" >"$dev_file"
+      fi
+      if [ ! -s "$dev_file" ]; then
+        echo "anvil channel dev: pass a worktree: anvil channel dev ~/src/witt3rd/anvil.wt/feat--foo" >&2
+        exit 2
+      fi
+      printf 'dev\n' >"$chan_file"
+      printf 'now dev (%s)\n' "$(cat "$dev_file")"
+      ;;
+    *)
+      echo "usage: anvil channel [show|stable|dev [worktree]]" >&2
+      exit 2
+      ;;
+  esac
+  exit 0
+fi
+
+chan=$(cat "$chan_file" 2>/dev/null || echo stable)
+case "$chan" in
+  dev)
+    if [ ! -s "$dev_file" ]; then
+      echo "$name: channel is dev but ~/.anvil/dev-root is unset" >&2
+      exit 127
+    fi
+    root=$(cat "$dev_file")
+    ;;
+  *)
+    root=$stable_root
+    ;;
+esac
+
+bin="$root/target/release/$name"
+if [ ! -x "$bin" ]; then
+  echo "$name: no $chan binary at $bin" >&2
+  echo "  cargo build --release --bins   # in $root" >&2
+  exit 127
+fi
+exec "$bin" "$@"
