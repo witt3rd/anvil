@@ -173,9 +173,27 @@ oauth only supplies a token; we do not speak ACP.
 
 ## Git
 
-`origin` = `git@github.com:witt3rd/anvil.git` (public). Primary clone
-`~/src/witt3rd/anvil` stays on `main`. Work in `anvil.wt/<branch>/` via
-`git wt-new`. Daily driver tracks `feat/providers` until it lands.
+House rules (`git` skill). This file only names what is true *here*.
+
+- **Primary** `~/src/witt3rd/anvil` stays on `main`. Never check it out to
+  a feature branch. Never commit from it. The founding commit on `main`
+  was the last exception.
+- **Work** is a linked worktree: `git wt-new feat/foo` →
+  `~/src/witt3rd/anvil.wt/feat--foo/`. Do not `git worktree add` by hand.
+  `git wt-rm feat/foo` after the branch is on `main`.
+- **Mainline** is `main` (not `master`). `origin` =
+  `git@github.com:witt3rd/anvil.git` (public). There is no `upstream` —
+  this is our repo, not a fork.
+- **Land** by merging to `main` (PR or merge from the worktree), then
+  `git wt-rm`. Verify `origin/main` has not moved first. Do not make
+  `feat/providers` a permanent second mainline; it is a branch like any
+  other until it lands.
+- **Daily binaries** are not git. They are release builds the operator
+  pointed `~/.local/bin/{smith,anvil}` at. After a land, rebuild from
+  `main`. Until then, rebuild from the worktree that has the bruise.
+
+`gh` routes to `witt3rd` for this remote. Account switching is the
+`git` skill, not this file.
 
 ## Caretaker
 
