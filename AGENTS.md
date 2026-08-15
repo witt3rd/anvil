@@ -99,10 +99,12 @@ the current bruise; in-process tiles wait):
    session. `skills/dev/references/session-frame.md`.
 2. **`anvil serve` + smith attach** — daemon owns hammers; smith
    detaches; work continues.
-3. **Roster in smith** — left list, views, switch without leaving
-   the OS workspace. Herdr's sidebar is the scar, not the host.
-4. **Many attaches, then reboot, then SSH** — as in that design.
-5. In-process **tiles** (smith | pty) — later. Textbook: Zellij.
+3. **Workspace catalog + jig + casing** — named groupings of
+   sessions; jigs as intents that pull them; casings project. Inputs
+   are just requests on the session.
+4. **Reboot, then SSH** — as in that design.
+5. In-process **tiles** (smith | pty) as workspace members — later.
+   Textbook: Zellij.
 
 **Neighbors (stay neighbors):**
 
@@ -125,13 +127,15 @@ special protocol beyond “another process.”
 | **anvil** | The harness under smith. Does not move. Binary: `anvil` (CLI, serve, strike). |
 | **hammer** | Stock CPython guest. Hits the work. Dies. We hang another. |
 | **strike** | One `eval`. A blow, not a process. The only tool. |
-| **store** | On-disk workspace (`~/.anvil/default/namespace.pkl`). Not “the bench.” |
-| **session** | The work piece. Highest grain of work on the anvil. |
-| **casing** | What `smith` launches. A collection of windows. |
-| **window** | A column of the casing (rail, workspace). Holds sashes. |
-| **sash** | A tab: a collection of panes. |
-| **pane** | One surface: a session, or a roster, or a group list. |
-| **jig** | Shared blueprint casings recreate. Focus stays per casing. |
+| **store** | On-disk persist for one session (`~/.anvil/sessions/<id>/namespace.pkl`). Not a workspace. |
+| **session** | The work piece. Highest grain of work on the anvil. Independent of sash, jig, casing. |
+| **workspace** | Named logical grouping of sessions (and later a bash/pty). Lives in the catalog. Not a Hyprland workspace, not a tab. |
+| **catalog** | The set of named workspaces a jig can pull. |
+| **jig** | Named intent: which workspaces, how casings project them. Focus stays per casing. |
+| **casing** | What `smith` launches. A collection of windows. Recreates a jig. |
+| **window** | A column of the casing (rail, main). Holds sashes. |
+| **sash** | A tab: a collection of panes. UI only. Often projects one workspace. |
+| **pane** | One surface: a session, a roster, a catalog list, later a pty. |
 | **ask** | Model writes Python; extract; strike; print stdout. Not `complete`. |
 | **complete** | Raw HTTP chat. Will waffle. Smoke only. |
 | **tile** | A pane we own: smith or pty. Not yet built. |
