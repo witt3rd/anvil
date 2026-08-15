@@ -180,12 +180,12 @@ Do not dump the transcript into the next ask.
 
 ## Build order
 
-1. **Session on disk** — today’s store becomes session `default`.
-2. **Serve** — casing is a client; detach does not kill work.
-3. **Workspace + catalog** — name a bench; name an intent that
-   includes it; one sash exposes it.
-4. **Layout + many casings** — saved arrangement; local focus; all
-   inputs queue on the member.
+1. **Session on disk** — done. Today’s store is session `default`
+   (legacy `~/.anvil/default` still counts).
+2. **Serve** — not yet. Hammers still live in the smith process.
+3. **Workspace + catalog** — done as persist + CLI + rail.
+4. **Layout + many casings** — first cut: layout stores front
+   catalog/workspace/session. One casing. No split geometry yet.
 5. **Reboot** — systemd user unit; cold until exposed.
 6. **Remote** — SSH bridge.
 7. **Mixed members** — bash / web as workspace members. Textbook: Zellij.

@@ -88,9 +88,10 @@ dependency, no.
                     └───────────────────────────────────┘
 ```
 
-**Now:** one smith, in-process anvil, one hammer, named HTTP providers,
-`ask` = complete → extract Python → strike. Daily binaries are release
-builds of `feat/providers` on `PATH`.
+**Now:** named sessions, workspaces, and catalogs on disk. smith is a
+casing with a rail (switch sessions). Hammers are still in-process —
+close the casing and they die (`anvil serve` is next). `ask` = complete
+→ extract Python → strike.
 
 **When use bruises us, in this order** (session frame first — that is
 the current bruise; in-process tiles wait):
@@ -153,7 +154,8 @@ one Cargo.toml, two bins
   src/catalog.rs       /models + cache
   src/complete.rs      chat/completions smoke
   src/ask.rs           model → extract Python → strike
-  src/tui/             smith TUI (blocks, worker, @ picker)
+  src/frame/           sessions, workspaces, catalogs, layouts, transcript
+  src/tui/             smith casing (rail, blocks, worker, @ picker)
   src/bin/anvil.rs     CLI
   src/bin/smith.rs     TUI binary
 hammer/hammer.py       guest
@@ -171,11 +173,18 @@ anvil providers
 anvil login grok
 anvil models --refresh
 anvil ask -p nim 'how many files have synlinks ~/dotfiles/ (recursive)'
-smith -p nim                     # daily seat
+anvil session new audit
+anvil workspace add fleet-os audit
+anvil catalog add compute-saturation fleet-os
+smith -p nim                     # casing + rail
+smith -s audit -p nim
 ```
 
-`ANVIL_STORE` default `$HOME/.anvil/default`. `ANVIL_HAMMER` overrides
-the guest. `ANVIL_CONFIG` default `~/.config/anvil/config.yaml`.
+`ANVIL_ROOT` default `$HOME/.anvil`. Sessions live in
+`~/.anvil/sessions/<id>/` (legacy pickle at `~/.anvil/default` is
+session `default`). `ANVIL_STORE` is a raw store, no rail.
+`ANVIL_HAMMER` overrides the guest. `ANVIL_CONFIG` default
+`~/.config/anvil/config.yaml`.
 
 PATH: `~/.local/bin/{smith,anvil}` are the same wrapper (`scripts/launch`).
 It execs `target/release/<name>` from **stable** (primary clone) or **dev**

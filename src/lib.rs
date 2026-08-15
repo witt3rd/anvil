@@ -6,6 +6,7 @@ pub mod ask;
 pub mod catalog;
 pub mod complete;
 pub mod config;
+pub mod frame;
 pub mod oauth;
 pub mod secret;
 pub mod tui;
@@ -199,10 +200,10 @@ pub fn default_store() -> PathBuf {
     if let Ok(dir) = std::env::var("ANVIL_STORE") {
         return PathBuf::from(dir);
     }
-    dirs_home()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".anvil")
-        .join("default")
+    match frame::FrameRoot::open(frame::default_root()) {
+        Ok(root) => root.session_dir("default"),
+        Err(_) => frame::default_root().join("default"),
+    }
 }
 
 pub fn default_hammer() -> PathBuf {

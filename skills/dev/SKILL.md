@@ -56,8 +56,15 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
 - Do not `exec` in the anvil process. The guest is a child.
 - Unpicklable names are dropped on persist and listed in `stderr` once.
 - A strike that is only statements has `value: null`. Prints still show.
-- `anvil serve` is not implemented. Don't add a daemon until smith needs
-  to attach to an already-running anvil.
+- `anvil serve` is not implemented. Hammers die when the casing closes.
+  Don't add a daemon until detach is the bruise.
+- Conceptual objects: `anvil session|workspace|catalog` under
+  `$ANVIL_ROOT` (default `~/.anvil`). Destroying a workspace or catalog
+  does not destroy its occupants.
+- smith without `--store` is a casing: Tab focuses the rail, `n` names
+  a session in the current workspace, Enter exposes a member. Transcript
+  is `sessions/<id>/transcript.jsonl`. `--store` is the old single-pane
+  escape hatch.
 
 ## Providers
 

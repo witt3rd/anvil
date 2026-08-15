@@ -6,16 +6,25 @@ use anvil::ask::{self, HttpCompleter};
 use anvil::catalog;
 use anvil::complete;
 use anvil::config::{Auth, Config};
+use anvil::frame::{self, FrameRoot, MemberRef};
 use anvil::oauth;
-use anvil::{default_hammer, default_store, Anvil};
+use anvil::{default_hammer, Anvil};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "anvil", about = "Harness: spawn a hammer and issue strikes")]
 struct Cli {
-    /// Store directory (namespace.pkl). Default: $ANVIL_STORE or ~/.anvil/default
+    /// Raw store directory (namespace.pkl). Conflicts with --session.
     #[arg(long, env = "ANVIL_STORE", global = true)]
     store: Option<PathBuf>,
+
+    /// Frame root. Default: $ANVIL_ROOT or ~/.anvil
+    #[arg(long, env = "ANVIL_ROOT", global = true)]
+    root: Option<PathBuf>,
+
+    /// Named session under the frame root.
+    #[arg(long, global = true)]
+    session: Option<String>,
 
     /// Path to hammer/hammer.py
     #[arg(long, env = "ANVIL_HAMMER", global = true)]
@@ -67,12 +76,62 @@ enum Command {
         #[arg(long, short = 'm')]
         model: Option<String>,
     },
+    /// Named sessions (agentic processes) on disk.
+    Session {
+        #[command(subcommand)]
+        cmd: SessionCmd,
+    },
+    /// Named benches: collections of members. Destroying one keeps the members.
+    Workspace {
+        #[command(subcommand)]
+        cmd: WorkspaceCmd,
+    },
+    /// Named intents: collections of workspaces. Destroying one keeps the workspaces.
+    Catalog {
+        #[command(subcommand)]
+        cmd: CatalogCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionCmd {
+    List,
+    New { name: String },
+    Show { name: String },
+    Rm { name: String },
+}
+
+#[derive(Subcommand)]
+enum WorkspaceCmd {
+    List,
+    New { name: String },
+    Add { workspace: String, session: String },
+    Rm { name: String },
+}
+
+#[derive(Subcommand)]
+enum CatalogCmd {
+    List,
+    New { name: String },
+    Add { catalog: String, workspace: String },
+    Rm { name: String },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let store = cli.store.unwrap_or_else(default_store);
-    let hammer = cli.hammer.unwrap_or_else(default_hammer);
+    let hammer = cli.hammer.clone().unwrap_or_else(default_hammer);
+
+    match &cli.cmd {
+        Command::Session { cmd } => return session_cmd(cli.root.as_deref(), cmd),
+        Command::Workspace { cmd } => return workspace_cmd(cli.root.as_deref(), cmd),
+        Command::Catalog { cmd } => return catalog_cmd(cli.root.as_deref(), cmd),
+        _ => {}
+    }
+
+    let store = match resolve_store(&cli) {
+        Ok(p) => p,
+        Err(err) => return fail(err),
+    };
 
     match cli.cmd {
         Command::Serve => {
@@ -143,6 +202,183 @@ fn main() -> ExitCode {
             model.as_deref(),
             &prompt,
         ),
+        Command::Session { .. } | Command::Workspace { .. } | Command::Catalog { .. } => {
+            unreachable!("handled above")
+        }
+    }
+}
+
+fn open_root(root: Option<&std::path::Path>) -> Result<FrameRoot, String> {
+    FrameRoot::open(root.map(PathBuf::from).unwrap_or_else(frame::default_root))
+        .map_err(|e| e.to_string())
+}
+
+fn resolve_store(cli: &Cli) -> Result<PathBuf, String> {
+    if cli.store.is_some() && cli.session.is_some() {
+        return Err("use --store or --session, not both".into());
+    }
+    if let Some(store) = &cli.store {
+        return Ok(store.clone());
+    }
+    let root = open_root(cli.root.as_deref())?;
+    let id = cli.session.as_deref().unwrap_or("default");
+    if !root.session_exists(id) {
+        if id == "default" {
+            root.ensure_defaults().map_err(|e| e.to_string())?;
+        } else {
+            root.create_session(id).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(root.session_dir(id))
+}
+
+fn session_cmd(root: Option<&std::path::Path>, cmd: &SessionCmd) -> ExitCode {
+    let root = match open_root(root) {
+        Ok(r) => r,
+        Err(err) => return fail(err),
+    };
+    match cmd {
+        SessionCmd::List => match root.list_sessions() {
+            Ok(list) => {
+                for s in list {
+                    println!("{}\t{}", s.id, s.dir.display());
+                }
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        },
+        SessionCmd::New { name } => match root.create_session(name) {
+            Ok(s) => {
+                println!("{}\t{}", s.id, s.dir.display());
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        },
+        SessionCmd::Show { name } => match root.session(name) {
+            Ok(s) => {
+                println!("id\t{}", s.id);
+                println!("dir\t{}", s.dir.display());
+                println!("created\t{}", s.meta.created);
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        },
+        SessionCmd::Rm { name } => match root.delete_session(name) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => fail(err),
+        },
+    }
+}
+
+fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode {
+    let root = match open_root(root) {
+        Ok(r) => r,
+        Err(err) => return fail(err),
+    };
+    match cmd {
+        WorkspaceCmd::List => match root.list_workspaces() {
+            Ok(list) => {
+                for ws in list {
+                    let members = ws
+                        .members
+                        .iter()
+                        .filter_map(|m| m.session_id())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    println!("{}\t{}", ws.name, members);
+                }
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        },
+        WorkspaceCmd::New { name } => match root.create_workspace(name) {
+            Ok(ws) => {
+                println!("{}", ws.name);
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        },
+        WorkspaceCmd::Add { workspace, session } => {
+            if !root.session_exists(session) {
+                if let Err(err) = root.create_session(session) {
+                    return fail(err);
+                }
+            }
+            let mut ws = match root.workspace(workspace) {
+                Ok(ws) => ws,
+                Err(frame::FrameError::UnknownWorkspace(_)) => {
+                    match root.create_workspace(workspace) {
+                        Ok(ws) => ws,
+                        Err(err) => return fail(err),
+                    }
+                }
+                Err(err) => return fail(err),
+            };
+            ws.add_member(MemberRef::session(session));
+            match root.save_workspace(&ws) {
+                Ok(()) => {
+                    println!("{workspace}\t{session}");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => fail(err),
+            }
+        }
+        WorkspaceCmd::Rm { name } => match root.delete_workspace(name) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => fail(err),
+        },
+    }
+}
+
+fn catalog_cmd(root: Option<&std::path::Path>, cmd: &CatalogCmd) -> ExitCode {
+    let root = match open_root(root) {
+        Ok(r) => r,
+        Err(err) => return fail(err),
+    };
+    match cmd {
+        CatalogCmd::List => match root.list_catalogs() {
+            Ok(list) => {
+                for cat in list {
+                    println!("{}\t{}", cat.name, cat.workspaces.join(","));
+                }
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        },
+        CatalogCmd::New { name } => match root.create_catalog(name) {
+            Ok(cat) => {
+                println!("{}", cat.name);
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        },
+        CatalogCmd::Add { catalog, workspace } => {
+            if !root.workspace_exists(workspace) {
+                if let Err(err) = root.create_workspace(workspace) {
+                    return fail(err);
+                }
+            }
+            let mut cat = match root.catalog(catalog) {
+                Ok(cat) => cat,
+                Err(frame::FrameError::UnknownCatalog(_)) => match root.create_catalog(catalog) {
+                    Ok(cat) => cat,
+                    Err(err) => return fail(err),
+                },
+                Err(err) => return fail(err),
+            };
+            cat.add_workspace(workspace);
+            match root.save_catalog(&cat) {
+                Ok(()) => {
+                    println!("{catalog}\t{workspace}");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => fail(err),
+            }
+        }
+        CatalogCmd::Rm { name } => match root.delete_catalog(name) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => fail(err),
+        },
     }
 }
 

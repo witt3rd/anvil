@@ -1,12 +1,16 @@
-//! smith TUI: transcript blocks, ask worker, `@` file picker.
+//! smith TUI: transcript blocks, ask worker, `@` file picker, casing rail.
 
 mod picker;
+mod rail;
 
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use rail::{Focus, Naming, Rail, RailKind};
 
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -26,7 +30,8 @@ use ratatui::Terminal;
 
 use crate::ask::{self, AskSink, HttpCompleter};
 use crate::config::{Config, Provider};
-use crate::{default_hammer, default_store, Anvil, StrikeReply};
+use crate::frame::{self, FrameRoot, TranscriptLine};
+use crate::{default_hammer, Anvil, StrikeReply};
 
 pub use picker::{at_span, insert_path, list_files, rank, FileHit};
 
@@ -57,8 +62,8 @@ pub enum Card {
 
 #[derive(Debug, Clone)]
 enum Job {
-    Ask(String),
-    Strike(String),
+    Ask { session: String, prompt: String },
+    Strike { session: String, code: String },
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +104,12 @@ impl AskSink for ChanSink {
 }
 
 pub struct Launch {
-    pub store: PathBuf,
+    /// Raw store escape hatch. When set, no rail — one anonymous session.
+    pub store: Option<PathBuf>,
+    pub root: Option<PathBuf>,
+    pub session: Option<String>,
+    pub workspace: Option<String>,
+    pub catalog: Option<String>,
     pub hammer: PathBuf,
     pub config: Option<PathBuf>,
     pub provider: Option<String>,
@@ -122,6 +132,9 @@ struct App {
     events: Receiver<Ev>,
     provider_name: String,
     model: String,
+    frame: Option<FrameRoot>,
+    rail: Option<Rail>,
+    focus: Focus,
 }
 
 struct PickerState {
@@ -131,6 +144,39 @@ struct PickerState {
 }
 
 impl App {
+    fn session_id(&self) -> String {
+        self.rail
+            .as_ref()
+            .map(|r| r.session.clone())
+            .unwrap_or_else(|| "default".into())
+    }
+
+    fn push_card(&mut self, card: Card) {
+        if let (Some(root), Some(rail)) = (&self.frame, &self.rail) {
+            let line = transcript_from_card(&card);
+            let _ = root.append_transcript(&rail.session, &line);
+        }
+        self.cards.push(card);
+    }
+
+    fn load_session_cards(&mut self) {
+        self.cards.clear();
+        let Some(root) = &self.frame else {
+            return;
+        };
+        let id = self.session_id();
+        match root.load_transcript(&id) {
+            Ok(lines) => {
+                let start = lines.len().saturating_sub(200);
+                self.cards = lines[start..].iter().map(card_from_transcript).collect();
+            }
+            Err(err) => self.cards.push(Card::Status {
+                text: format!("transcript: {err}"),
+            }),
+        }
+        self.stick_bottom = true;
+    }
+
     fn submit_ask(&mut self) {
         let text = self.input.trim_end().to_string();
         if text.is_empty() || self.busy {
@@ -139,11 +185,14 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.picker = None;
-        self.cards.push(Card::User { text: text.clone() });
+        self.push_card(Card::User { text: text.clone() });
         self.busy = true;
         self.status = "thinking".into();
         self.stick_bottom = true;
-        let _ = self.jobs.send(Job::Ask(text));
+        let _ = self.jobs.send(Job::Ask {
+            session: self.session_id(),
+            prompt: text,
+        });
     }
 
     fn submit_strike(&mut self) {
@@ -154,13 +203,16 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.picker = None;
-        self.cards.push(Card::User {
+        self.push_card(Card::User {
             text: format!("(strike)\n{text}"),
         });
         self.busy = true;
         self.status = "striking".into();
         self.stick_bottom = true;
-        let _ = self.jobs.send(Job::Strike(text));
+        let _ = self.jobs.send(Job::Strike {
+            session: self.session_id(),
+            code: text,
+        });
     }
 
     fn insert(&mut self, ch: char) {
@@ -225,7 +277,7 @@ impl App {
             Ev::Status(s) => self.status = s,
             Ev::Draft(text) => {
                 if ask::extract_python(&text).is_none() {
-                    self.cards.push(Card::Thinking { text, folded: true });
+                    self.push_card(Card::Thinking { text, folded: true });
                 }
             }
             Ev::Strike {
@@ -236,7 +288,7 @@ impl App {
                 ok,
             } => {
                 let folded = code.lines().count() > 8;
-                self.cards.push(Card::Strike {
+                self.push_card(Card::Strike {
                     code,
                     stdout,
                     stderr,
@@ -247,14 +299,14 @@ impl App {
             }
             Ev::Answer(text) => {
                 if !text.is_empty() {
-                    self.cards.push(Card::Answer { text });
+                    self.push_card(Card::Answer { text });
                 }
                 self.busy = false;
                 self.status = "idle".into();
                 self.stick_bottom = true;
             }
             Ev::Failed(text) => {
-                self.cards.push(Card::Status { text });
+                self.push_card(Card::Status { text });
                 self.busy = false;
                 self.status = "error".into();
             }
@@ -288,22 +340,49 @@ pub fn run(launch: Launch) -> io::Result<()> {
 
     let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
     let (ev_tx, ev_rx) = mpsc::channel::<Ev>();
-    let store = launch.store.clone();
     let hammer = launch.hammer.clone();
     let worker_provider = provider.clone();
     let worker_model = model.clone();
+
+    let (frame, rail, opener) = if let Some(store) = launch.store.clone() {
+        (None, None, WorkerOpen::Raw(store))
+    } else {
+        let root = FrameRoot::open(launch.root.clone().unwrap_or_else(frame::default_root))
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        let rail = Rail::load(
+            &root,
+            launch.catalog.as_deref(),
+            launch.workspace.as_deref(),
+            launch.session.as_deref(),
+        )
+        .map_err(|err| io::Error::other(err.to_string()))?;
+        let opener = WorkerOpen::Frame { root: root.clone() };
+        (Some(root), Some(rail), opener)
+    };
+
     thread::Builder::new()
         .name("smith-anvil".into())
-        .spawn(move || worker(store, hammer, worker_provider, worker_model, jobs_rx, ev_tx))
+        .spawn(move || {
+            worker(
+                opener,
+                hammer,
+                worker_provider,
+                worker_model,
+                jobs_rx,
+                ev_tx,
+            )
+        })
         .map_err(io::Error::other)?;
 
     let files = list_files(&launch.cwd, 4000);
+    let session_label = rail
+        .as_ref()
+        .map(|r| r.session.clone())
+        .unwrap_or_else(|| "store".into());
     let mut app = App {
         cards: vec![Card::Status {
             text: format!(
-                "smith · {} · {} · config {} · @ file  Enter ask  Ctrl+S strike  Ctrl+J newline  Alt+. fold  Ctrl+C quit",
-                provider_name,
-                model,
+                "smith · {session_label} · {provider_name} · {model} · {} · Tab rail  n session  @ file  Enter ask  Ctrl+S strike  Ctrl+C close",
                 cfg_path.display()
             ),
         }],
@@ -318,9 +397,23 @@ pub fn run(launch: Launch) -> io::Result<()> {
         picker: None,
         jobs: jobs_tx,
         events: ev_rx,
-        provider_name,
-        model,
+        provider_name: provider_name.clone(),
+        model: model.clone(),
+        frame,
+        rail,
+        focus: Focus::Compose,
     };
+    if app.frame.is_some() {
+        app.load_session_cards();
+        if app.cards.is_empty() {
+            app.cards.push(Card::Status {
+                text: format!(
+                    "smith · {} · {provider_name} · {model} · Tab rail  n new session  Enter expose",
+                    app.session_id()
+                ),
+            });
+        }
+    }
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -338,27 +431,50 @@ pub fn run(launch: Launch) -> io::Result<()> {
     result
 }
 
+enum WorkerOpen {
+    Raw(PathBuf),
+    Frame { root: FrameRoot },
+}
+
+impl WorkerOpen {
+    fn store(&self, session: &str) -> PathBuf {
+        match self {
+            Self::Raw(path) => path.clone(),
+            Self::Frame { root } => root.session_dir(session),
+        }
+    }
+}
+
 fn worker(
-    store: PathBuf,
+    opener: WorkerOpen,
     hammer: PathBuf,
     provider: Provider,
     model: String,
     jobs: Receiver<Job>,
     ev: Sender<Ev>,
 ) {
-    let mut anvil = match Anvil::open(&store, &hammer) {
-        Ok(a) => a,
-        Err(err) => {
-            let _ = ev.send(Ev::Failed(err.to_string()));
-            return;
-        }
-    };
+    let mut anvils: HashMap<String, Anvil> = HashMap::new();
     let mut llm = HttpCompleter { provider, model };
     while let Ok(job) = jobs.recv() {
+        let session = match &job {
+            Job::Ask { session, .. } | Job::Strike { session, .. } => session.clone(),
+        };
+        if !anvils.contains_key(&session) {
+            match Anvil::open(opener.store(&session), &hammer) {
+                Ok(a) => {
+                    anvils.insert(session.clone(), a);
+                }
+                Err(err) => {
+                    let _ = ev.send(Ev::Failed(err.to_string()));
+                    continue;
+                }
+            }
+        }
+        let anvil = anvils.get_mut(&session).expect("just inserted");
         match job {
-            Job::Ask(prompt) => {
+            Job::Ask { prompt, .. } => {
                 let mut sink = ChanSink { tx: ev.clone() };
-                match ask::ask_with(&mut llm, &mut anvil, &prompt, &mut sink) {
+                match ask::ask_with(&mut llm, anvil, &prompt, &mut sink) {
                     Ok(result) => {
                         let _ = ev.send(Ev::Answer(result.answer));
                     }
@@ -367,7 +483,7 @@ fn worker(
                     }
                 }
             }
-            Job::Strike(code) => {
+            Job::Strike { code, .. } => {
                 let _ = ev.send(Ev::Status("striking".into()));
                 match anvil.strike(&code) {
                     Ok(reply) => {
@@ -444,6 +560,10 @@ fn event_loop(
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+    if let Some(Naming::Session(buf)) = app.rail.as_ref().and_then(|r| r.naming.clone()) {
+        return handle_naming(app, key, buf);
+    }
+
     if let Some(picker) = app.picker.as_mut() {
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) => {
@@ -466,6 +586,18 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             }
             _ => {}
         }
+    }
+
+    if app.rail.is_some() && matches!((key.code, key.modifiers), (KeyCode::Tab, _)) {
+        app.focus = match app.focus {
+            Focus::Rail => Focus::Compose,
+            Focus::Compose => Focus::Rail,
+        };
+        return false;
+    }
+
+    if app.focus == Focus::Rail {
+        return handle_rail_key(app, key);
     }
 
     match (key.code, key.modifiers) {
@@ -507,7 +639,123 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     false
 }
 
+fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.naming = None;
+            }
+        }
+        (KeyCode::Enter, _) => {
+            let name = buf.trim().to_string();
+            if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+                rail.naming = None;
+                if !name.is_empty() {
+                    match rail.create_session(root, &name) {
+                        Ok(()) => {
+                            app.load_session_cards();
+                            app.status = format!("session {name}");
+                        }
+                        Err(err) => app.status = err.to_string(),
+                    }
+                }
+            }
+        }
+        (KeyCode::Backspace, _) => {
+            buf.pop();
+            if let Some(rail) = app.rail.as_mut() {
+                rail.naming = Some(Naming::Session(buf));
+            }
+        }
+        (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            buf.push(ch);
+            if let Some(rail) = app.rail.as_mut() {
+                rail.naming = Some(Naming::Session(buf));
+            }
+        }
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
+        _ => {}
+    }
+    false
+}
+
+fn handle_rail_key(app: &mut App, key: KeyEvent) -> bool {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
+        (KeyCode::Esc, _) => app.focus = Focus::Compose,
+        (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.move_idx(-1);
+            }
+        }
+        (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.move_idx(1);
+            }
+        }
+        (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.kind = match rail.kind {
+                    RailKind::Member => RailKind::Workspace,
+                    RailKind::Workspace => RailKind::Catalog,
+                    RailKind::Catalog => RailKind::Catalog,
+                };
+                rail.reclamp();
+            }
+        }
+        (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.kind = match rail.kind {
+                    RailKind::Catalog => RailKind::Workspace,
+                    RailKind::Workspace => RailKind::Member,
+                    RailKind::Member => RailKind::Member,
+                };
+                rail.reclamp();
+            }
+        }
+        (KeyCode::Char('['), _) => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.cycle_kind();
+            }
+        }
+        (KeyCode::Char('n'), KeyModifiers::NONE) => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.naming = Some(Naming::Session(String::new()));
+            }
+        }
+        (KeyCode::Enter, _) => {
+            if app.busy {
+                app.status = "busy — wait to switch".into();
+                return false;
+            }
+            if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+                match rail.apply_enter(root) {
+                    Ok(switched) => {
+                        if switched {
+                            app.load_session_cards();
+                            app.status = format!("session {}", app.session_id());
+                        }
+                    }
+                    Err(err) => app.status = err.to_string(),
+                }
+            }
+        }
+        _ => {}
+    }
+    false
+}
+
 fn draw(frame: &mut Frame, app: &App) {
+    let body = if app.rail.is_some() {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(24), Constraint::Min(20)])
+            .split(frame.area());
+        draw_rail(frame, app, cols[0]);
+        cols[1]
+    } else {
+        frame.area()
+    };
     let picker_h = app
         .picker
         .as_ref()
@@ -522,7 +770,7 @@ fn draw(frame: &mut Frame, app: &App) {
             Constraint::Length(input_h),
             Constraint::Length(1),
         ])
-        .split(frame.area());
+        .split(body);
 
     let lines = render_cards(&app.cards);
     let view_h = chunks[0].height.saturating_sub(2);
@@ -532,8 +780,12 @@ fn draw(frame: &mut Frame, app: &App) {
     } else {
         app.scroll.min(max_scroll)
     };
+    let title = match &app.rail {
+        Some(r) => format!(" smith · {} ", r.session),
+        None => " smith ".into(),
+    };
     let transcript = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" smith "))
+        .block(Block::default().borders(Borders::ALL).title(title))
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     frame.render_widget(transcript, chunks[0]);
@@ -572,13 +824,154 @@ fn draw(frame: &mut Frame, app: &App) {
     } else {
         "·"
     };
+    let focus = match app.focus {
+        Focus::Rail => "rail",
+        Focus::Compose => "ask",
+    };
     frame.render_widget(
         Paragraph::new(Line::from(format!(
-            " {spin} {} · {} · {} ",
-            app.status, app.provider_name, app.model
+            " {spin} {} · {} · {} · {} ",
+            app.status, focus, app.provider_name, app.model
         ))),
         chunks[3],
     );
+}
+
+fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let Some(rail) = &app.rail else {
+        return;
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    let focused = app.focus == Focus::Rail;
+    push_rail_section(
+        &mut lines,
+        "catalogs",
+        &rail.catalogs,
+        &rail.catalog,
+        rail.kind == RailKind::Catalog,
+        rail.idx,
+        focused,
+    );
+    push_rail_section(
+        &mut lines,
+        "workspaces",
+        &rail.workspaces,
+        &rail.workspace,
+        rail.kind == RailKind::Workspace,
+        rail.idx,
+        focused,
+    );
+    push_rail_section(
+        &mut lines,
+        "members",
+        &rail.members,
+        &rail.session,
+        rail.kind == RailKind::Member,
+        rail.idx,
+        focused,
+    );
+    if let Some(Naming::Session(buf)) = &rail.naming {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(" new session: {buf}_"),
+            Style::default().fg(Color::Cyan),
+        )));
+    }
+    let title = if focused { " rail " } else { " rail · Tab " };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn push_rail_section(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    items: &[String],
+    current: &str,
+    active: bool,
+    idx: usize,
+    focused: bool,
+) {
+    let style = if active {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    lines.push(Line::from(Span::styled(format!(" {label}"), style)));
+    if items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  —",
+            Style::default().fg(Color::DarkGray),
+        )));
+        return;
+    }
+    for (i, name) in items.iter().enumerate() {
+        let mark = if name == current { "●" } else { " " };
+        let cursor = active && focused && i == idx;
+        let body = format!(" {mark} {name}");
+        let row = if cursor {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else if name == current {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(body, row)));
+    }
+}
+
+fn card_from_transcript(line: &TranscriptLine) -> Card {
+    match line {
+        TranscriptLine::User { text } => Card::User { text: text.clone() },
+        TranscriptLine::Thinking { text } => Card::Thinking {
+            text: text.clone(),
+            folded: true,
+        },
+        TranscriptLine::Strike {
+            code,
+            stdout,
+            stderr,
+            error,
+            ok,
+        } => Card::Strike {
+            code: code.clone(),
+            stdout: stdout.clone(),
+            stderr: stderr.clone(),
+            error: error.clone(),
+            ok: *ok,
+            folded: true,
+        },
+        TranscriptLine::Answer { text } => Card::Answer { text: text.clone() },
+        TranscriptLine::Status { text } => Card::Status { text: text.clone() },
+    }
+}
+
+fn transcript_from_card(card: &Card) -> TranscriptLine {
+    match card {
+        Card::User { text } => TranscriptLine::User { text: text.clone() },
+        Card::Thinking { text, .. } => TranscriptLine::Thinking { text: text.clone() },
+        Card::Strike {
+            code,
+            stdout,
+            stderr,
+            error,
+            ok,
+            ..
+        } => TranscriptLine::Strike {
+            code: code.clone(),
+            stdout: stdout.clone(),
+            stderr: stderr.clone(),
+            error: error.clone(),
+            ok: *ok,
+        },
+        Card::Answer { text } => TranscriptLine::Answer { text: text.clone() },
+        Card::Status { text } => TranscriptLine::Status { text: text.clone() },
+    }
 }
 
 fn cursor_in(input: &str, cursor: usize) -> (u16, u16) {
@@ -689,7 +1082,11 @@ fn push_wrapped(lines: &mut Vec<Line<'static>>, text: &str, style: Style) {
 
 pub fn default_launch() -> Launch {
     Launch {
-        store: default_store(),
+        store: None,
+        root: None,
+        session: None,
+        workspace: None,
+        catalog: None,
         hammer: default_hammer(),
         config: None,
         provider: None,
