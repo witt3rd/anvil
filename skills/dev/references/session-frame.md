@@ -14,17 +14,41 @@ later bruise. This is **many sessions, one frame**.
 
 ## Words
 
-| Word | What it is |
-|---|---|
-| **session** | Named, restartable work: store + transcript + compose draft + provider/model + cwd. One hammer when hot. |
-| **frame** | One smith process: roster + the session you are looking at. |
-| **roster** | Left list of sessions. Filtered views over the same set. |
-| **view** | A named predicate (running, cwd prefix, provider, host). Not a second store. |
-| **attach** | A frame is looking at a session. Many frames may attach to one session. |
-| **hot / cold** | Hot: hammer process alive. Cold: persisted on disk only. Attach makes it hot. |
+Do not import tmux's word **session** for the viewer. That collision
+is how two attaches get glued to one cursor.
 
-A session is not an OS process. One **anvil serve** on the machine owns
-all sessions. Each hot session has one hammer. smith is a client.
+| We say | What it is | tmux cousin |
+|---|---|---|
+| **session** | Named restartable *work*: store, transcript, draft, provider, cwd. One hammer when hot. The atom in the left list. | a **window** (or a whole-window of panes). Not `tmux new-session`. |
+| **frame** | One smith process. A viewer. Has its own focus (which session is in the seat) and its own view filter. | a **client** attached to a **grouped session** (`new-session -t`). |
+| **pool** | All sessions owned by one `anvil serve` on one host. | the shared window group. |
+| **roster** | The left list: the pool, as this frame currently filters it. | the window list of that grouped session. |
+| **view** | A predicate over the pool (hot, this cwd, provider). Same sessions, different filter. Not a second pool. | not `link-window`. See below. |
+| **seat** | This frame is looking at session X. Switching the roster changes *this frame's* seat only. | grouped-session current window. |
+| **hot / cold** | Hammer alive vs disk only. | a window whose process is running vs a placeholder — we go cold on purpose. |
+
+**tmux `attach -t main` (same session, two clients):** both clients share
+the current window. Client A switches, B is dragged. We **do not** do
+that with frames. Two smiths on one pool are *grouped viewers*: they
+share sessions and hammers; each has its own seat.
+
+**When two frames take the same seat:** they see the same live
+transcript and the same hammer (identical work, real time) — like two
+tmux clients looking at the *same window*. Compose is still one writer
+(open: steal / refuse / fork).
+
+**tmux `link-window`:** a window from pool A appears in pool B without
+merging the pools. Our **view** is only a filter, not a portal. A
+curated “also show `work:fox` here” is a later bruise. Do not build
+link-window until a day needs a portal.
+
+**tmux pane limit:** a pane cannot be transcluded alone; it belongs to
+one window. Our transcludable atom is the **session** (the whole named
+work). Cards inside a transcript are not linkable. In-process tiles
+(smith | pty) stay inside one session; they are not roster items.
+
+A session is not an OS process. One **anvil serve** owns the pool.
+Each hot session has one hammer. A frame is a client.
 
 ## Layout (smith)
 
@@ -70,11 +94,12 @@ per host.
   `~/.anvil/anvil.sock` if no runtime dir).
 - `smith` attaches. If no server, it starts one (same as herdr).
 - Detach (close smith, or a key) leaves serve + hot hammers.
-- Two smiths on the same socket: both see the roster; both can view
-  the same session. Writes (ask, strike) are serialized on the
-  session. Last attach's compose draft wins if we do not lock —
-  **lock compose to one attacher**; others read-only until they take
-  the seat. (Open: steal-seat vs fork-draft.)
+- Two smiths on the same socket are **grouped frames**: same pool,
+  independent seats. Switching fox→hatchling in one smith does not
+  move the other.
+- If both seats are fox: shared live transcript and hammer. Compose
+  has one writer; others read-only until they take the seat (open:
+  steal / refuse / fork).
 
 ## Remote
 
