@@ -99,9 +99,9 @@ the current bruise; in-process tiles wait):
    session. `skills/dev/references/session-frame.md`.
 2. **`anvil serve` + smith attach** — daemon owns hammers; smith
    detaches; work continues.
-3. **Workspace catalog + jig + casing** — named groupings of
-   sessions; jigs as intents that pull them; casings project. Inputs
-   are just requests on the session.
+3. **Workspace catalog + jig + casing** — logical groupings and
+   intents; casings are UI that project them. Inputs are just
+   requests on the session.
 4. **Reboot, then SSH** — as in that design.
 5. In-process **tiles** (smith | pty) as workspace members — later.
    Textbook: Zellij.
@@ -128,14 +128,14 @@ special protocol beyond “another process.”
 | **hammer** | Stock CPython guest. Hits the work. Dies. We hang another. |
 | **strike** | One `eval`. A blow, not a process. The only tool. |
 | **store** | On-disk persist for one session (`~/.anvil/sessions/<id>/namespace.pkl`). Not a workspace. |
-| **session** | The work piece. Highest grain of work on the anvil. Independent of sash, jig, casing. |
-| **workspace** | Named logical grouping of sessions (and later a bash/pty). Lives in the catalog. Not a Hyprland workspace, not a tab. |
-| **catalog** | The set of named workspaces a jig can pull. |
-| **jig** | Named intent: which workspaces, how casings project them. Focus stays per casing. |
-| **casing** | What `smith` launches. A collection of windows. Recreates a jig. |
-| **window** | A column of the casing (rail, main). Holds sashes. |
-| **sash** | A tab: a collection of panes. UI only. Often projects one workspace. |
-| **pane** | One surface: a session, a roster, a catalog list, later a pty. |
+| **session** | Logical. The work piece. Independent of every UI word. |
+| **workspace** | Logical. Named grouping of sessions (and later a bash/pty). Lives in the catalog. Not a Hyprland workspace, not a sash. |
+| **catalog** | Logical. The set of named workspaces a jig can pull. |
+| **jig** | Logical. Named intent: *which* workspaces. Not a casing, not a layout. |
+| **casing** | UI. What `smith` launches. Projects a jig. Many casings, one jig. |
+| **window** | UI. A column of the casing (rail, main). No logical twin. |
+| **sash** | UI. A tab. Usually projects one workspace. Closing it does not delete the workspace. |
+| **pane** | UI. Usually a session or member. Also: roster, catalog list. |
 | **ask** | Model writes Python; extract; strike; print stdout. Not `complete`. |
 | **complete** | Raw HTTP chat. Will waffle. Smoke only. |
 | **tile** | A pane we own: smith or pty. Not yet built. |
