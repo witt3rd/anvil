@@ -1,41 +1,100 @@
 # anvil
 
-A one-tool agent: the model writes Python; work lives outside the prompt.
+A one-tool agent for **this operator** (Donald, on roger and the fleet).
+The model writes Python. Work lives outside the prompt. The product is
+the daily driver, not a category.
 
 ## Goal
 
-Fixed tool menus (`read_file`, `bash`, `edit`, …) dump every result into the
-context window. Compaction then deletes. This repo inverts that: one action,
-`strike` — run code in a persistent guest. Intermediate data stays as
-variables. Only what the guest **prints** or **returns** enters the prompt.
+Fixed tool menus (`read_file`, `bash`, `edit`, …) dump every result into
+the context window. Compaction then deletes. This repo inverts that: one
+action, **strike** — run code in a persistent guest. Intermediate data
+stays as variables. Only what the guest **prints** or **returns** enters
+the prompt.
 
-You type Python in **smith**, or a model will. **anvil** supervises.
-**hammer** executes. Restart the hammer; the store survives.
+The LLM does not *use tools*. It *decides what to strike*. smith is how
+the operator sits at the block. anvil is the block. The hammer hits.
 
-The model is a named provider in `~/.config/anvil/config.yaml`. There is
-no first-class enum of vendors. A strike is still the only tool. The LLM
-is how the smith *decides* what to strike.
+We grow by **dogfooding** (live on it) and **demand paging** (fault in a
+capability the first time daily use trips over its absence, then
+compact). We do not build a platform in advance of a bruise.
 
 ## Merits
 
-1. **Two processes.** The guest will die. If it is also the agent, the
+1. **One package.** smith + anvil + hammer are one product. OSS libraries
+   (ratatui, serde, ureq, later a PTY/VTE crate) are fine. Third-party
+   *systems* (zellij, herdr, tmux, jcode, Prime) are not dependencies
+   and not hosts. Anvil is not a plugin, not Agent #24, not a tile in
+   someone else's mux.
+2. **Two processes.** The guest will die. If it is also the agent, the
    session dies with it. anvil (Rust) stays up; hammer (CPython) is
-   replaceable.
-2. **Stock CPython, not IPython.** No Jupyter protocol, no magics, no
+   replaceable. The store is on disk.
+3. **Stock CPython, not IPython.** No Jupyter protocol, no magics, no
    `In[12]`. One JSON line in, one JSON line out.
-3. **The prompt is an I/O channel.** Namespace, files, and job output live
-   in the store. A strike's `stdout` / `value` / `error` are the only
-   egress.
-4. **Unsandboxed on purpose.** A strike is the user's (or model's) hands
-   on this machine. Same trust as a shell. Do not pretend otherwise.
-5. **Names are jobs, not flavor.** Do not add `forge`, `apprentice`, or
-   Matrix jokes as process names.
-6. **Providers are data.** YAML entries, equal. Do not grow a MultiProvider.
+4. **The prompt is an I/O channel.** Namespace, files, and job output
+   live in the store. A strike's `stdout` / `value` / `error` are the
+   only egress. Waffle is not an answer.
+5. **Unsandboxed on purpose.** A strike is the operator's (or model's)
+   hands on this machine. Same trust as a shell. Do not pretend
+   otherwise.
+6. **Providers are data.** Named entries in YAML, equal. Do not grow a
+   MultiProvider or a first-class vendor enum.
 7. **Secrets stay out of the binary and out of logs.** Resolve
-   `!doppler …` / `$ENV` at use. Never print the resolved value.
+   `!doppler …` / `$ENV` at use. Never print the resolved value. Bare
+   words are literals, not env names.
 8. **We do not implement OAuth.** Vendor login is the vendor's CLI
-   (`grok login`). Cached creds stay where the vendor put them
-   (`~/.grok/auth.json`).
+   (`grok login`). Cached creds stay where the vendor put them.
+9. **SSH is the inter-machine bus.** sshd brokers; our binary is the
+   command (`ssh prince smith`). No HTTP/WS remote, no pairing tokens,
+   no anvil-specific wire. Local attach is a unix socket first.
+10. **Names are jobs.** smith, anvil, hammer, strike, store. Do not add
+    `forge`, `apprentice`, or Matrix process names.
+
+## Shape (envisioned)
+
+```
+                    ┌─ smith (TUI, ratatui) ─────────┐
+                    │  you / thinking / strike / answer │
+                    │  @ files · Enter ask · Ctrl+S raw │
+                    └────────────┬──────────────────────┘
+                                 │ unix socket  (later)
+                                 │ ssh stdio    (later: other boxes)
+                    ┌────────────▼──────────────────────┐
+                    │  anvil (Rust harness)             │
+                    │  providers · ask · tiles · serve  │
+                    │            │ newline-JSON         │
+                    │            ▼                      │
+                    │  hammer (stock CPython)           │
+                    │  exec · persist namespace.pkl     │
+                    └───────────────────────────────────┘
+```
+
+**Now:** one smith, in-process anvil, one hammer, named HTTP providers,
+`ask` = complete → extract Python → strike. Daily binaries are release
+builds of `feat/providers` on `PATH`.
+
+**When use bruises us, in this order:**
+
+1. In-process **tiles** — two smiths, or smith | pty (a real shell).
+   Textbook: `~/src/ext/zellij` (screen, terminal pane, pty bus). Not a
+   cargo dep.
+2. **`anvil serve`** — hammer outlives the TUI; smith attaches on a
+   unix socket.
+3. **SSH attach** — `ssh host smith` / `ssh host anvil attach`. Recipe:
+   herdr `src/remote/attach.rs` (stdio + socket). Not zellij's web
+   remote. Not herdr as a host.
+
+**Neighbors (stay neighbors):**
+
+| Tree | Role |
+|---|---|
+| herdr (`~/src/ext/herdr`) | The desktop mux. smith may run *in* a herdr pane as a process. herdr must not own anvil. |
+| zellij (`~/src/ext/zellij`) | Textbook for tiles/PTY/SSH-scars. Never `exec` or `cargo add`. |
+| jcode | Anti-exemplar for providers (keep: named profiles, `grok login`). |
+| Prime | Keep: `!doppler`. Drop: IPython kernel, bare-word env lookup. |
+
+Subagents are more smiths, each with their own anvil and hammer. No
+special protocol beyond “another process.”
 
 ## Concepts
 
@@ -44,17 +103,16 @@ is how the smith *decides* what to strike.
 | **smith** | TUI. The person at the block. Binary: `smith`. |
 | **anvil** | Rust harness. Does not move. Binary: `anvil`. |
 | **hammer** | Stock CPython guest. Hits the work. Dies. We hang another. |
-| **strike** | One `eval`. A blow, not a process. |
-| **store** | On-disk workspace (`namespace.pkl`). Not "the bench." |
-
-Subagents are more smiths, each with their own anvil. No apprentices.
-
-`forge` is taken (a hermes gateway). This repo is **anvil**.
+| **strike** | One `eval`. A blow, not a process. The only tool. |
+| **store** | On-disk workspace (`~/.anvil/default/namespace.pkl`). Not “the bench.” |
+| **ask** | Model writes Python; extract; strike; print stdout. Not `complete`. |
+| **complete** | Raw HTTP chat. Will waffle. Smoke only. |
+| **tile** | A pane we own: smith or pty. Not yet built. |
 
 ## Layout
 
 ```
-crates live in this package (one Cargo.toml, two bins)
+one Cargo.toml, two bins
   src/lib.rs           harness: spawn hammer, strike, respawn
   src/protocol.rs      newline-JSON types
   src/secret.rs        !command / $ENV / literal
@@ -63,10 +121,11 @@ crates live in this package (one Cargo.toml, two bins)
   src/catalog.rs       /models + cache
   src/complete.rs      chat/completions smoke
   src/ask.rs           model → extract Python → strike
-  src/bin/anvil.rs     CLI
   src/tui/             smith TUI (blocks, worker, @ picker)
+  src/bin/anvil.rs     CLI
   src/bin/smith.rs     TUI binary
 hammer/hammer.py       guest
+config.example.yaml    shape for ~/.config/anvil/config.yaml
 skills/dev/SKILL.md    how to run and test
 ```
 
@@ -74,64 +133,50 @@ skills/dev/SKILL.md    how to run and test
 
 ```bash
 cargo test
-cargo build --bins
-./target/debug/anvil strike 'print(2+2)'
-./target/debug/anvil strike --store /tmp/anvil-demo 'x = 1'
-./target/debug/anvil strike --store /tmp/anvil-demo 'x + 1'   # value 2
-./target/debug/smith                         # TUI: Enter ask, @ files, Ctrl+S raw strike
-./target/debug/smith -p nim --store /tmp/anvil-demo
+cargo build --release --bins     # then PATH smith/anvil pick it up
+anvil strike 'print(2+2)'
+anvil providers
+anvil login grok
+anvil models --refresh
+anvil ask -p nim 'how many files have synlinks ~/dotfiles/ (recursive)'
+smith -p nim                     # daily seat
 ```
 
-`ANVIL_STORE` sets the default store (else `$HOME/.anvil/default`).
-`ANVIL_HAMMER` overrides the guest script (else `hammer/hammer.py` next
-to the crate).
+`ANVIL_STORE` default `$HOME/.anvil/default`. `ANVIL_HAMMER` overrides
+the guest. `ANVIL_CONFIG` default `~/.config/anvil/config.yaml`.
 
-`anvil serve` is a reserved socket path; v0 smith talks to the harness
-in-process and owns the hammer child.
+PATH launchers (this box):
+
+```
+~/.local/bin/smith → …/anvil.wt/feat--providers/target/release/smith
+~/.local/bin/anvil → …/anvil.wt/feat--providers/target/release/anvil
+```
+
+Rebuild after a change: `cargo build --release --bins` in that worktree.
 
 ## Providers
 
-Config: `~/.config/anvil/config.yaml` (override `ANVIL_CONFIG`).
-Example: `config.example.yaml`.
-
-```bash
-anvil providers
-anvil login grok                 # oauth only; runs `grok login`
-anvil models                     # cached /models, refresh if stale
-anvil models --refresh grok
-anvil complete -p omni 'say hi'   # HTTP only — will waffle
-anvil ask -p nim 'how many files have synlinks ~/dotfiles/ (recursive)'
-# ask: model writes Python → strike → print stdout. complete does not strike.
-```
-
-A secret field is one of:
+Secrets:
 
 | Form | Meaning |
 |---|---|
 | `sk-…` | literal |
 | `$NAME` / `${NAME}` | environment |
-| `!doppler secrets get KEY -p proj -c cfg --plain` | shell; trimmed stdout |
+| `!doppler secrets get KEY -p proj -c cfg --plain` | `sh -c`, trimmed stdout |
 
-Bare words are **not** env lookups (Prime does that; it will steal a key
-that happens to match an env name).
-
-Model lists: `GET {base_url}/models`, cached at
-`~/.cache/anvil/models/<name>.json` for 24h.
-
-jcode's LLM stack is the anti-exemplar except for two moves: named
-OpenAI-compatible profiles, and grok-build login = run `grok login` then
-trust `~/.grok/auth.json`. We kept those. We did not keep 40 provider
-enums, the OpenRouter slot, or env-file key sprawl. Grok Build's *chat*
-path in jcode is ACP (a whole agent). anvil talks HTTP
-`/v1/chat/completions` for completions. The grok oauth vendor only
-supplies the token.
+`GET {base_url}/models` caches at `~/.cache/anvil/models/<name>.json`
+for 24h. Completions are OpenAI-compatible `/v1/chat/completions`. Grok
+oauth only supplies a token; we do not speak ACP.
 
 ## Git
 
-Primary clone stays on `main`. Work in `anvil.wt/<branch>/` via `git wt-new`.
-This founding tree is the exception: it *is* the mainline.
+`origin` = `git@github.com:witt3rd/anvil.git` (public). Primary clone
+`~/src/witt3rd/anvil` stays on `main`. Work in `anvil.wt/<branch>/` via
+`git wt-new`. Daily driver tracks `feat/providers` until it lands.
 
 ## Caretaker
 
-Leave the repo cleaner than you found it. Facts that orient live here.
-How-to and gotchas live in `skills/dev/SKILL.md`.
+Leave the repo cleaner than you found it. This file is the charter.
+`skills/dev/SKILL.md` is how-to. A bruise from daily use that we decide
+to keep goes here (if it is a rule) or in the skill (if it is a
+procedure).
