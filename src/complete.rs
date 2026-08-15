@@ -54,6 +54,14 @@ struct ApiError {
 }
 
 pub fn complete(provider: &Provider, model: &str, prompt: &str) -> Result<String, CompleteError> {
+    complete_messages(provider, model, &[("user", prompt)])
+}
+
+pub fn complete_messages(
+    provider: &Provider,
+    model: &str,
+    messages: &[(&str, &str)],
+) -> Result<String, CompleteError> {
     let model = model.trim();
     if model.is_empty() {
         return Err(CompleteError::NoModel);
@@ -63,10 +71,10 @@ pub fn complete(provider: &Provider, model: &str, prompt: &str) -> Result<String
     let token = catalog::credential(provider)?;
     let body = ChatRequest {
         model,
-        messages: vec![ChatMessage {
-            role: "user",
-            content: prompt,
-        }],
+        messages: messages
+            .iter()
+            .map(|(role, content)| ChatMessage { role, content })
+            .collect(),
     };
     let mut req = ureq::post(&url)
         .set("authorization", &format!("Bearer {token}"))

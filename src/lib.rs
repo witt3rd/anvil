@@ -2,6 +2,7 @@
 
 mod protocol;
 
+pub mod ask;
 pub mod catalog;
 pub mod complete;
 pub mod config;

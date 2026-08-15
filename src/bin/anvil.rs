@@ -2,6 +2,7 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use anvil::ask::{self, HttpCompleter};
 use anvil::catalog;
 use anvil::complete;
 use anvil::config::{Auth, Config};
@@ -50,8 +51,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// One-shot chat completion (smoke the HTTP path).
+    /// One-shot chat completion (smoke the HTTP path). Does not strike.
     Complete {
+        prompt: Vec<String>,
+        #[arg(long, short = 'p')]
+        provider: Option<String>,
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+    },
+    /// Model writes Python; hammer runs it; print the strike result.
+    Ask {
         prompt: Vec<String>,
         #[arg(long, short = 'p')]
         provider: Option<String>,
@@ -118,6 +127,18 @@ fn main() -> ExitCode {
             model,
         } => complete_cmd(
             cli.config.as_deref(),
+            provider.as_deref(),
+            model.as_deref(),
+            &prompt,
+        ),
+        Command::Ask {
+            prompt,
+            provider,
+            model,
+        } => ask_cmd(
+            cli.config.as_deref(),
+            &store,
+            &hammer,
             provider.as_deref(),
             model.as_deref(),
             &prompt,
@@ -255,6 +276,47 @@ fn complete_cmd(
     match complete::complete(prov, &model, &prompt) {
         Ok(text) => {
             println!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(err),
+    }
+}
+
+fn ask_cmd(
+    path: Option<&std::path::Path>,
+    store: &std::path::Path,
+    hammer: &std::path::Path,
+    provider: Option<&str>,
+    model: Option<&str>,
+    prompt: &[String],
+) -> ExitCode {
+    let (_cfg_path, cfg) = match load_cfg(path) {
+        Ok(v) => v,
+        Err(err) => return fail(err),
+    };
+    let (_name, prov) = match cfg.provider(provider) {
+        Ok(v) => v,
+        Err(err) => return fail(err),
+    };
+    let Some(model) = cfg.model_for(prov, model) else {
+        return fail("no model: set default_model or pass --model");
+    };
+    let prompt = prompt.join(" ");
+    if prompt.trim().is_empty() {
+        return fail("ask needs a prompt");
+    }
+    let mut anvil = match Anvil::open(store, hammer) {
+        Ok(a) => a,
+        Err(err) => return fail(err),
+    };
+    let mut llm = HttpCompleter {
+        provider: prov,
+        model,
+    };
+    match ask::ask(&mut llm, &mut anvil, &prompt) {
+        Ok(result) => {
+            eprintln!("# strike {} turn(s)", result.turns);
+            println!("{}", result.answer);
             ExitCode::SUCCESS
         }
         Err(err) => fail(err),

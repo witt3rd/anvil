@@ -64,3 +64,9 @@ ANVIL_CONFIG=/tmp/t.yaml anvil providers
 
 `!` values run `sh -c` and cache stdout for the process. Fail loud on
 nonzero. Tests for this do not call doppler — they use `!printf`.
+
+## Ask
+
+`anvil complete` is chat. `anvil ask` is the agent: extract Python (reject
+bash waffle), strike, retry up to 3 turns on missing code or a failed
+strike. Acceptance: `ask::tests::ask_rejects_waffle_and_strikes_python`.

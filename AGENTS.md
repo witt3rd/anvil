@@ -62,6 +62,7 @@ crates live in this package (one Cargo.toml, two bins)
   src/oauth.rs         vendor login (grok)
   src/catalog.rs       /models + cache
   src/complete.rs      chat/completions smoke
+  src/ask.rs           model → extract Python → strike
   src/bin/anvil.rs     CLI
   src/bin/smith.rs     TUI
 hammer/hammer.py       guest
@@ -96,7 +97,9 @@ anvil providers
 anvil login grok                 # oauth only; runs `grok login`
 anvil models                     # cached /models, refresh if stale
 anvil models --refresh grok
-anvil complete -p omni 'say hi'
+anvil complete -p omni 'say hi'   # HTTP only — will waffle
+anvil ask -p nim 'how many files have synlinks ~/dotfiles/ (recursive)'
+# ask: model writes Python → strike → print stdout. complete does not strike.
 ```
 
 A secret field is one of:
