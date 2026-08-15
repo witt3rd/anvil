@@ -88,9 +88,9 @@ dependency, no.
                     └───────────────────────────────────┘
 ```
 
-**Now:** named sessions, workspaces, and catalogs on disk. smith is a
-casing with a rail (switch sessions). Hammers are still in-process —
-close the casing and they die (`anvil serve` is next). `ask` = complete
+**Now:** named sessions / workspaces / catalogs on disk. `anvil serve`
+owns hammers on a unix socket; smith attaches (starts serve if needed).
+Close the casing, work stays. Rail switches sessions. `ask` = complete
 → extract Python → strike.
 
 **When use bruises us, in this order** (session frame first — that is
@@ -155,6 +155,7 @@ one Cargo.toml, two bins
   src/complete.rs      chat/completions smoke
   src/ask.rs           model → extract Python → strike
   src/frame/           sessions, workspaces, catalogs, layouts, transcript
+  src/serve/           unix socket daemon + client
   src/tui/             smith casing (rail, blocks, worker, @ picker)
   src/bin/anvil.rs     CLI
   src/bin/smith.rs     TUI binary
@@ -176,13 +177,15 @@ anvil ask -p nim 'how many files have synlinks ~/dotfiles/ (recursive)'
 anvil session new audit
 anvil workspace add fleet-os audit
 anvil catalog add compute-saturation fleet-os
-smith -p nim                     # casing + rail
+anvil serve --status
+smith -p nim                     # casing + rail; starts serve
 smith -s audit -p nim
 ```
 
 `ANVIL_ROOT` default `$HOME/.anvil`. Sessions live in
 `~/.anvil/sessions/<id>/` (legacy pickle at `~/.anvil/default` is
-session `default`). `ANVIL_STORE` is a raw store, no rail.
+session `default`). Serve listens on `$XDG_RUNTIME_DIR/anvil.sock`
+(`ANVIL_SOCK`). `ANVIL_STORE` is a raw store, no rail, no serve.
 `ANVIL_HAMMER` overrides the guest. `ANVIL_CONFIG` default
 `~/.config/anvil/config.yaml`.
 

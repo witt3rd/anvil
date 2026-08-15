@@ -44,8 +44,17 @@ enum Command {
     Strike { code: Vec<String> },
     /// Reset the store namespace.
     Reset,
-    /// Reserved: smith talks to the harness in-process in v0.
-    Serve,
+    /// Own hammers on a unix socket. smith attaches; close the casing, work stays.
+    Serve {
+        #[arg(long, env = "ANVIL_SOCK")]
+        sock: Option<PathBuf>,
+        /// Stop a running serve.
+        #[arg(long)]
+        stop: bool,
+        /// Print whether serve is up.
+        #[arg(long)]
+        status: bool,
+    },
     /// List named providers from config.yaml. Never prints secrets.
     Providers,
     /// Run a vendor login (oauth providers only). Exemplar: `grok login`.
@@ -125,6 +134,9 @@ fn main() -> ExitCode {
         Command::Session { cmd } => return session_cmd(cli.root.as_deref(), cmd),
         Command::Workspace { cmd } => return workspace_cmd(cli.root.as_deref(), cmd),
         Command::Catalog { cmd } => return catalog_cmd(cli.root.as_deref(), cmd),
+        Command::Serve { sock, stop, status } => {
+            return serve_cmd(&cli, sock.clone(), *stop, *status);
+        }
         _ => {}
     }
 
@@ -134,21 +146,16 @@ fn main() -> ExitCode {
     };
 
     match cli.cmd {
-        Command::Serve => {
-            eprintln!("anvil serve is not implemented. Run `smith` — it owns the hammer.");
-            ExitCode::from(2)
-        }
-        Command::Reset => match Anvil::open(&store, &hammer) {
-            Ok(mut a) => match a.reset() {
+        Command::Reset => {
+            match serve_or_local(&cli, &store, &hammer, |c, s| c.reset(s), |a| a.reset()) {
                 Ok(reply) => {
                     println!("{}", serde_json::to_string(&reply).unwrap());
                     ExitCode::SUCCESS
                 }
                 Err(err) => fail(err),
-            },
-            Err(err) => fail(err),
-        },
-        Command::Strike { code } => {
+            }
+        }
+        Command::Strike { ref code } => {
             let source = if code.is_empty() {
                 let mut buf = String::new();
                 if let Err(err) = io::stdin().read_to_string(&mut buf) {
@@ -158,18 +165,21 @@ fn main() -> ExitCode {
             } else {
                 code.join(" ")
             };
-            match Anvil::open(&store, &hammer) {
-                Ok(mut a) => match a.strike(&source) {
-                    Ok(reply) => {
-                        println!("{}", serde_json::to_string_pretty(&reply).unwrap());
-                        if reply.ok {
-                            ExitCode::SUCCESS
-                        } else {
-                            ExitCode::from(1)
-                        }
+            match serve_or_local(
+                &cli,
+                &store,
+                &hammer,
+                |c, s| c.strike(s, &source),
+                |a| a.strike(&source),
+            ) {
+                Ok(reply) => {
+                    println!("{}", serde_json::to_string_pretty(&reply).unwrap());
+                    if reply.ok {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::from(1)
                     }
-                    Err(err) => fail(err),
-                },
+                }
                 Err(err) => fail(err),
             }
         }
@@ -191,21 +201,79 @@ fn main() -> ExitCode {
             &prompt,
         ),
         Command::Ask {
-            prompt,
-            provider,
-            model,
+            ref prompt,
+            ref provider,
+            ref model,
         } => ask_cmd(
-            cli.config.as_deref(),
+            &cli,
             &store,
             &hammer,
             provider.as_deref(),
             model.as_deref(),
-            &prompt,
+            prompt,
         ),
-        Command::Session { .. } | Command::Workspace { .. } | Command::Catalog { .. } => {
-            unreachable!("handled above")
+        Command::Session { .. }
+        | Command::Workspace { .. }
+        | Command::Catalog { .. }
+        | Command::Serve { .. } => unreachable!("handled above"),
+    }
+}
+
+fn serve_cmd(cli: &Cli, sock: Option<PathBuf>, stop: bool, status: bool) -> ExitCode {
+    let sock = sock.unwrap_or_else(anvil::serve::default_sock);
+    if status {
+        return match anvil::serve::status(&sock) {
+            Ok(true) => {
+                println!("up\t{}", sock.display());
+                ExitCode::SUCCESS
+            }
+            Ok(false) => {
+                println!("down\t{}", sock.display());
+                ExitCode::from(1)
+            }
+            Err(err) => fail(err),
+        };
+    }
+    if stop {
+        return match anvil::serve::stop(&sock) {
+            Ok(()) => {
+                println!("stopped\t{}", sock.display());
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        };
+    }
+    let root = cli.root.clone().unwrap_or_else(frame::default_root);
+    let hammer = cli.hammer.clone().unwrap_or_else(default_hammer);
+    match anvil::serve::run(anvil::serve::ServeOpts {
+        root,
+        hammer,
+        config: cli.config.clone(),
+        sock,
+    }) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => fail(err),
+    }
+}
+
+fn session_name(cli: &Cli) -> String {
+    cli.session.clone().unwrap_or_else(|| "default".into())
+}
+
+fn serve_or_local(
+    cli: &Cli,
+    store: &std::path::Path,
+    hammer: &std::path::Path,
+    via: impl FnOnce(&mut anvil::serve::Client, &str) -> io::Result<anvil::StrikeReply>,
+    local: impl FnOnce(&mut Anvil) -> Result<anvil::StrikeReply, anvil::AnvilError>,
+) -> Result<anvil::StrikeReply, String> {
+    if cli.store.is_none() {
+        if let Ok(mut c) = anvil::serve::Client::connect(anvil::serve::default_sock()) {
+            return via(&mut c, &session_name(cli)).map_err(|e| e.to_string());
         }
     }
+    let mut a = Anvil::open(store, hammer).map_err(|e| e.to_string())?;
+    local(&mut a).map_err(|e| e.to_string())
 }
 
 fn open_root(root: Option<&std::path::Path>) -> Result<FrameRoot, String> {
@@ -519,14 +587,29 @@ fn complete_cmd(
 }
 
 fn ask_cmd(
-    path: Option<&std::path::Path>,
+    cli: &Cli,
     store: &std::path::Path,
     hammer: &std::path::Path,
     provider: Option<&str>,
     model: Option<&str>,
     prompt: &[String],
 ) -> ExitCode {
-    let (_cfg_path, cfg) = match load_cfg(path) {
+    let prompt = prompt.join(" ");
+    if prompt.trim().is_empty() {
+        return fail("ask needs a prompt");
+    }
+    if cli.store.is_none() {
+        if let Ok(mut c) = anvil::serve::Client::connect(anvil::serve::default_sock()) {
+            return match c.ask(&session_name(cli), &prompt, provider, model, &mut ()) {
+                Ok(answer) => {
+                    println!("{answer}");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => fail(err),
+            };
+        }
+    }
+    let (_cfg_path, cfg) = match load_cfg(cli.config.as_deref()) {
         Ok(v) => v,
         Err(err) => return fail(err),
     };
@@ -537,10 +620,6 @@ fn ask_cmd(
     let Some(model) = cfg.model_for(prov, model) else {
         return fail("no model: set default_model or pass --model");
     };
-    let prompt = prompt.join(" ");
-    if prompt.trim().is_empty() {
-        return fail("ask needs a prompt");
-    }
     let mut anvil = match Anvil::open(store, hammer) {
         Ok(a) => a,
         Err(err) => return fail(err),

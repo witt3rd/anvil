@@ -1,0 +1,102 @@
+use serde::{Deserialize, Serialize};
+
+use crate::StrikeReply;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Req {
+    Ping {
+        id: String,
+    },
+    Strike {
+        id: String,
+        session: String,
+        code: String,
+    },
+    Reset {
+        id: String,
+        session: String,
+    },
+    Ask {
+        id: String,
+        session: String,
+        prompt: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+    Shutdown {
+        id: String,
+    },
+}
+
+impl Req {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Ping { id }
+            | Self::Strike { id, .. }
+            | Self::Reset { id, .. }
+            | Self::Ask { id, .. }
+            | Self::Shutdown { id } => id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Msg {
+    Pong {
+        id: String,
+    },
+    Status {
+        id: String,
+        session: String,
+        text: String,
+    },
+    Draft {
+        id: String,
+        session: String,
+        text: String,
+    },
+    Strike {
+        id: String,
+        session: String,
+        code: String,
+        stdout: String,
+        stderr: String,
+        error: Option<String>,
+        ok: bool,
+    },
+    Answer {
+        id: String,
+        session: String,
+        text: String,
+    },
+    Reply {
+        id: String,
+        reply: StrikeReply,
+    },
+    Error {
+        id: String,
+        text: String,
+    },
+    Bye {
+        id: String,
+    },
+}
+
+impl Msg {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Pong { id }
+            | Self::Status { id, .. }
+            | Self::Draft { id, .. }
+            | Self::Strike { id, .. }
+            | Self::Answer { id, .. }
+            | Self::Reply { id, .. }
+            | Self::Error { id, .. }
+            | Self::Bye { id } => id,
+        }
+    }
+}

@@ -182,7 +182,8 @@ Do not dump the transcript into the next ask.
 
 1. **Session on disk** — done. Today’s store is session `default`
    (legacy `~/.anvil/default` still counts).
-2. **Serve** — not yet. Hammers still live in the smith process.
+2. **Serve** — done. Unix socket; smith attaches; hammers outlive the
+   casing. No systemd unit yet (reboot is later).
 3. **Workspace + catalog** — done as persist + CLI + rail.
 4. **Layout + many casings** — first cut: layout stores front
    catalog/workspace/session. One casing. No split geometry yet.

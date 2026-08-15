@@ -9,6 +9,7 @@ pub mod config;
 pub mod frame;
 pub mod oauth;
 pub mod secret;
+pub mod serve;
 pub mod tui;
 
 pub use protocol::{Op, StrikeReply, StrikeRequest};

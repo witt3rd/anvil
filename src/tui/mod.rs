@@ -3,7 +3,6 @@
 mod picker;
 mod rail;
 
-use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -31,6 +30,7 @@ use ratatui::Terminal;
 use crate::ask::{self, AskSink, HttpCompleter};
 use crate::config::{Config, Provider};
 use crate::frame::{self, FrameRoot, TranscriptLine};
+use crate::serve::{self, Client, Spawn};
 use crate::{default_hammer, Anvil, StrikeReply};
 
 pub use picker::{at_span, insert_path, list_files, rank, FileHit};
@@ -356,10 +356,18 @@ pub fn run(launch: Launch) -> io::Result<()> {
             launch.session.as_deref(),
         )
         .map_err(|err| io::Error::other(err.to_string()))?;
-        let opener = WorkerOpen::Frame { root: root.clone() };
-        (Some(root), Some(rail), opener)
+        let sock = serve::default_sock();
+        serve::connect_or_spawn(&Spawn {
+            root: root.root().to_path_buf(),
+            hammer: hammer.clone(),
+            config: launch.config.clone(),
+            sock: sock.clone(),
+        })
+        .map_err(|err| io::Error::other(format!("anvil serve: {err}")))?;
+        (Some(root), Some(rail), WorkerOpen::Serve { sock })
     };
 
+    let worker_provider_name = provider_name.clone();
     thread::Builder::new()
         .name("smith-anvil".into())
         .spawn(move || {
@@ -367,6 +375,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
                 opener,
                 hammer,
                 worker_provider,
+                worker_provider_name,
                 worker_model,
                 jobs_rx,
                 ev_tx,
@@ -382,7 +391,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
     let mut app = App {
         cards: vec![Card::Status {
             text: format!(
-                "smith · {session_label} · {provider_name} · {model} · {} · Tab rail  n session  @ file  Enter ask  Ctrl+S strike  Ctrl+C close",
+                "smith · {session_label} · {provider_name} · {model} · {} · Tab rail  n session  @ file  Enter ask  Ctrl+S strike  Ctrl+C close casing",
                 cfg_path.display()
             ),
         }],
@@ -433,48 +442,95 @@ pub fn run(launch: Launch) -> io::Result<()> {
 
 enum WorkerOpen {
     Raw(PathBuf),
-    Frame { root: FrameRoot },
-}
-
-impl WorkerOpen {
-    fn store(&self, session: &str) -> PathBuf {
-        match self {
-            Self::Raw(path) => path.clone(),
-            Self::Frame { root } => root.session_dir(session),
-        }
-    }
+    Serve { sock: PathBuf },
 }
 
 fn worker(
     opener: WorkerOpen,
     hammer: PathBuf,
     provider: Provider,
+    provider_name: String,
     model: String,
     jobs: Receiver<Job>,
     ev: Sender<Ev>,
 ) {
-    let mut anvils: HashMap<String, Anvil> = HashMap::new();
-    let mut llm = HttpCompleter { provider, model };
+    match opener {
+        WorkerOpen::Raw(store) => {
+            worker_local(store, hammer, provider, model, jobs, ev);
+        }
+        WorkerOpen::Serve { sock } => {
+            worker_serve(sock, provider_name, model, jobs, ev);
+        }
+    }
+}
+
+fn worker_serve(
+    sock: PathBuf,
+    provider_name: String,
+    model: String,
+    jobs: Receiver<Job>,
+    ev: Sender<Ev>,
+) {
+    let mut client = match Client::connect(&sock) {
+        Ok(c) => c,
+        Err(err) => {
+            let _ = ev.send(Ev::Failed(format!("serve: {err}")));
+            return;
+        }
+    };
     while let Ok(job) = jobs.recv() {
-        let session = match &job {
-            Job::Ask { session, .. } | Job::Strike { session, .. } => session.clone(),
-        };
-        if !anvils.contains_key(&session) {
-            match Anvil::open(opener.store(&session), &hammer) {
-                Ok(a) => {
-                    anvils.insert(session.clone(), a);
+        match job {
+            Job::Ask { session, prompt } => {
+                let mut sink = ChanSink { tx: ev.clone() };
+                match client.ask(
+                    &session,
+                    &prompt,
+                    Some(&provider_name),
+                    Some(&model),
+                    &mut sink,
+                ) {
+                    Ok(answer) => {
+                        let _ = ev.send(Ev::Answer(answer));
+                    }
+                    Err(err) => {
+                        let _ = ev.send(Ev::Failed(err.to_string()));
+                    }
                 }
-                Err(err) => {
-                    let _ = ev.send(Ev::Failed(err.to_string()));
-                    continue;
+            }
+            Job::Strike { session, code } => {
+                let _ = ev.send(Ev::Status("striking".into()));
+                match client.strike(&session, &code) {
+                    Ok(reply) => send_strike_ev(&ev, code, reply),
+                    Err(err) => {
+                        let _ = ev.send(Ev::Failed(err.to_string()));
+                    }
                 }
             }
         }
-        let anvil = anvils.get_mut(&session).expect("just inserted");
+    }
+}
+
+fn worker_local(
+    store: PathBuf,
+    hammer: PathBuf,
+    provider: Provider,
+    model: String,
+    jobs: Receiver<Job>,
+    ev: Sender<Ev>,
+) {
+    let mut anvil = match Anvil::open(&store, &hammer) {
+        Ok(a) => a,
+        Err(err) => {
+            let _ = ev.send(Ev::Failed(err.to_string()));
+            return;
+        }
+    };
+    let mut llm = HttpCompleter { provider, model };
+    while let Ok(job) = jobs.recv() {
         match job {
             Job::Ask { prompt, .. } => {
                 let mut sink = ChanSink { tx: ev.clone() };
-                match ask::ask_with(&mut llm, anvil, &prompt, &mut sink) {
+                match ask::ask_with(&mut llm, &mut anvil, &prompt, &mut sink) {
                     Ok(result) => {
                         let _ = ev.send(Ev::Answer(result.answer));
                     }
@@ -486,30 +542,7 @@ fn worker(
             Job::Strike { code, .. } => {
                 let _ = ev.send(Ev::Status("striking".into()));
                 match anvil.strike(&code) {
-                    Ok(reply) => {
-                        let _ = ev.send(Ev::Strike {
-                            code,
-                            stdout: reply.stdout.clone(),
-                            stderr: reply.stderr.clone(),
-                            error: reply.error.clone(),
-                            ok: reply.ok,
-                        });
-                        let answer = if reply.ok {
-                            if !reply.stdout.trim().is_empty() {
-                                reply.stdout.trim().to_string()
-                            } else if reply.value.is_null() {
-                                String::new()
-                            } else {
-                                reply.value.to_string()
-                            }
-                        } else {
-                            reply
-                                .error
-                                .clone()
-                                .unwrap_or_else(|| "strike failed".into())
-                        };
-                        let _ = ev.send(Ev::Answer(answer));
-                    }
+                    Ok(reply) => send_strike_ev(&ev, code, reply),
                     Err(err) => {
                         let _ = ev.send(Ev::Failed(err.to_string()));
                     }
@@ -517,6 +550,31 @@ fn worker(
             }
         }
     }
+}
+
+fn send_strike_ev(ev: &Sender<Ev>, code: String, reply: StrikeReply) {
+    let _ = ev.send(Ev::Strike {
+        code,
+        stdout: reply.stdout.clone(),
+        stderr: reply.stderr.clone(),
+        error: reply.error.clone(),
+        ok: reply.ok,
+    });
+    let answer = if reply.ok {
+        if !reply.stdout.trim().is_empty() {
+            reply.stdout.trim().to_string()
+        } else if reply.value.is_null() {
+            String::new()
+        } else {
+            reply.value.to_string()
+        }
+    } else {
+        reply
+            .error
+            .clone()
+            .unwrap_or_else(|| "strike failed".into())
+    };
+    let _ = ev.send(Ev::Answer(answer));
 }
 
 fn event_loop(

@@ -56,8 +56,9 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
 - Do not `exec` in the anvil process. The guest is a child.
 - Unpicklable names are dropped on persist and listed in `stderr` once.
 - A strike that is only statements has `value: null`. Prints still show.
-- `anvil serve` is not implemented. Hammers die when the casing closes.
-  Don't add a daemon until detach is the bruise.
+- `anvil serve` owns hammers. smith starts it if the socket is down.
+  `anvil serve --status` / `--stop`. Log: `~/.anvil/serve.log`.
+  Close smith: serve stays. `--store` is still in-process (no serve).
 - Conceptual objects: `anvil session|workspace|catalog` under
   `$ANVIL_ROOT` (default `~/.anvil`). Destroying a workspace or catalog
   does not destroy its occupants.
@@ -92,7 +93,8 @@ cargo build --bins
 Enter asks (model → strike). Ctrl+S raw-strikes the compose buffer as
 Python. `@` opens a fuzzy file picker (cwd, skips `.git`/`target`).
 Alt+. folds the last thinking/strike card. Wheel / PgUp / PgDn scroll.
-The ask worker runs off the UI thread so the spinner keeps moving.
+Tab focuses the rail. Ctrl+C closes the casing; serve keeps the hammers.
+The ask worker talks to serve so the spinner keeps moving.
 
 ## Ask
 
