@@ -92,16 +92,17 @@ dependency, no.
 `ask` = complete → extract Python → strike. Daily binaries are release
 builds of `feat/providers` on `PATH`.
 
-**When use bruises us, in this order:**
+**When use bruises us, in this order** (session frame first — that is
+the current bruise; in-process tiles wait):
 
-1. In-process **tiles** — two smiths, or smith | pty (a real shell).
-   Textbook: `~/src/ext/zellij` (screen, terminal pane, pty bus). Not a
-   cargo dep.
-2. **`anvil serve`** — hammer outlives the TUI; smith attaches on a
-   unix socket.
-3. **SSH attach** — `ssh host smith` / `ssh host anvil attach`. Recipe:
-   herdr `src/remote/attach.rs` (stdio + socket). Not zellij's web
-   remote. Not herdr as a host.
+1. **Named sessions on disk** — persist store + transcript per
+   session. `skills/dev/references/session-frame.md`.
+2. **`anvil serve` + smith attach** — daemon owns hammers; smith
+   detaches; work continues.
+3. **Roster in smith** — left list, views, switch without leaving
+   the OS workspace. Herdr's sidebar is the scar, not the host.
+4. **Many attaches, then reboot, then SSH** — as in that design.
+5. In-process **tiles** (smith | pty) — later. Textbook: Zellij.
 
 **Neighbors (stay neighbors):**
 
@@ -125,6 +126,8 @@ special protocol beyond “another process.”
 | **hammer** | Stock CPython guest. Hits the work. Dies. We hang another. |
 | **strike** | One `eval`. A blow, not a process. The only tool. |
 | **store** | On-disk workspace (`~/.anvil/default/namespace.pkl`). Not “the bench.” |
+| **session** | Named restartable work (store, transcript, draft, cwd, provider). |
+| **frame** | One smith window: roster + the session in the seat. |
 | **ask** | Model writes Python; extract; strike; print stdout. Not `complete`. |
 | **complete** | Raw HTTP chat. Will waffle. Smoke only. |
 | **tile** | A pane we own: smith or pty. Not yet built. |

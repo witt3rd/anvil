@@ -8,6 +8,8 @@ description: >
 
 # anvil — run and test
 
+Session frame design: `references/session-frame.md`.
+
 Charter: repo-root `AGENTS.md`. Git: house `git` skill — `git wt-new`
 from anywhere in the repo; never commit on `~/src/witt3rd/anvil` (`main`).
 
