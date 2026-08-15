@@ -42,9 +42,13 @@ then compact). We do not build a platform in advance of a bruise.
    otherwise.
 6. **Providers are data.** Named entries in YAML, equal. Do not grow a
    MultiProvider or a first-class vendor enum.
-7. **Secrets stay out of the binary and out of logs.** Resolve
-   `!doppler …` / `$ENV` at use. Never print the resolved value. Bare
-   words are literals, not env names.
+7. **Secrets stay out of the binary and out of logs.** A leading `!`
+   means `sh -c` the rest (trimmed stdout). `$NAME` / `${NAME}` is env.
+   Bare words are literals, not env names. Never print the resolved
+   value. This is Prime's upstream contract (`resolve-config-value.ts`,
+   Mario Zechner, on `PrimeIntellect-ai/prime-agent`), not a fork patch
+   and not Doppler-specific. `!doppler …` is just a command we happen
+   to write.
 8. **We do not implement OAuth.** Vendor login is the vendor's CLI
    (`grok login`). Cached creds stay where the vendor put them.
 9. **SSH is the inter-machine bus.** sshd brokers; our binary is the
@@ -94,7 +98,7 @@ builds of `feat/providers` on `PATH`.
 | herdr (`~/src/ext/herdr`) | The desktop mux. smith may run *in* a herdr pane as a process. herdr must not own anvil. |
 | zellij (`~/src/ext/zellij`) | Textbook for tiles/PTY/SSH-scars. Never `exec` or `cargo add`. |
 | jcode | Anti-exemplar for providers (keep: named profiles, `grok login`). |
-| Prime | Keep: `!doppler`. Drop: IPython kernel, bare-word env lookup. |
+| Prime | Keep: generic `!` → shell. Drop: IPython kernel, bare-word env lookup. |
 
 Subagents are more smiths, each with their own anvil and hammer. No
 special protocol beyond “another process.”
@@ -161,13 +165,13 @@ cargo build --release --bins  # in that tree, then smith picks it up
 
 ## Providers
 
-Secrets:
+Secrets (Prime upstream: `!` is any shell command, not a Doppler hook):
 
 | Form | Meaning |
 |---|---|
 | `sk-…` | literal |
 | `$NAME` / `${NAME}` | environment |
-| `!doppler secrets get KEY -p proj -c cfg --plain` | `sh -c`, trimmed stdout |
+| `!rest` | `sh -c rest`, trimmed stdout (e.g. `!doppler secrets get KEY -p proj -c cfg --plain`) |
 
 `GET {base_url}/models` caches at `~/.cache/anvil/models/<name>.json`
 for 24h. Completions are OpenAI-compatible `/v1/chat/completions`. Grok

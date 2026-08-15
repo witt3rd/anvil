@@ -69,8 +69,9 @@ anvil models --refresh
 ANVIL_CONFIG=/tmp/t.yaml anvil providers
 ```
 
-`!` values run `sh -c` and cache stdout for the process. Fail loud on
-nonzero. Tests for this do not call doppler — they use `!printf`.
+`!` values run `sh -c` on the rest and cache stdout for the process.
+Fail loud on nonzero. Provenance: Prime upstream, generic — not a
+Doppler feature. Tests use `!printf`, not doppler.
 
 ## Smith TUI
 
