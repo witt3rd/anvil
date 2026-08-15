@@ -1,31 +1,34 @@
 # anvil
 
-A one-tool agent for **this operator** (Donald, on roger and the fleet).
-The model writes Python. Work lives outside the prompt. The product is
-the daily driver, not a category.
+**smith** is who you sit with. This repo is named for the block smith
+stands at. One operator (Donald, on roger and the fleet). The model
+writes Python. Work lives outside the prompt. Not a category — a daily
+seat.
 
 ## Goal
 
+You launch **smith**. You talk to smith. Bruises happen in smith.
+
 Fixed tool menus (`read_file`, `bash`, `edit`, …) dump every result into
-the context window. Compaction then deletes. This repo inverts that: one
-action, **strike** — run code in a persistent guest. Intermediate data
-stays as variables. Only what the guest **prints** or **returns** enters
-the prompt.
+the context window. Compaction then deletes. smith inverts that: the
+model does not pick from a menu. It writes Python. anvil **strikes** it
+on the hammer. Intermediate data stays as variables. Only what the
+guest **prints** or **returns** comes back into the transcript.
 
-The LLM does not *use tools*. It *decides what to strike*. smith is how
-the operator sits at the block. anvil is the block. The hammer hits.
+The LLM does not *use tools*. It *decides what to strike*. smith is the
+person at the block. anvil is the block. The hammer hits.
 
-We grow by **dogfooding** (live on it) and **demand paging** (fault in a
-capability the first time daily use trips over its absence, then
-compact). We do not build a platform in advance of a bruise.
+We grow by **dogfooding** (live in smith) and **demand paging** (fault
+in a capability the first time a day in smith trips over its absence,
+then compact). We do not build a platform in advance of a bruise.
 
 ## Merits
 
-1. **One package.** smith + anvil + hammer are one product. OSS libraries
-   (ratatui, serde, ureq, later a PTY/VTE crate) are fine. Third-party
-   *systems* (zellij, herdr, tmux, jcode, Prime) are not dependencies
-   and not hosts. Anvil is not a plugin, not Agent #24, not a tile in
-   someone else's mux.
+1. **One package, one seat.** You type `smith`. anvil and hammer are not
+   products you switch to. OSS libraries (ratatui, serde, ureq, later a
+   PTY/VTE crate) are fine. Third-party *systems* (zellij, herdr, tmux,
+   jcode, Prime) are not dependencies and not hosts. smith is not a
+   plugin, not Agent #24, not a tile in someone else's mux.
 2. **Two processes.** The guest will die. If it is also the agent, the
    session dies with it. anvil (Rust) stays up; hammer (CPython) is
    replaceable. The store is on disk.
@@ -100,8 +103,8 @@ special protocol beyond “another process.”
 
 | Word | What it is |
 |---|---|
-| **smith** | TUI. The person at the block. Binary: `smith`. |
-| **anvil** | Rust harness. Does not move. Binary: `anvil`. |
+| **smith** | Who you talk to. The daily seat. TUI + the ask loop you see. Binary: `smith`. |
+| **anvil** | The harness under smith. Does not move. Binary: `anvil` (CLI, serve, strike). |
 | **hammer** | Stock CPython guest. Hits the work. Dies. We hang another. |
 | **strike** | One `eval`. A blow, not a process. The only tool. |
 | **store** | On-disk workspace (`~/.anvil/default/namespace.pkl`). Not “the bench.” |
@@ -177,6 +180,8 @@ oauth only supplies a token; we do not speak ACP.
 ## Caretaker
 
 Leave the repo cleaner than you found it. This file is the charter.
+If a change does not make **smith** better to sit with, it is the wrong
+change.
 `skills/dev/SKILL.md` is how-to. A bruise from daily use that we decide
 to keep goes here (if it is a rule) or in the skill (if it is a
 procedure).
