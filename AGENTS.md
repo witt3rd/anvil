@@ -126,8 +126,12 @@ special protocol beyond “another process.”
 | **hammer** | Stock CPython guest. Hits the work. Dies. We hang another. |
 | **strike** | One `eval`. A blow, not a process. The only tool. |
 | **store** | On-disk workspace (`~/.anvil/default/namespace.pkl`). Not “the bench.” |
-| **session** | Named restartable work (store, transcript, draft, cwd, provider). |
-| **frame** | One smith window: roster + the session in the seat. |
+| **session** | The work piece. Highest grain of work on the anvil. |
+| **casing** | What `smith` launches. A collection of windows. |
+| **window** | A column of the casing (rail, workspace). Holds sashes. |
+| **sash** | A tab: a collection of panes. |
+| **pane** | One surface: a session, or a roster, or a group list. |
+| **jig** | Shared blueprint casings recreate. Focus stays per casing. |
 | **ask** | Model writes Python; extract; strike; print stdout. Not `complete`. |
 | **complete** | Raw HTTP chat. Will waffle. Smoke only. |
 | **tile** | A pane we own: smith or pty. Not yet built. |
