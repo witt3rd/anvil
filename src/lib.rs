@@ -8,6 +8,7 @@ pub mod complete;
 pub mod config;
 pub mod oauth;
 pub mod secret;
+pub mod tui;
 
 pub use protocol::{Op, StrikeReply, StrikeRequest};
 

@@ -51,10 +51,27 @@ pub trait Completer {
     fn complete(&mut self, messages: &[Message]) -> Result<String, AskError>;
 }
 
+pub trait AskSink {
+    fn on_status(&mut self, _status: &str) {}
+    fn on_draft(&mut self, _text: &str) {}
+    fn on_strike(&mut self, _code: &str, _reply: &StrikeReply) {}
+}
+
+impl AskSink for () {}
+
 pub fn ask(
     completer: &mut impl Completer,
     anvil: &mut Anvil,
     prompt: &str,
+) -> Result<AskResult, AskError> {
+    ask_with(completer, anvil, prompt, &mut ())
+}
+
+pub fn ask_with(
+    completer: &mut impl Completer,
+    anvil: &mut Anvil,
+    prompt: &str,
+    sink: &mut impl AskSink,
 ) -> Result<AskResult, AskError> {
     let mut messages = vec![
         Message {
@@ -68,7 +85,9 @@ pub fn ask(
     ];
 
     for turn in 1..=MAX_TURNS {
+        sink.on_status("thinking");
         let draft = completer.complete(&messages)?;
+        sink.on_draft(&draft);
         messages.push(Message {
             role: "assistant".into(),
             content: draft.clone(),
@@ -80,8 +99,11 @@ pub fn ask(
             });
             continue;
         };
+        sink.on_status("striking");
         let reply = anvil.strike(&code)?;
+        sink.on_strike(&code, &reply);
         if reply.ok {
+            sink.on_status("idle");
             return Ok(AskResult {
                 answer: answer_from(&reply),
                 code,
@@ -97,6 +119,7 @@ pub fn ask(
             ),
         });
     }
+    sink.on_status("idle");
     Err(AskError::NoCode(MAX_TURNS))
 }
 
@@ -216,19 +239,19 @@ impl Completer for ScriptedCompleter {
     }
 }
 
-pub struct HttpCompleter<'a> {
-    pub provider: &'a Provider,
+pub struct HttpCompleter {
+    pub provider: Provider,
     pub model: String,
 }
 
-impl Completer for HttpCompleter<'_> {
+impl Completer for HttpCompleter {
     fn complete(&mut self, messages: &[Message]) -> Result<String, AskError> {
         let pairs: Vec<(&str, &str)> = messages
             .iter()
             .map(|m| (m.role.as_str(), m.content.as_str()))
             .collect();
         Ok(complete::complete_messages(
-            self.provider,
+            &self.provider,
             &self.model,
             &pairs,
         )?)
@@ -305,6 +328,39 @@ mod tests {
         assert_eq!(result.turns, 2);
         assert!(!result.answer.to_ascii_lowercase().contains("one-liner"));
         assert!(!result.answer.contains("find "));
+    }
+
+    #[test]
+    fn sink_sees_waffle_then_strike() {
+        let (tmp, expected) = tree();
+        let store = tempfile::TempDir::new().unwrap();
+        let mut anvil = harness(store.path());
+        let prompt = format!(
+            "how many files have synlinks {} (recursive)",
+            tmp.path().display()
+        );
+        let mut llm = ScriptedCompleter::new([WAFFLE.to_string(), count_code(tmp.path())]);
+        let mut rec = Rec::default();
+        let result = ask_with(&mut llm, &mut anvil, &prompt, &mut rec).unwrap();
+        assert_eq!(result.answer.trim(), expected.to_string());
+        assert_eq!(rec.drafts.len(), 2);
+        assert_eq!(rec.strikes.len(), 1);
+        assert!(rec.drafts[0].contains("one-liner"));
+    }
+
+    #[derive(Default)]
+    struct Rec {
+        drafts: Vec<String>,
+        strikes: Vec<String>,
+    }
+
+    impl AskSink for Rec {
+        fn on_draft(&mut self, text: &str) {
+            self.drafts.push(text.into());
+        }
+        fn on_strike(&mut self, code: &str, _reply: &StrikeReply) {
+            self.strikes.push(code.into());
+        }
     }
 
     #[test]

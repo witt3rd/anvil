@@ -65,6 +65,18 @@ ANVIL_CONFIG=/tmp/t.yaml anvil providers
 `!` values run `sh -c` and cache stdout for the process. Fail loud on
 nonzero. Tests for this do not call doppler — they use `!printf`.
 
+## Smith TUI
+
+```bash
+cargo build --bins
+./target/debug/smith -p nim
+```
+
+Enter asks (model → strike). Ctrl+S raw-strikes the compose buffer as
+Python. `@` opens a fuzzy file picker (cwd, skips `.git`/`target`).
+Alt+. folds the last thinking/strike card. Wheel / PgUp / PgDn scroll.
+The ask worker runs off the UI thread so the spinner keeps moving.
+
 ## Ask
 
 `anvil complete` is chat. `anvil ask` is the agent: extract Python (reject

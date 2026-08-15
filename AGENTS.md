@@ -64,7 +64,8 @@ crates live in this package (one Cargo.toml, two bins)
   src/complete.rs      chat/completions smoke
   src/ask.rs           model → extract Python → strike
   src/bin/anvil.rs     CLI
-  src/bin/smith.rs     TUI
+  src/tui/             smith TUI (blocks, worker, @ picker)
+  src/bin/smith.rs     TUI binary
 hammer/hammer.py       guest
 skills/dev/SKILL.md    how to run and test
 ```
@@ -77,7 +78,8 @@ cargo build --bins
 ./target/debug/anvil strike 'print(2+2)'
 ./target/debug/anvil strike --store /tmp/anvil-demo 'x = 1'
 ./target/debug/anvil strike --store /tmp/anvil-demo 'x + 1'   # value 2
-./target/debug/smith --store /tmp/anvil-demo
+./target/debug/smith                         # TUI: Enter ask, @ files, Ctrl+S raw strike
+./target/debug/smith -p nim --store /tmp/anvil-demo
 ```
 
 `ANVIL_STORE` sets the default store (else `$HOME/.anvil/default`).

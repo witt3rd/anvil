@@ -310,7 +310,7 @@ fn ask_cmd(
         Err(err) => return fail(err),
     };
     let mut llm = HttpCompleter {
-        provider: prov,
+        provider: prov.clone(),
         model,
     };
     match ask::ask(&mut llm, &mut anvil, &prompt) {
