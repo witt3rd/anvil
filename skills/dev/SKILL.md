@@ -49,3 +49,18 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
 - A strike that is only statements has `value: null`. Prints still show.
 - `anvil serve` is not implemented. Don't add a daemon until smith needs
   to attach to an already-running anvil.
+
+## Providers
+
+Live file: `~/.config/anvil/config.yaml`. Do not write secrets into the
+repo. Shape: `config.example.yaml`.
+
+```bash
+anvil providers                  # never prints resolved keys
+anvil login grok                 # execs `grok login`
+anvil models --refresh
+ANVIL_CONFIG=/tmp/t.yaml anvil providers
+```
+
+`!` values run `sh -c` and cache stdout for the process. Fail loud on
+nonzero. Tests for this do not call doppler — they use `!printf`.

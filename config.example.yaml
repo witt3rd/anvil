@@ -1,0 +1,28 @@
+# Copy to ~/.config/anvil/config.yaml
+# Secrets: literal, $ENV / ${ENV}, or !shell (Prime-style). Never commit the live file.
+
+default_provider: omni
+default_model: grok-4.5
+
+providers:
+  omni:
+    base_url: http://127.0.0.1:20128/v1
+    auth:
+      type: api_key
+      key: "!doppler secrets get LINKEDIN_OMNIROUTE_API_KEY -p roger -c dev_personal --plain"
+
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    auth:
+      type: api_key
+      key: $OPENROUTER_API_KEY
+
+  grok:
+    # HTTP completions (xAI). OAuth is the Grok Build / grok CLI login.
+    # `anvil login grok` runs `grok login`. Token comes from ~/.grok/auth.json
+    # or GROK_DEPLOYMENT_KEY — we do not implement OAuth ourselves.
+    base_url: https://api.x.ai/v1
+    default_model: grok-4.5
+    auth:
+      type: oauth
+      vendor: grok

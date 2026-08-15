@@ -9,9 +9,12 @@ context window. Compaction then deletes. This repo inverts that: one action,
 `strike` — run code in a persistent guest. Intermediate data stays as
 variables. Only what the guest **prints** or **returns** enters the prompt.
 
-The first slice is the machine, not the model. You (or later a model) type
-Python in **smith**. **anvil** supervises. **hammer** executes. Restart the
-hammer; the store survives. The model loop is next, not first.
+You type Python in **smith**, or a model will. **anvil** supervises.
+**hammer** executes. Restart the hammer; the store survives.
+
+The model is a named provider in `~/.config/anvil/config.yaml`. There is
+no first-class enum of vendors. A strike is still the only tool. The LLM
+is how the smith *decides* what to strike.
 
 ## Merits
 
@@ -27,6 +30,12 @@ hammer; the store survives. The model loop is next, not first.
    on this machine. Same trust as a shell. Do not pretend otherwise.
 5. **Names are jobs, not flavor.** Do not add `forge`, `apprentice`, or
    Matrix jokes as process names.
+6. **Providers are data.** YAML entries, equal. Do not grow a MultiProvider.
+7. **Secrets stay out of the binary and out of logs.** Resolve
+   `!doppler …` / `$ENV` at use. Never print the resolved value.
+8. **We do not implement OAuth.** Vendor login is the vendor's CLI
+   (`grok login`). Cached creds stay where the vendor put them
+   (`~/.grok/auth.json`).
 
 ## Concepts
 
@@ -48,7 +57,12 @@ Subagents are more smiths, each with their own anvil. No apprentices.
 crates live in this package (one Cargo.toml, two bins)
   src/lib.rs           harness: spawn hammer, strike, respawn
   src/protocol.rs      newline-JSON types
-  src/bin/anvil.rs     CLI: strike | serve
+  src/secret.rs        !command / $ENV / literal
+  src/config.rs        named YAML providers
+  src/oauth.rs         vendor login (grok)
+  src/catalog.rs       /models + cache
+  src/complete.rs      chat/completions smoke
+  src/bin/anvil.rs     CLI
   src/bin/smith.rs     TUI
 hammer/hammer.py       guest
 skills/dev/SKILL.md    how to run and test
@@ -71,6 +85,41 @@ to the crate).
 
 `anvil serve` is a reserved socket path; v0 smith talks to the harness
 in-process and owns the hammer child.
+
+## Providers
+
+Config: `~/.config/anvil/config.yaml` (override `ANVIL_CONFIG`).
+Example: `config.example.yaml`.
+
+```bash
+anvil providers
+anvil login grok                 # oauth only; runs `grok login`
+anvil models                     # cached /models, refresh if stale
+anvil models --refresh grok
+anvil complete -p omni 'say hi'
+```
+
+A secret field is one of:
+
+| Form | Meaning |
+|---|---|
+| `sk-…` | literal |
+| `$NAME` / `${NAME}` | environment |
+| `!doppler secrets get KEY -p proj -c cfg --plain` | shell; trimmed stdout |
+
+Bare words are **not** env lookups (Prime does that; it will steal a key
+that happens to match an env name).
+
+Model lists: `GET {base_url}/models`, cached at
+`~/.cache/anvil/models/<name>.json` for 24h.
+
+jcode's LLM stack is the anti-exemplar except for two moves: named
+OpenAI-compatible profiles, and grok-build login = run `grok login` then
+trust `~/.grok/auth.json`. We kept those. We did not keep 40 provider
+enums, the OpenRouter slot, or env-file key sprawl. Grok Build's *chat*
+path in jcode is ACP (a whole agent). anvil talks HTTP
+`/v1/chat/completions` for completions. The grok oauth vendor only
+supplies the token.
 
 ## Git
 

@@ -2,6 +2,12 @@
 
 mod protocol;
 
+pub mod catalog;
+pub mod complete;
+pub mod config;
+pub mod oauth;
+pub mod secret;
+
 pub use protocol::{Op, StrikeReply, StrikeRequest};
 
 use std::io::{BufRead, BufReader, Write};
@@ -204,7 +210,7 @@ pub fn default_hammer() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hammer/hammer.py")
 }
 
-fn dirs_home() -> Option<PathBuf> {
+pub(crate) fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
