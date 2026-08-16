@@ -130,6 +130,9 @@ closes the casing; serve keeps the hammers. Rail `p` names a PTY
 member. When that pane is focused, keys go to `$SHELL` and Ctrl+Q
 closes the casing (Ctrl+C is SIGINT).
 The ask worker talks to serve so the spinner keeps moving.
+Chrome is herdr's Catppuccin Mocha (mauve tab pill, purple focused
+borders, flat spaces/members rail). Restart smith to pick up a theme
+change; serve can stay.
 
 ## Ask
 

@@ -78,17 +78,16 @@ pub fn draw(frame: &mut Frame, area: Rect, title: &str, screen: Option<&PtyScree
             .collect::<Vec<_>>(),
         None => vec![Line::from(Span::styled(
             " (opening shell) ",
-            Style::default().fg(Color::DarkGray),
+            super::theme::p().dim(),
         ))],
     };
+    let pal = super::theme::p();
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(title)
-        .border_style(if focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        });
+        .border_set(ratatui::symbols::border::PLAIN)
+        .title(Span::styled(title, pal.pane_title(focused)))
+        .border_style(pal.pane_border(focused))
+        .style(pal.bg());
     frame.render_widget(Paragraph::new(lines).block(block), area);
     if focused {
         if let Some(s) = screen {
@@ -131,9 +130,7 @@ fn ansi_color(idx: u8) -> Color {
 pub fn hint() -> Line<'static> {
     Line::from(Span::styled(
         " pty · keys to $SHELL · Tab rail · Ctrl+Q close ",
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::ITALIC),
+        super::theme::p().dim().add_modifier(Modifier::ITALIC),
     ))
 }
 

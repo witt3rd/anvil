@@ -3,6 +3,7 @@
 mod picker;
 mod rail;
 mod term;
+mod theme;
 
 use std::collections::HashMap;
 use std::io;
@@ -1396,10 +1397,12 @@ fn handle_rail_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn draw(frame: &mut Frame, app: &App) {
+    let pal = theme::p();
+    frame.render_widget(Block::default().style(pal.bg()), frame.area());
     let body = if app.rail.is_some() {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(24), Constraint::Min(20)])
+            .constraints([Constraint::Length(22), Constraint::Min(20)])
             .split(frame.area());
         draw_rail(frame, app, cols[0]);
         cols[1]
@@ -1411,14 +1414,18 @@ fn draw(frame: &mut Frame, app: &App) {
         .as_ref()
         .map(|p| (p.hits.len() as u16 + 2).clamp(3, 10))
         .unwrap_or(0);
+    let embed = app.rail.is_some();
     let pty_compose =
         (app.focused_is_pty() || app.focused_is_edit()) && app.focus == Focus::Compose;
-    let input_h = if pty_compose {
+    let input_h = if embed {
+        0
+    } else if pty_compose {
         1
     } else {
         (app.input.matches('\n').count() as u16 + 1).clamp(1, 8) + 2
     };
     let sash_h = if app.rail.is_some() { 1 } else { 0 };
+    let status_h = if embed { 0 } else { 1 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1426,7 +1433,7 @@ fn draw(frame: &mut Frame, app: &App) {
             Constraint::Min(6),
             Constraint::Length(picker_h),
             Constraint::Length(input_h),
-            Constraint::Length(1),
+            Constraint::Length(status_h),
         ])
         .split(body);
 
@@ -1439,10 +1446,10 @@ fn draw(frame: &mut Frame, app: &App) {
         MainView::Trajectory => render_trajectory(&app.log_events),
     };
     let title = match (app.view, &app.rail) {
-        (MainView::Trajectory, Some(r)) => format!(" trajectory · {} · Alt+L ", r.session),
-        (MainView::Trajectory, None) => " trajectory · Alt+L ".into(),
-        (MainView::Smith, Some(r)) => format!(" smith · {} ", r.member_label(&r.session)),
-        (MainView::Smith, None) => " smith ".into(),
+        (MainView::Trajectory, Some(r)) => format!("trajectory · {}", r.session),
+        (MainView::Trajectory, None) => "trajectory".into(),
+        (MainView::Smith, Some(r)) => r.member_label(&r.session),
+        (MainView::Smith, None) => "smith".into(),
     };
     let stage = app
         .rail
@@ -1491,8 +1498,10 @@ fn draw(frame: &mut Frame, app: &App) {
             app.pty_screen.as_ref(),
             app.focus == Focus::Compose,
         );
+    } else if embed && app.view == MainView::Smith {
+        draw_session_seat(frame, main, app, title.trim(), &lines, true);
     } else {
-        draw_scroll_pane(frame, main, &title, &lines, app);
+        draw_scroll_pane(frame, main, title.trim(), &lines, app, true);
     }
 
     let picker_area = chunks[2];
@@ -1513,64 +1522,29 @@ fn draw(frame: &mut Frame, app: &App) {
                 ListItem::new(hit.path.clone()).style(style)
             })
             .collect();
+        let pal = theme::p();
         let list = List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" @{} ", picker.query)),
+                .border_style(pal.pane_border(true))
+                .title(Span::styled(
+                    format!(" @{} ", picker.query),
+                    pal.pane_title(true),
+                ))
+                .style(pal.bg()),
         );
         frame.render_widget(Clear, picker_area);
         frame.render_widget(list, picker_area);
     }
 
-    if pty_compose {
-        let hint = if app.focused_is_edit() {
-            Line::from(Span::styled(
-                " edit · autosave · Tab rail · Ctrl+Q close ",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            ))
+    if !embed {
+        if pty_compose {
+            frame.render_widget(Paragraph::new(term::hint()).style(pal.dim()), compose_area);
         } else {
-            term::hint()
-        };
-        frame.render_widget(Paragraph::new(hint), compose_area);
-    } else {
-        let compose = Paragraph::new(app.input.as_str())
-            .block(Block::default().borders(Borders::ALL).title(" ask "));
-        frame.render_widget(compose, compose_area);
-        let (cx, cy) = cursor_in(&app.input, app.cursor);
-        frame.set_cursor_position((compose_area.x + cx + 1, compose_area.y + cy + 1));
+            draw_compose(frame, compose_area, app);
+        }
+        draw_status_line(frame, status_area, app);
     }
-
-    let spin = if app.busy {
-        ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"][(app.tick as usize) % 8]
-    } else {
-        "·"
-    };
-    let focus = match (app.focus, app.focused_is_pty(), app.focused_is_edit()) {
-        (Focus::Rail, _, _) => "rail",
-        (Focus::Compose, true, _) => "pty",
-        (Focus::Compose, _, true) => "edit",
-        (Focus::Compose, false, false) => "ask",
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(format!(
-            " {spin} {} · {} · {} · {}{} ",
-            app.status,
-            if app.view == MainView::Trajectory {
-                "log"
-            } else {
-                focus
-            },
-            app.provider_name,
-            app.model,
-            app.slot_status
-                .as_deref()
-                .map(|t| format!(" · {t}"))
-                .unwrap_or_default()
-        ))),
-        status_area,
-    );
 }
 
 fn draw_edit_pane(
@@ -1603,15 +1577,10 @@ fn draw_edit_pane(
             ));
         }
     }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {title} · edit "))
-        .border_style(if focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        });
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    frame.render_widget(
+        Paragraph::new(lines).block(pane_block(&format!("{title} · edit"), focused)),
+        area,
+    );
     if focused {
         let x = area.x.saturating_add(1).saturating_add(col);
         let y = area.y.saturating_add(1).saturating_add(row);
@@ -1642,7 +1611,7 @@ fn draw_member_pane(
             app.other_logs.get(id).map(Vec::as_slice).unwrap_or(&[])
         };
         let lines = render_trajectory(events);
-        draw_scroll_pane(frame, area, &format!(" {label} "), &lines, app);
+        draw_scroll_pane(frame, area, &label, &lines, app, focused);
         return;
     }
     if app.member_is_edit(id) {
@@ -1681,40 +1650,64 @@ fn draw_member_pane(
         app.other_cards.get(id).map(Vec::as_slice).unwrap_or(&[])
     };
     let lines = render_cards(cards);
-    let title = if focused {
-        format!(" smith · {label} ")
+    let embed = focused && app.focus == Focus::Compose && app.view == MainView::Smith;
+    if embed {
+        draw_session_seat(frame, area, app, &label, &lines, true);
     } else {
-        format!(" {label} ")
-    };
-    draw_scroll_pane(frame, area, &title, &lines, app);
+        draw_scroll_pane(frame, area, &label, &lines, app, focused);
+    }
+}
+
+fn pane_block(title: &str, focused: bool) -> Block<'static> {
+    let pal = theme::p();
+    let label = title.trim();
+    Block::default()
+        .borders(Borders::ALL)
+        .border_set(ratatui::symbols::border::PLAIN)
+        .border_style(pal.pane_border(focused))
+        .title(Span::styled(format!(" {label} "), pal.pane_title(focused)))
+        .style(pal.bg())
 }
 
 fn draw_sashes(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let pal = theme::p();
+    frame.render_widget(
+        Paragraph::new(" ".repeat(area.width as usize)).style(Style::default().bg(pal.panel_bg)),
+        area,
+    );
     let Some(rail) = &app.rail else {
         return;
     };
-    let tabs: String = if rail.workspaces.is_empty() {
-        " (no sashes) ".into()
-    } else {
-        rail.workspaces
-            .iter()
-            .map(|w| {
-                if w == &rail.workspace {
-                    format!("[{w}]")
-                } else {
-                    format!(" {w} ")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {tabs}  Alt+[ ]"),
-            Style::default().fg(Color::Yellow),
-        ))),
-        area,
-    );
+    let mut x = area.x;
+    let y = area.y;
+    for name in &rail.workspaces {
+        let active = name == &rail.workspace;
+        let label = format!(" {name} ");
+        let w =
+            (label.chars().count() as u16).min(area.width.saturating_sub(x.saturating_sub(area.x)));
+        if w == 0 {
+            break;
+        }
+        let style = if active {
+            pal.tab_active()
+        } else {
+            pal.tab_idle()
+        };
+        frame.render_widget(
+            Paragraph::new(label).style(style),
+            ratatui::layout::Rect::new(x, y, w, 1),
+        );
+        x = x.saturating_add(w).saturating_add(1);
+        if x >= area.x + area.width {
+            break;
+        }
+    }
+    if x + 3 <= area.x + area.width {
+        frame.render_widget(
+            Paragraph::new(" + ").style(Style::default().fg(pal.overlay1).bg(pal.panel_bg)),
+            ratatui::layout::Rect::new(x, y, 3, 1),
+        );
+    }
 }
 
 fn draw_scroll_pane(
@@ -1723,6 +1716,7 @@ fn draw_scroll_pane(
     title: &str,
     lines: &[Line<'static>],
     app: &App,
+    focused: bool,
 ) {
     let view_h = area.height.saturating_sub(2);
     let max_scroll = lines.len().saturating_sub(view_h as usize) as u16;
@@ -1732,122 +1726,208 @@ fn draw_scroll_pane(
         app.scroll.min(max_scroll)
     };
     let widget = Paragraph::new(lines.to_vec())
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title.to_string()),
-        )
+        .block(pane_block(title, focused))
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     frame.render_widget(widget, area);
 }
 
+fn draw_session_seat(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    title: &str,
+    lines: &[Line<'static>],
+    focused: bool,
+) {
+    let pal = theme::p();
+    let block = pane_block(title, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let input_h = (app.input.matches('\n').count() as u16 + 1).clamp(1, 6);
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(2),
+            Constraint::Length(input_h),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    let view_h = parts[0].height;
+    let max_scroll = lines.len().saturating_sub(view_h as usize) as u16;
+    let scroll = if app.stick_bottom {
+        max_scroll
+    } else {
+        app.scroll.min(max_scroll)
+    };
+    frame.render_widget(
+        Paragraph::new(lines.to_vec())
+            .style(pal.bg())
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
+        parts[0],
+    );
+    draw_compose(frame, parts[1], app);
+    draw_status_line(frame, parts[2], app);
+}
+
+fn draw_compose(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let pal = theme::p();
+    let prompt = Span::styled("❯ ", pal.accent_text());
+    let body = Span::styled(app.input.clone(), pal.body());
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![prompt, body])).style(pal.bg()),
+        area,
+    );
+    if app.focus == Focus::Compose && !app.focused_is_pty() && !app.focused_is_edit() {
+        let (cx, cy) = cursor_in(&app.input, app.cursor);
+        frame.set_cursor_position((area.x + 2 + cx, area.y + cy));
+    }
+}
+
+fn draw_status_line(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let pal = theme::p();
+    let spin = if app.busy {
+        ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"][(app.tick as usize) % 8]
+    } else {
+        "·"
+    };
+    let focus = match (app.focus, app.focused_is_pty(), app.focused_is_edit()) {
+        (Focus::Rail, _, _) => "rail",
+        (Focus::Compose, true, _) => "pty",
+        (Focus::Compose, _, true) => "edit",
+        (Focus::Compose, false, false) => "ask",
+    };
+    let clock = app.slot_status.as_deref().unwrap_or("");
+    let text = format!(
+        " {spin} {} · {} · {} · {}{} ",
+        app.status,
+        if app.view == MainView::Trajectory {
+            "log"
+        } else {
+            focus
+        },
+        app.provider_name,
+        app.model,
+        if clock.is_empty() {
+            String::new()
+        } else {
+            format!(" · {clock}")
+        }
+    );
+    frame.render_widget(Paragraph::new(Span::styled(text, pal.dim())), area);
+}
+
 fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let pal = theme::p();
+    frame.render_widget(Block::default().style(pal.bg()), area);
     let Some(rail) = &app.rail else {
         return;
     };
-    let mut lines: Vec<Line> = Vec::new();
     let focused = app.focus == Focus::Rail;
-    push_rail_section(
-        &mut lines,
-        "catalogs",
-        &rail.catalogs,
-        &rail.catalog,
-        rail.kind == RailKind::Catalog,
-        rail.idx,
-        focused,
-        |s| s.to_string(),
-    );
-    push_rail_section(
-        &mut lines,
-        "workspaces",
+    let halves = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+    let mut spaces: Vec<Line> = vec![Line::from(Span::styled(" spaces", pal.header()))];
+    if !rail.catalog.is_empty() {
+        spaces.push(Line::from(Span::styled(
+            format!(" {}", rail.catalog),
+            pal.dim(),
+        )));
+    }
+    push_dot_rows(
+        &mut spaces,
         &rail.workspaces,
         &rail.workspace,
         rail.kind == RailKind::Workspace,
         rail.idx,
         focused,
+        |_| pal.teal,
         |s| s.to_string(),
     );
-    push_rail_section(
-        &mut lines,
-        "members",
+    frame.render_widget(Paragraph::new(spaces).style(pal.bg()), halves[0]);
+
+    let mut members: Vec<Line> = vec![Line::from(Span::styled(" members", pal.header()))];
+    push_dot_rows(
+        &mut members,
         &rail.members,
         &rail.session,
         rail.kind == RailKind::Member,
         rail.idx,
         focused,
+        |id| {
+            if rail.ptys.iter().any(|p| p == id) {
+                pal.green
+            } else if rail.edits.iter().any(|e| e == id) {
+                pal.peach
+            } else if rail.member_is_log(id) {
+                pal.blue
+            } else if rail.member_is_clock(id) {
+                pal.mauve
+            } else {
+                pal.teal
+            }
+        },
         |id| rail.member_label(id),
     );
     match &rail.naming {
-        Some(Naming::Session(buf)) => {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                format!(" new session: {buf}_"),
-                Style::default().fg(Color::Cyan),
-            )));
-        }
-        Some(Naming::Pty(buf)) => {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                format!(" new pty: {buf}_"),
-                Style::default().fg(Color::Cyan),
-            )));
-        }
-        Some(Naming::Edit(buf)) => {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                format!(" new edit: {buf}_"),
-                Style::default().fg(Color::Cyan),
-            )));
-        }
+        Some(Naming::Session(buf)) => members.push(Line::from(Span::styled(
+            format!(" new session: {buf}_"),
+            pal.accent_text(),
+        ))),
+        Some(Naming::Pty(buf)) => members.push(Line::from(Span::styled(
+            format!(" new pty: {buf}_"),
+            pal.accent_text(),
+        ))),
+        Some(Naming::Edit(buf)) => members.push(Line::from(Span::styled(
+            format!(" new edit: {buf}_"),
+            pal.accent_text(),
+        ))),
         None => {}
     }
-    let title = if focused { " rail " } else { " rail · Tab " };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .wrap(Wrap { trim: true }),
-        area,
-    );
+    frame.render_widget(Paragraph::new(members).style(pal.bg()), halves[1]);
 }
 
-fn push_rail_section(
+fn push_dot_rows(
     lines: &mut Vec<Line<'static>>,
-    label: &str,
     items: &[String],
     current: &str,
     active: bool,
     idx: usize,
     focused: bool,
+    current_dot: impl Fn(&str) -> Color,
     display: impl Fn(&str) -> String,
 ) {
-    let style = if active {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    lines.push(Line::from(Span::styled(format!(" {label}"), style)));
+    let pal = theme::p();
     if items.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  —",
-            Style::default().fg(Color::DarkGray),
-        )));
+        lines.push(Line::from(Span::styled("  —", pal.dim())));
         return;
     }
     for (i, name) in items.iter().enumerate() {
-        let mark = if name == current { "●" } else { " " };
+        let on = name == current;
         let cursor = active && focused && i == idx;
-        let body = format!(" {mark} {}", display(name));
-        let row = if cursor {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else if name == current {
-            Style::default().fg(Color::Cyan)
+        let dot = if on { "●" } else { "○" };
+        let dot_style = if on {
+            Style::default().fg(current_dot(name)).bg(if cursor {
+                pal.active_row_bg
+            } else {
+                pal.surface_dim
+            })
         } else {
-            Style::default()
+            pal.dim()
         };
-        lines.push(Line::from(Span::styled(body, row)));
+        let label_style = if cursor {
+            pal.active_row()
+        } else if on {
+            pal.body()
+        } else {
+            pal.label()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {dot} "), dot_style),
+            Span::styled(display(name), label_style),
+        ]));
     }
 }
 
@@ -1919,18 +1999,19 @@ fn trajectory_line(event: &LogEvent) -> Line<'static> {
         EventBody::Fiber { state } => ("fiber", state.clone()),
         EventBody::See { member, .. } => ("see", member.clone()),
     };
+    let pal = theme::p();
     let color = match &event.body {
-        EventBody::Strike { ok: false, .. } => Color::Red,
-        EventBody::Strike { .. } => Color::Green,
-        EventBody::Ask { .. } | EventBody::User { .. } => Color::Cyan,
-        EventBody::Answer { .. } => Color::White,
-        EventBody::Thinking { .. } => Color::Yellow,
-        EventBody::See { .. } => Color::Magenta,
-        EventBody::Fiber { .. } | EventBody::Status { .. } => Color::DarkGray,
+        EventBody::Strike { ok: false, .. } => pal.red,
+        EventBody::Strike { .. } => pal.green,
+        EventBody::Ask { .. } | EventBody::User { .. } => pal.teal,
+        EventBody::Answer { .. } => pal.text,
+        EventBody::Thinking { .. } => pal.yellow,
+        EventBody::See { .. } => pal.mauve,
+        EventBody::Fiber { .. } | EventBody::Status { .. } => pal.overlay0,
     };
     Line::from(Span::styled(
         format!("{:>4} {vis} {kind:<6} {detail}", event.seq),
-        Style::default().fg(color),
+        Style::default().fg(color).bg(pal.surface_dim),
     ))
 }
 
@@ -1945,6 +2026,7 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 fn render_cards(cards: &[Card]) -> Vec<Line<'static>> {
+    let pal = theme::p();
     let mut lines = Vec::new();
     for card in cards {
         match card {
@@ -1952,10 +2034,15 @@ fn render_cards(cards: &[Card]) -> Vec<Line<'static>> {
                 lines.push(Line::from(Span::styled(
                     " you ",
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(pal.teal)
+                        .bg(pal.surface_dim)
                         .add_modifier(Modifier::BOLD),
                 )));
-                push_wrapped(&mut lines, text, Style::default().fg(Color::Cyan));
+                push_wrapped(
+                    &mut lines,
+                    text,
+                    Style::default().fg(pal.teal).bg(pal.surface_dim),
+                );
                 lines.push(Line::from(""));
             }
             Card::Thinking { text, folded } => {
@@ -1968,18 +2055,20 @@ fn render_cards(cards: &[Card]) -> Vec<Line<'static>> {
                 lines.push(Line::from(Span::styled(
                     title,
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(pal.yellow)
+                        .bg(pal.surface_dim)
                         .add_modifier(Modifier::BOLD),
                 )));
                 if *folded {
                     if let Some(first) = text.lines().find(|l| !l.trim().is_empty()) {
-                        lines.push(Line::from(Span::styled(
-                            format!("  {first}…"),
-                            Style::default().fg(Color::DarkGray),
-                        )));
+                        lines.push(Line::from(Span::styled(format!("  {first}…"), pal.dim())));
                     }
                 } else {
-                    push_wrapped(&mut lines, text, Style::default().fg(Color::Yellow));
+                    push_wrapped(
+                        &mut lines,
+                        text,
+                        Style::default().fg(pal.yellow).bg(pal.surface_dim),
+                    );
                 }
                 lines.push(Line::from(""));
             }
@@ -1992,29 +2081,40 @@ fn render_cards(cards: &[Card]) -> Vec<Line<'static>> {
                 folded,
             } => {
                 let tag = if *ok { " strike " } else { " strike failed " };
-                let color = if *ok { Color::Green } else { Color::Red };
+                let color = if *ok { pal.green } else { pal.red };
                 lines.push(Line::from(Span::styled(
                     tag,
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(color)
+                        .bg(pal.surface_dim)
+                        .add_modifier(Modifier::BOLD),
                 )));
                 if *folded {
                     let first = code.lines().next().unwrap_or("");
                     let extra = code.lines().count().saturating_sub(1);
                     lines.push(Line::from(Span::styled(
                         format!("  {first}  +{extra}"),
-                        Style::default().fg(Color::DarkGray),
+                        pal.dim(),
                     )));
                 } else {
-                    push_wrapped(&mut lines, code, Style::default().fg(Color::Green));
+                    push_wrapped(
+                        &mut lines,
+                        code,
+                        Style::default().fg(pal.green).bg(pal.surface_dim),
+                    );
                 }
                 if !stdout.is_empty() {
-                    push_wrapped(&mut lines, stdout, Style::default());
+                    push_wrapped(&mut lines, stdout, pal.body());
                 }
                 if !stderr.is_empty() {
-                    push_wrapped(&mut lines, stderr, Style::default().fg(Color::DarkGray));
+                    push_wrapped(&mut lines, stderr, pal.dim());
                 }
                 if let Some(err) = error {
-                    push_wrapped(&mut lines, err, Style::default().fg(Color::Red));
+                    push_wrapped(
+                        &mut lines,
+                        err,
+                        Style::default().fg(pal.red).bg(pal.surface_dim),
+                    );
                 }
                 lines.push(Line::from(""));
             }
@@ -2022,14 +2122,15 @@ fn render_cards(cards: &[Card]) -> Vec<Line<'static>> {
                 lines.push(Line::from(Span::styled(
                     " answer ",
                     Style::default()
-                        .fg(Color::White)
+                        .fg(pal.text)
+                        .bg(pal.surface_dim)
                         .add_modifier(Modifier::BOLD),
                 )));
-                push_wrapped(&mut lines, text, Style::default());
+                push_wrapped(&mut lines, text, pal.body());
                 lines.push(Line::from(""));
             }
             Card::Status { text } => {
-                push_wrapped(&mut lines, text, Style::default().fg(Color::DarkGray));
+                push_wrapped(&mut lines, text, pal.dim());
                 lines.push(Line::from(""));
             }
         }
