@@ -119,7 +119,11 @@ cargo build --bins
 Enter asks (model → strike). Ctrl+S raw-strikes the compose buffer as
 Python. `@` opens a fuzzy file picker (cwd, skips `.git`/`target`).
 Alt+. folds the last thinking/strike card. Wheel / PgUp / PgDn scroll.
-Tab focuses the rail. Alt+[ / Alt+] cycle workspace sashes. Alt+J /
+Tab focuses the rail. Click a tab, rail row, or pane to focus it.
+Wheel scrolls the pane under the cursor (a focused PTY gets up/down;
+wheel on the rail moves the cursor; wheel on the sash cycles
+workspaces). Click `[<]` `[>]` to cycle sashes; `+` names a session.
+Alt+[ / Alt+] cycle workspace sashes. Alt+J /
 Alt+K cycle members when a bench has two or more (all of them stack).
 Alt+L toggles
 the trajectory sash (event log). A second `smith` is another casing

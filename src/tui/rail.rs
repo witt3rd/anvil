@@ -255,6 +255,50 @@ impl Rail {
         Ok(switched)
     }
 
+    /// Jump to a named workspace sash. Returns true if the focused member
+    /// had to change (it was not in the target bench).
+    pub fn select_workspace(&mut self, root: &FrameRoot, name: &str) -> Result<bool, FrameError> {
+        self.refresh(root)?;
+        if !self.workspaces.iter().any(|w| w == name) {
+            return Ok(false);
+        }
+        if self.workspace == name {
+            self.kind = RailKind::Workspace;
+            self.idx = self.workspaces.iter().position(|w| w == name).unwrap_or(0);
+            return Ok(false);
+        }
+        self.workspace = name.to_string();
+        self.refresh(root)?;
+        let switched = if self.members.iter().any(|m| m == &self.session) {
+            false
+        } else if let Some(first) = self.members.first().cloned() {
+            self.session = first;
+            true
+        } else {
+            false
+        };
+        self.kind = RailKind::Workspace;
+        self.idx = self.workspaces.iter().position(|w| w == name).unwrap_or(0);
+        self.persist(root)?;
+        Ok(switched)
+    }
+
+    /// Focus a member in the current workspace. Returns true if the
+    /// front member changed.
+    pub fn select_member(&mut self, root: &FrameRoot, id: &str) -> Result<bool, FrameError> {
+        if !self.members.iter().any(|m| m == id) {
+            return Ok(false);
+        }
+        self.kind = RailKind::Member;
+        self.idx = self.members.iter().position(|m| m == id).unwrap_or(0);
+        if self.session == id {
+            return Ok(false);
+        }
+        self.session = id.to_string();
+        self.persist(root)?;
+        Ok(true)
+    }
+
     #[allow(dead_code)]
     pub fn peer_session(&self) -> Option<String> {
         self.other_members().into_iter().next()
@@ -625,5 +669,30 @@ mod tests {
         assert!(!root.session_exists("notes"));
         let ws = root.workspace("default").unwrap();
         assert!(ws.members.iter().any(|m| m == &MemberRef::edit("notes")));
+    }
+
+    #[test]
+    fn select_workspace_and_member_jump_without_cycling() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        root.ensure_defaults().unwrap();
+        root.create_session("audit").unwrap();
+        root.create_session("research").unwrap();
+        let mut fleet = root.create_workspace("fleet-os").unwrap();
+        fleet.add_member(MemberRef::session("audit"));
+        fleet.add_member(MemberRef::session("research"));
+        root.save_workspace(&fleet).unwrap();
+        let mut cat = root.catalog("default").unwrap();
+        cat.add_workspace("fleet-os");
+        root.save_catalog(&cat).unwrap();
+        let mut rail =
+            Rail::load(&root, Some("default"), Some("default"), Some("default")).unwrap();
+        assert!(rail.select_workspace(&root, "fleet-os").unwrap());
+        assert_eq!(rail.workspace, "fleet-os");
+        assert_eq!(rail.session, "audit");
+        assert!(rail.select_member(&root, "research").unwrap());
+        assert_eq!(rail.session, "research");
+        assert!(!rail.select_member(&root, "research").unwrap());
+        assert!(!rail.select_workspace(&root, "fleet-os").unwrap());
     }
 }

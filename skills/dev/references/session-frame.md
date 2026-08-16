@@ -262,7 +262,8 @@ The next ask is a projection of the event log, not a paste of cards.
 
 - Web member. Promoted mounts beyond clock.
 - Zoomed timeline (log pane is the first diagnose member).
-- Drag-resize (Alt+= / Alt+- persist weights).
+- Drag-resize (Alt+= / Alt+- persist weights). Mouse click/wheel
+  already hit-tests panes, tabs, rail rows, and sash pills.
 - Theme is UX, not conceptual. Every painted surface is a dotted
   face in `src/tui/theme.rs` (`message.user.field`, `hint.key`, …).
   Add the face before the widget. Packs fill inks; `theme:` in

@@ -1,10 +1,12 @@
 //! smith TUI: transcript blocks, ask worker, `@` file picker, casing rail.
 
+mod hits;
 mod picker;
 mod rail;
 mod term;
 mod theme;
 
+use hits::{row_rect, HitKind, Hits};
 use theme::Face;
 
 use std::collections::HashMap;
@@ -24,14 +26,14 @@ enum MainView {
 
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
@@ -144,8 +146,8 @@ struct App {
     cursor: usize,
     status: String,
     busy: bool,
-    scroll: u16,
-    stick_bottom: bool,
+    views: HashMap<String, PaneView>,
+    hits: Hits,
     tick: u8,
     files: Vec<String>,
     picker: Option<PickerState>,
@@ -177,6 +179,21 @@ struct PickerState {
     selected: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PaneView {
+    scroll: u16,
+    stick: bool,
+}
+
+impl Default for PaneView {
+    fn default() -> Self {
+        Self {
+            scroll: 0,
+            stick: true,
+        }
+    }
+}
+
 impl App {
     fn expose_live(&self) {
         let _ = self.jobs.send(Job::Expose {
@@ -189,6 +206,68 @@ impl App {
             .as_ref()
             .map(|r| r.session.clone())
             .unwrap_or_else(|| "default".into())
+    }
+
+    fn scroll_key(&self) -> String {
+        match self.view {
+            MainView::Trajectory => format!("{}::log", self.session_id()),
+            MainView::Smith => self.session_id(),
+        }
+    }
+
+    fn pane_view(&self, id: &str) -> PaneView {
+        self.views.get(id).copied().unwrap_or_default()
+    }
+
+    fn stick_focused(&mut self) {
+        let id = self.scroll_key();
+        self.views.entry(id).or_default().stick = true;
+    }
+
+    fn bump_scroll(&mut self, id: &str, delta: i32) {
+        let view = self.views.entry(id.to_string()).or_default();
+        if delta < 0 {
+            view.stick = false;
+            view.scroll = view.scroll.saturating_sub(delta.unsigned_abs() as u16);
+        } else {
+            view.scroll = view.scroll.saturating_add(delta as u16);
+        }
+    }
+
+    fn click_workspace(&mut self, name: &str) {
+        if self.busy {
+            self.status = "busy — wait to switch".into();
+            return;
+        }
+        if let (Some(root), Some(rail)) = (&self.frame, self.rail.as_mut()) {
+            match rail.select_workspace(root, name) {
+                Ok(_) => {
+                    self.load_session_cards();
+                    self.expose_live();
+                    self.status = format!("sash {name}");
+                }
+                Err(err) => self.status = err.to_string(),
+            }
+        }
+    }
+
+    fn click_member(&mut self, id: &str, focus: Focus) {
+        if self.busy && id != self.session_id() {
+            self.status = "busy — wait to switch".into();
+            return;
+        }
+        self.focus = focus;
+        if let (Some(root), Some(rail)) = (&self.frame, self.rail.as_mut()) {
+            match rail.select_member(root, id) {
+                Ok(true) => {
+                    self.load_session_cards();
+                    self.expose_live();
+                    self.status = format!("session {id}");
+                }
+                Ok(false) => {}
+                Err(err) => self.status = err.to_string(),
+            }
+        }
     }
 
     fn focused_is_pty(&self) -> bool {
@@ -240,7 +319,7 @@ impl App {
                 .collect();
         }
         self.load_others();
-        self.stick_bottom = true;
+        self.stick_focused();
         self.refresh_ptys();
         self.refresh_edits();
     }
@@ -390,7 +469,7 @@ impl App {
         self.push_card(Card::User { text: text.clone() });
         self.busy = true;
         self.status = "thinking".into();
-        self.stick_bottom = true;
+        self.stick_focused();
         let _ = self.jobs.send(Job::Ask {
             session: self.session_id(),
             prompt: text,
@@ -443,7 +522,7 @@ impl App {
         });
         self.busy = true;
         self.status = "striking".into();
-        self.stick_bottom = true;
+        self.stick_focused();
         let _ = self.jobs.send(Job::Strike {
             session: self.session_id(),
             code: text,
@@ -540,7 +619,7 @@ impl App {
                 }
                 self.busy = false;
                 self.status = "idle".into();
-                self.stick_bottom = true;
+                self.stick_focused();
                 self.reload_log();
             }
             Ev::Failed(text) => {
@@ -662,8 +741,8 @@ pub fn run(launch: Launch) -> io::Result<()> {
         cursor: 0,
         status: "idle".into(),
         busy: false,
-        scroll: 0,
-        stick_bottom: true,
+        views: HashMap::new(),
+        hits: Hits::default(),
         tick: 0,
         files,
         picker: None,
@@ -977,16 +1056,7 @@ fn event_loop(
                     return Ok(());
                 }
             }
-            Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => {
-                    app.stick_bottom = false;
-                    app.scroll = app.scroll.saturating_sub(3);
-                }
-                MouseEventKind::ScrollDown => {
-                    app.scroll = app.scroll.saturating_add(3);
-                }
-                _ => {}
-            },
+            Event::Mouse(mouse) => handle_mouse(app, mouse),
             Event::Resize(_, _) => {}
             _ => {}
         }
@@ -1038,6 +1108,121 @@ fn swap_pane(app: &mut App, delta: isize) {
             }
             Ok(false) => app.status = "no other member".into(),
             Err(err) => app.status = err.to_string(),
+        }
+    }
+}
+
+fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    let kind = app.hits.at(mouse.column, mouse.row).cloned();
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            let Some(kind) = kind else {
+                return;
+            };
+            match kind {
+                HitKind::Rail => app.focus = Focus::Rail,
+                HitKind::Catalog => {
+                    if let Some(rail) = app.rail.as_mut() {
+                        rail.kind = RailKind::Catalog;
+                        rail.idx = rail
+                            .catalogs
+                            .iter()
+                            .position(|c| c == &rail.catalog)
+                            .unwrap_or(0);
+                    }
+                    app.focus = Focus::Rail;
+                }
+                HitKind::Workspace(name) => {
+                    app.click_workspace(&name);
+                    app.focus = Focus::Rail;
+                }
+                HitKind::Member(id) => app.click_member(&id, Focus::Rail),
+                HitKind::Tab(name) => {
+                    app.click_workspace(&name);
+                    app.focus = Focus::Compose;
+                }
+                HitKind::TabAdd => {
+                    if let Some(rail) = app.rail.as_mut() {
+                        rail.naming = Some(Naming::Session(String::new()));
+                    }
+                    app.focus = Focus::Rail;
+                }
+                HitKind::SashPrev => cycle_sash(app, -1),
+                HitKind::SashNext => cycle_sash(app, 1),
+                HitKind::Pane(id) => {
+                    if id.ends_with("::log") {
+                        app.view = MainView::Trajectory;
+                        app.focus = Focus::Compose;
+                    } else {
+                        app.view = MainView::Smith;
+                        app.click_member(&id, Focus::Compose);
+                    }
+                }
+                HitKind::Compose => app.focus = Focus::Compose,
+                HitKind::Picker(i) => {
+                    if let Some(picker) = app.picker.as_mut() {
+                        picker.selected = i.min(picker.hits.len().saturating_sub(1));
+                    }
+                    app.accept_picker();
+                }
+            }
+        }
+        MouseEventKind::ScrollUp => handle_wheel(app, kind.as_ref(), -1),
+        MouseEventKind::ScrollDown => handle_wheel(app, kind.as_ref(), 1),
+        _ => {}
+    }
+}
+
+fn handle_wheel(app: &mut App, kind: Option<&HitKind>, dir: i32) {
+    let steps = 3 * dir;
+    match kind {
+        Some(HitKind::Pane(id)) => {
+            if id.ends_with("::log") {
+                app.bump_scroll(id, steps);
+                return;
+            }
+            if app.member_is_pty(id) {
+                if app.session_id() == *id && app.focus == Focus::Compose {
+                    let bytes: &[u8] = if dir < 0 { b"\x1b[A" } else { b"\x1b[B" };
+                    app.send_pty(bytes);
+                } else {
+                    app.click_member(id, Focus::Compose);
+                }
+            } else if app.member_is_edit(id) {
+                if app.session_id() == *id && app.focus == Focus::Compose {
+                    app.send_edit(if dir < 0 { EditOp::Up } else { EditOp::Down }, "");
+                } else {
+                    app.click_member(id, Focus::Compose);
+                }
+            } else {
+                app.bump_scroll(id, steps);
+            }
+        }
+        Some(HitKind::Member(_)) | Some(HitKind::Workspace(_)) | Some(HitKind::Rail) => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.move_idx(if dir < 0 { -1 } else { 1 });
+            }
+            app.focus = Focus::Rail;
+        }
+        Some(HitKind::Tab(_)) | Some(HitKind::SashPrev) | Some(HitKind::SashNext) => {
+            cycle_sash(app, if dir < 0 { -1 } else { 1 });
+        }
+        Some(HitKind::Picker(_)) => {
+            if let Some(picker) = app.picker.as_mut() {
+                if dir < 0 {
+                    picker.selected = picker.selected.saturating_sub(1);
+                } else if !picker.hits.is_empty() {
+                    picker.selected = (picker.selected + 1).min(picker.hits.len() - 1);
+                }
+            }
+        }
+        Some(HitKind::Compose) => {
+            let id = app.scroll_key();
+            app.bump_scroll(&id, steps);
+        }
+        _ => {
+            let id = app.scroll_key();
+            app.bump_scroll(&id, steps);
         }
     }
 }
@@ -1112,7 +1297,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             };
             if app.view == MainView::Trajectory {
                 app.reload_log();
-                app.stick_bottom = true;
+                app.stick_focused();
             }
         }
         (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
@@ -1124,10 +1309,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Char('j'), KeyModifiers::ALT) => swap_pane(app, 1),
         (KeyCode::Char('k'), KeyModifiers::ALT) => swap_pane(app, -1),
         (KeyCode::PageUp, _) => {
-            app.stick_bottom = false;
-            app.scroll = app.scroll.saturating_sub(10);
+            let id = app.scroll_key();
+            app.bump_scroll(&id, -10);
         }
-        (KeyCode::PageDown, _) => app.scroll = app.scroll.saturating_add(10),
+        (KeyCode::PageDown, _) => {
+            let id = app.scroll_key();
+            app.bump_scroll(&id, 10);
+        }
         (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => app.insert(ch),
         (KeyCode::Backspace, _) => app.backspace(),
         (KeyCode::Left, _) if app.cursor > 0 => {
@@ -1235,7 +1423,7 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> bool {
             };
             if app.view == MainView::Trajectory {
                 app.reload_log();
-                app.stick_bottom = true;
+                app.stick_focused();
             }
         }
         (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
@@ -1276,7 +1464,7 @@ fn handle_pty_key(app: &mut App, key: KeyEvent) -> bool {
             };
             if app.view == MainView::Trajectory {
                 app.reload_log();
-                app.stick_bottom = true;
+                app.stick_focused();
             }
         }
         (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
@@ -1399,7 +1587,8 @@ fn handle_rail_key(app: &mut App, key: KeyEvent) -> bool {
     false
 }
 
-fn draw(frame: &mut Frame, app: &App) {
+fn draw(frame: &mut Frame, app: &mut App) {
+    let mut hits = Hits::default();
     let th = theme::t();
     frame.render_widget(Block::default().style(th.style(Face::Canvas)), frame.area());
     let shell = Layout::default()
@@ -1413,7 +1602,7 @@ fn draw(frame: &mut Frame, app: &App) {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(22), Constraint::Min(20)])
             .split(work);
-        draw_rail(frame, app, cols[0]);
+        draw_rail(frame, app, cols[0], &mut hits);
         cols[1]
     } else {
         work
@@ -1447,7 +1636,7 @@ fn draw(frame: &mut Frame, app: &App) {
         .split(body);
 
     if sash_h > 0 {
-        draw_sashes(frame, app, chunks[0]);
+        draw_sashes(frame, app, chunks[0], &mut hits);
     }
     let main = chunks[1];
     let inner_w = main.width.saturating_sub(2);
@@ -1490,9 +1679,11 @@ fn draw(frame: &mut Frame, app: &App) {
             .split(main);
         for (i, id) in stage.iter().enumerate() {
             let focused = id == &app.session_id();
-            draw_member_pane(frame, panes[i], app, id, focused);
+            hits.push(panes[i], HitKind::Pane(id.clone()));
+            draw_member_pane(frame, panes[i], app, id, focused, &mut hits);
         }
     } else if app.view == MainView::Smith && app.focused_is_edit() {
+        hits.push(main, HitKind::Pane(app.session_id()));
         draw_edit_pane(
             frame,
             main,
@@ -1501,6 +1692,7 @@ fn draw(frame: &mut Frame, app: &App) {
             app.focus == Focus::Compose,
         );
     } else if app.view == MainView::Smith && app.focused_is_pty() {
+        hits.push(main, HitKind::Pane(app.session_id()));
         term::draw(
             frame,
             main,
@@ -1509,9 +1701,22 @@ fn draw(frame: &mut Frame, app: &App) {
             app.focus == Focus::Compose,
         );
     } else if embed && app.view == MainView::Smith {
-        draw_session_seat(frame, main, app, title.trim(), &lines, true);
+        let key = app.scroll_key();
+        hits.push(main, HitKind::Pane(key.clone()));
+        draw_session_seat(
+            frame,
+            main,
+            app,
+            title.trim(),
+            &lines,
+            &key,
+            true,
+            &mut hits,
+        );
     } else {
-        draw_scroll_pane(frame, main, title.trim(), &lines, app, true);
+        let key = app.scroll_key();
+        hits.push(main, HitKind::Pane(key.clone()));
+        draw_scroll_pane(frame, main, title.trim(), &lines, app, &key, true);
     }
 
     let picker_area = chunks[2];
@@ -1545,6 +1750,18 @@ fn draw(frame: &mut Frame, app: &App) {
         );
         frame.render_widget(Clear, picker_area);
         frame.render_widget(list, picker_area);
+        let inner = picker_area.y.saturating_add(1);
+        for i in 0..picker.hits.len() {
+            hits.push(
+                Rect::new(
+                    picker_area.x.saturating_add(1),
+                    inner.saturating_add(i as u16),
+                    picker_area.width.saturating_sub(2),
+                    1,
+                ),
+                HitKind::Picker(i),
+            );
+        }
     }
 
     if !embed {
@@ -1555,9 +1772,11 @@ fn draw(frame: &mut Frame, app: &App) {
             );
         } else {
             draw_compose(frame, compose_area, app);
+            hits.push(compose_area, HitKind::Compose);
         }
         draw_status_line(frame, status_area, app);
     }
+    app.hits = hits;
 }
 
 fn draw_edit_pane(
@@ -1612,6 +1831,7 @@ fn draw_member_pane(
     app: &App,
     id: &str,
     focused: bool,
+    hits: &mut Hits,
 ) {
     let label = app
         .rail
@@ -1625,7 +1845,7 @@ fn draw_member_pane(
             app.other_logs.get(id).map(Vec::as_slice).unwrap_or(&[])
         };
         let lines = render_trajectory(events, area.width.saturating_sub(2));
-        draw_scroll_pane(frame, area, &label, &lines, app, focused);
+        draw_scroll_pane(frame, area, &label, &lines, app, id, focused);
         return;
     }
     if app.member_is_edit(id) {
@@ -1666,9 +1886,9 @@ fn draw_member_pane(
     let lines = render_cards(cards, area.width.saturating_sub(2));
     let embed = focused && app.focus == Focus::Compose && app.view == MainView::Smith;
     if embed {
-        draw_session_seat(frame, area, app, &label, &lines, true);
+        draw_session_seat(frame, area, app, &label, &lines, id, true, hits);
     } else {
-        draw_scroll_pane(frame, area, &label, &lines, app, focused);
+        draw_scroll_pane(frame, area, &label, &lines, app, id, focused);
     }
 }
 
@@ -1683,7 +1903,7 @@ fn pane_block(title: &str, focused: bool) -> Block<'static> {
         .style(pal.bg())
 }
 
-fn draw_sashes(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn draw_sashes(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, hits: &mut Hits) {
     let pal = theme::p();
     frame.render_widget(
         Paragraph::new(" ".repeat(area.width as usize)).style(pal.style(Face::TabBar)),
@@ -1707,22 +1927,20 @@ fn draw_sashes(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         } else {
             pal.tab_idle()
         };
-        frame.render_widget(
-            Paragraph::new(label).style(style),
-            ratatui::layout::Rect::new(x, y, w, 1),
-        );
+        let tab = Rect::new(x, y, w, 1);
+        frame.render_widget(Paragraph::new(label).style(style), tab);
+        hits.push(tab, HitKind::Tab(name.clone()));
         x = x.saturating_add(w).saturating_add(1);
         if x >= area.x + area.width {
             break;
         }
     }
     if x + 3 <= area.x + area.width {
-        frame.render_widget(
-            Paragraph::new(" + ").style(pal.style(Face::TabAdd)),
-            ratatui::layout::Rect::new(x, y, 3, 1),
-        );
+        let add = Rect::new(x, y, 3, 1);
+        frame.render_widget(Paragraph::new(" + ").style(pal.style(Face::TabAdd)), add);
+        hits.push(add, HitKind::TabAdd);
     }
-    draw_top_hints(frame, area, app);
+    draw_top_hints(frame, area, app, hits);
 }
 
 fn draw_scroll_pane(
@@ -1731,14 +1949,16 @@ fn draw_scroll_pane(
     title: &str,
     lines: &[Line<'static>],
     app: &App,
+    id: &str,
     focused: bool,
 ) {
     let view_h = area.height.saturating_sub(2);
     let max_scroll = lines.len().saturating_sub(view_h as usize) as u16;
-    let scroll = if app.stick_bottom {
+    let view = app.pane_view(id);
+    let scroll = if view.stick {
         max_scroll
     } else {
-        app.scroll.min(max_scroll)
+        view.scroll.min(max_scroll)
     };
     let widget = Paragraph::new(lines.to_vec())
         .block(pane_block(title, focused))
@@ -1753,7 +1973,9 @@ fn draw_session_seat(
     app: &App,
     title: &str,
     lines: &[Line<'static>],
+    id: &str,
     focused: bool,
+    hits: &mut Hits,
 ) {
     let pal = theme::p();
     let block = pane_block(title, focused);
@@ -1770,11 +1992,14 @@ fn draw_session_seat(
         .split(inner);
     let view_h = parts[0].height;
     let max_scroll = lines.len().saturating_sub(view_h as usize) as u16;
-    let scroll = if app.stick_bottom {
+    let view = app.pane_view(id);
+    let scroll = if view.stick {
         max_scroll
     } else {
-        app.scroll.min(max_scroll)
+        view.scroll.min(max_scroll)
     };
+    hits.push(parts[0], HitKind::Pane(id.to_string()));
+    hits.push(parts[1], HitKind::Compose);
     frame.render_widget(
         Paragraph::new(lines.to_vec())
             .style(pal.bg())
@@ -1842,7 +2067,7 @@ fn draw_hint_bar(frame: &mut Frame, area: ratatui::layout::Rect, pairs: Vec<(&st
     );
 }
 
-fn draw_top_hints(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+fn draw_top_hints(frame: &mut Frame, area: ratatui::layout::Rect, app: &App, hits: &mut Hits) {
     let th = theme::t();
     let (idx, n, catalog) = app
         .rail
@@ -1854,23 +2079,34 @@ fn draw_top_hints(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
                 .position(|w| w == &r.workspace)
                 .unwrap_or(0)
                 + 1;
-            (i, r.workspaces.len().max(1), r.catalog.as_str())
+            (i, r.workspaces.len().max(1), r.catalog.clone())
         })
-        .unwrap_or((1, 1, "smith"));
-    let pills = if n > 1 {
-        format!(" {idx}/{n} [<] [>] [{catalog}] ")
-    } else {
-        format!(" [<] [>] [{catalog}] ")
-    };
-    let w = pills.chars().count() as u16;
-    if w + 2 >= area.width {
+        .unwrap_or((1, 1, "smith".into()));
+    let mut pills: Vec<(String, Option<HitKind>)> = Vec::new();
+    if n > 1 {
+        pills.push((format!("{idx}/{n}"), None));
+    }
+    pills.push(("[<]".into(), Some(HitKind::SashPrev)));
+    pills.push(("[>]".into(), Some(HitKind::SashNext)));
+    pills.push((format!("[{catalog}]"), Some(HitKind::Catalog)));
+    let total: u16 = pills
+        .iter()
+        .map(|(s, _)| s.chars().count() as u16 + 1)
+        .sum::<u16>()
+        .saturating_add(1);
+    if total + 1 >= area.width {
         return;
     }
-    let x = area.x + area.width.saturating_sub(w);
-    frame.render_widget(
-        Paragraph::new(pills).style(th.style(Face::HintPill)),
-        ratatui::layout::Rect::new(x, area.y, w, 1),
-    );
+    let mut x = area.x + area.width.saturating_sub(total);
+    for (label, kind) in pills {
+        let w = label.chars().count() as u16;
+        let rect = Rect::new(x, area.y, w, 1);
+        frame.render_widget(Paragraph::new(label).style(th.style(Face::HintPill)), rect);
+        if let Some(kind) = kind {
+            hits.push(rect, kind);
+        }
+        x = x.saturating_add(w).saturating_add(1);
+    }
 }
 
 fn draw_status_line(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
@@ -1906,8 +2142,9 @@ fn draw_status_line(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     frame.render_widget(Paragraph::new(Span::styled(text, pal.dim())), area);
 }
 
-fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, hits: &mut Hits) {
     let th = theme::t();
+    hits.push(area, HitKind::Rail);
     frame.render_widget(Block::default().style(th.style(Face::Rail)), area);
     let Some(rail) = &app.rail else {
         return;
@@ -1937,6 +2174,18 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         |_| Face::RailDotSession,
         |s| s.to_string(),
     );
+    let mut space_line = 1;
+    if !rail.catalog.is_empty() {
+        hits.push(row_rect(halves[0], space_line), HitKind::Catalog);
+        space_line += 1;
+    }
+    for name in &rail.workspaces {
+        hits.push(
+            row_rect(halves[0], space_line),
+            HitKind::Workspace(name.clone()),
+        );
+        space_line += 1;
+    }
     frame.render_widget(
         Paragraph::new(spaces).style(th.style(Face::Rail)),
         halves[0],
@@ -1968,6 +2217,9 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         },
         |id| rail.member_label(id),
     );
+    for (i, id) in rail.members.iter().enumerate() {
+        hits.push(row_rect(halves[1], i + 1), HitKind::Member(id.clone()));
+    }
     match &rail.naming {
         Some(Naming::Session(buf)) => members.push(Line::from(Span::styled(
             format!(" new session: {buf}_"),
