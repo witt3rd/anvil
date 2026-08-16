@@ -4,6 +4,7 @@ mod picker;
 mod rail;
 mod term;
 
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -157,10 +158,9 @@ struct App {
     last_mount: Option<String>,
     view: MainView,
     log_events: Vec<LogEvent>,
-    peer_session: Option<String>,
-    peer_cards: Vec<Card>,
+    other_cards: HashMap<String, Vec<Card>>,
     pty_screen: Option<PtyScreen>,
-    peer_pty: Option<PtyScreen>,
+    other_ptys: HashMap<String, PtyScreen>,
     pty_cols: u16,
     pty_rows: u16,
 }
@@ -211,27 +211,35 @@ impl App {
                 .filter_map(card_from_event)
                 .collect();
         }
-        self.load_peer();
+        self.load_others();
         self.stick_bottom = true;
         self.refresh_ptys();
     }
 
-    fn load_peer(&mut self) {
-        self.peer_cards.clear();
-        self.peer_pty = None;
-        self.peer_session = self.rail.as_ref().and_then(|r| r.peer_session());
-        let Some(peer) = self.peer_session.clone() else {
-            return;
-        };
-        if self.member_is_pty(&peer) {
-            return;
-        }
+    fn other_ids(&self) -> Vec<String> {
+        self.rail
+            .as_ref()
+            .map(|r| r.other_members())
+            .unwrap_or_default()
+    }
+
+    fn load_others(&mut self) {
+        self.other_cards.clear();
+        self.other_ptys.clear();
         let Some(root) = &self.frame else {
             return;
         };
-        if let Ok(events) = root.load_events(&peer) {
-            let start = events.len().saturating_sub(200);
-            self.peer_cards = events[start..].iter().filter_map(card_from_event).collect();
+        for id in self.other_ids() {
+            if self.member_is_pty(&id) {
+                continue;
+            }
+            if let Ok(events) = root.load_events(&id) {
+                let start = events.len().saturating_sub(200);
+                self.other_cards.insert(
+                    id,
+                    events[start..].iter().filter_map(card_from_event).collect(),
+                );
+            }
         }
     }
 
@@ -257,14 +265,19 @@ impl App {
         } else {
             self.pty_screen = None;
         }
-        if let Some(peer) = self.peer_session.clone() {
-            if self.member_is_pty(&peer) {
-                match self.with_pty_client(|c| c.pty_snap(&peer)) {
-                    Ok(screen) => self.peer_pty = Some(screen),
-                    Err(err) => self.status = err,
+        let mut ptys = HashMap::new();
+        for id in self.other_ids() {
+            if !self.member_is_pty(&id) {
+                continue;
+            }
+            match self.with_pty_client(|c| c.pty_snap(&id)) {
+                Ok(screen) => {
+                    ptys.insert(id, screen);
                 }
+                Err(err) => self.status = err,
             }
         }
+        self.other_ptys = ptys;
     }
 
     fn send_pty(&mut self, data: &[u8]) {
@@ -446,7 +459,7 @@ impl App {
                     folded,
                 });
                 self.reload_log();
-                self.load_peer();
+                self.load_others();
             }
             Ev::Answer(text) => {
                 if !text.is_empty() {
@@ -589,10 +602,9 @@ pub fn run(launch: Launch) -> io::Result<()> {
         last_mount: None,
         view: MainView::Smith,
         log_events: Vec::new(),
-        peer_session: None,
-        peer_cards: Vec::new(),
+        other_cards: HashMap::new(),
         pty_screen: None,
-        peer_pty: None,
+        other_ptys: HashMap::new(),
         pty_cols: 80,
         pty_rows: 24,
     };
@@ -836,15 +848,10 @@ fn event_loop(
                 }
             }
         }
-        if app.focused_is_pty()
-            || app
-                .peer_session
-                .as_deref()
-                .is_some_and(|p| app.member_is_pty(p))
-        {
+        if app.focused_is_pty() || app.other_ids().iter().any(|id| app.member_is_pty(id)) {
             if let Ok(size) = terminal.size() {
                 let rail_w = if app.rail.is_some() { 24 } else { 0 };
-                let split = app.peer_session.is_some();
+                let split = !app.other_ids().is_empty();
                 let chrome = if app.focused_is_pty() && app.focus == Focus::Compose {
                     3
                 } else {
@@ -926,19 +933,19 @@ fn cycle_sash(app: &mut App, delta: isize) {
     }
 }
 
-fn swap_pane(app: &mut App) {
+fn swap_pane(app: &mut App, delta: isize) {
     if app.busy {
         app.status = "busy — wait to switch".into();
         return;
     }
     if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
-        match rail.focus_peer(root) {
+        match rail.cycle_member(root, delta) {
             Ok(true) => {
                 app.load_session_cards();
                 app.expose_live();
                 app.status = format!("session {}", app.session_id());
             }
-            Ok(false) => app.status = "no peer pane".into(),
+            Ok(false) => app.status = "no other member".into(),
             Err(err) => app.status = err.to_string(),
         }
     }
@@ -1015,9 +1022,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
         (KeyCode::Char(']'), KeyModifiers::ALT) => cycle_sash(app, 1),
-        (KeyCode::Char('j'), KeyModifiers::ALT) | (KeyCode::Char('k'), KeyModifiers::ALT) => {
-            swap_pane(app);
-        }
+        (KeyCode::Char('j'), KeyModifiers::ALT) => swap_pane(app, 1),
+        (KeyCode::Char('k'), KeyModifiers::ALT) => swap_pane(app, -1),
         (KeyCode::PageUp, _) => {
             app.stick_bottom = false;
             app.scroll = app.scroll.saturating_sub(10);
@@ -1127,9 +1133,8 @@ fn handle_pty_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
         (KeyCode::Char(']'), KeyModifiers::ALT) => cycle_sash(app, 1),
-        (KeyCode::Char('j'), KeyModifiers::ALT) | (KeyCode::Char('k'), KeyModifiers::ALT) => {
-            swap_pane(app);
-        }
+        (KeyCode::Char('j'), KeyModifiers::ALT) => swap_pane(app, 1),
+        (KeyCode::Char('k'), KeyModifiers::ALT) => swap_pane(app, -1),
         _ => {
             if let Some(bytes) = term::key_bytes(key) {
                 app.send_pty(&bytes);
@@ -1261,32 +1266,25 @@ fn draw(frame: &mut Frame, app: &App) {
         (MainView::Smith, Some(r)) => format!(" smith · {} ", r.member_label(&r.session)),
         (MainView::Smith, None) => " smith ".into(),
     };
-    let split = app.view == MainView::Smith && app.peer_session.is_some();
-    let focused_pty = app.view == MainView::Smith && app.focused_is_pty();
+    let stage = app
+        .rail
+        .as_ref()
+        .map(|r| r.members.clone())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| vec![app.session_id()]);
+    let split = app.view == MainView::Smith && stage.len() > 1;
     if split {
-        let halves = Layout::default()
+        let n = stage.len() as u32;
+        let constraints: Vec<Constraint> = stage.iter().map(|_| Constraint::Ratio(1, n)).collect();
+        let panes = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .constraints(constraints)
             .split(main);
-        if focused_pty {
-            term::draw(
-                frame,
-                halves[0],
-                &app.session_id(),
-                app.pty_screen.as_ref(),
-                app.focus == Focus::Compose,
-            );
-        } else {
-            draw_scroll_pane(frame, halves[0], &title, &lines, app);
+        for (i, id) in stage.iter().enumerate() {
+            let focused = id == &app.session_id();
+            draw_member_pane(frame, panes[i], app, id, focused);
         }
-        let peer = app.peer_session.as_deref().unwrap_or("peer");
-        if app.member_is_pty(peer) {
-            term::draw(frame, halves[1], peer, app.peer_pty.as_ref(), false);
-        } else {
-            let peer_lines = render_cards(&app.peer_cards);
-            draw_scroll_pane(frame, halves[1], &format!(" {peer} "), &peer_lines, app);
-        }
-    } else if focused_pty {
+    } else if app.view == MainView::Smith && app.focused_is_pty() {
         term::draw(
             frame,
             main,
@@ -1363,6 +1361,47 @@ fn draw(frame: &mut Frame, app: &App) {
         ))),
         status_area,
     );
+}
+
+fn draw_member_pane(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    id: &str,
+    focused: bool,
+) {
+    let label = app
+        .rail
+        .as_ref()
+        .map(|r| r.member_label(id))
+        .unwrap_or_else(|| id.to_string());
+    if app.member_is_pty(id) {
+        let screen = if focused {
+            app.pty_screen.as_ref()
+        } else {
+            app.other_ptys.get(id)
+        };
+        term::draw(
+            frame,
+            area,
+            &label,
+            screen,
+            focused && app.focus == Focus::Compose,
+        );
+        return;
+    }
+    let cards: &[Card] = if focused {
+        &app.cards
+    } else {
+        app.other_cards.get(id).map(Vec::as_slice).unwrap_or(&[])
+    };
+    let lines = render_cards(cards);
+    let title = if focused {
+        format!(" smith · {label} ")
+    } else {
+        format!(" {label} ")
+    };
+    draw_scroll_pane(frame, area, &title, &lines, app);
 }
 
 fn draw_sashes(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {

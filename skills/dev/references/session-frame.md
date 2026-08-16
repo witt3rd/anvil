@@ -240,8 +240,9 @@ The next ask is a projection of the event log, not a paste of cards.
 6. **Trajectory sash** — first cut. Alt+L in smith lists the event
    log (seq, visible, kind, timing). Not a zoomed timeline yet.
 7. **Layout geometry + many casings** — first cut. Sash tabs
-   (workspaces); Alt+[ ] cycle; two-member benches split; Alt+J
-   focuses the peer. Many casings already attach to one serve.
+   (workspaces); Alt+[ ] cycle; every member of the front workspace
+   stacks; Alt+J / Alt+K cycle focus. Many casings already attach
+   to one serve.
 8. **Reboot** — first cut. `anvil serve --install` writes
    `~/.config/systemd/user/anvil.service`. Cold until a casing
    warms a session. Temporary mounts do not survive.
@@ -251,7 +252,8 @@ The next ask is a projection of the event log, not a paste of cards.
     owns `$SHELL` (portable-pty + vt100). smith projects the screen.
     `anvil workspace add <ws> bash --pty`. Rail `p` names one. Keys
     go to the PTY when that pane is focused; Ctrl+Q closes the casing.
-    `anvil pty snap` / inspect `casing.main` text is the live screen.
+    `anvil pty snap` / `anvil pty write` / inspect `casing.main` text
+    is the live screen. Every workspace member stacks in the casing.
     Web / promoted mounts still later. Textbook: Zellij. Not a host.
 
 ## Open

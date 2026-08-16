@@ -181,6 +181,14 @@ enum PtyCmd {
     List,
     /// Print the live screen. Needs serve. Warms $SHELL if cold.
     Snap { name: String },
+    /// Type into the PTY. Appends Enter unless --raw. Needs serve.
+    Write {
+        name: String,
+        text: Vec<String>,
+        /// Send bytes as-is (no trailing CR).
+        #[arg(long)]
+        raw: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -802,14 +810,46 @@ fn pty_cmd(root: Option<&std::path::Path>, cmd: &PtyCmd) -> ExitCode {
             };
             match c.pty_snap(name) {
                 Ok(screen) => {
-                    for line in screen.lines {
-                        println!("{}", line.trim_end());
-                    }
+                    print_pty_screen(&screen);
                     ExitCode::SUCCESS
                 }
                 Err(err) => fail(err),
             }
         }
+        PtyCmd::Write { name, text, raw } => {
+            let mut payload = if text.is_empty() {
+                let mut buf = String::new();
+                if let Err(err) = io::stdin().read_to_string(&mut buf) {
+                    return fail(err);
+                }
+                buf
+            } else {
+                text.join(" ")
+            };
+            if !raw && !payload.ends_with('\r') && !payload.ends_with('\n') {
+                payload.push('\r');
+            }
+            let mut c = match anvil::serve::Client::connect(anvil::serve::default_sock()) {
+                Ok(c) => c,
+                Err(_) => return fail("serve is down — start smith or `anvil serve`"),
+            };
+            if let Err(err) = c.pty_write(name, &payload) {
+                return fail(err);
+            }
+            match c.pty_snap(name) {
+                Ok(screen) => {
+                    print_pty_screen(&screen);
+                    ExitCode::SUCCESS
+                }
+                Err(err) => fail(err),
+            }
+        }
+    }
+}
+
+fn print_pty_screen(screen: &anvil::serve::PtyScreen) {
+    for line in &screen.lines {
+        println!("{}", line.trim_end());
     }
 }
 

@@ -85,8 +85,10 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
   `anvil pty new bash`). Serve owns `$SHELL` (portable-pty + vt100).
   Focus the pty pane: keys go to the shell; Ctrl+C is SIGINT; Ctrl+Q
   closes the casing. `anvil pty snap bash` prints the live screen
-  (warms if cold). `anvil inspect` puts the last row on `casing.main`
-  when that member is front. Zellij/herdr/tmux are scars, not hosts.
+  (warms if cold). `anvil pty write bash echo hi` types a line + Enter.
+  `anvil inspect` puts the last rows on `casing.main` when that member
+  is front. A bench with two or more members stacks every pane.
+  Zellij/herdr/tmux are scars, not hosts.
 
 ## Providers
 
@@ -114,8 +116,9 @@ cargo build --bins
 Enter asks (model → strike). Ctrl+S raw-strikes the compose buffer as
 Python. `@` opens a fuzzy file picker (cwd, skips `.git`/`target`).
 Alt+. folds the last thinking/strike card. Wheel / PgUp / PgDn scroll.
-Tab focuses the rail. Alt+[ / Alt+] cycle workspace sashes. Alt+J
-swaps the split pane when a bench has two members. Alt+L toggles
+Tab focuses the rail. Alt+[ / Alt+] cycle workspace sashes. Alt+J /
+Alt+K cycle members when a bench has two or more (all of them stack).
+Alt+L toggles
 the trajectory sash (event log). A second `smith` is another casing
 on the same serve.
 `/mount clock` and `/unmount` (Alt+M / Alt+U;

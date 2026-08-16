@@ -208,26 +208,40 @@ impl Rail {
         Ok(switched)
     }
 
+    #[allow(dead_code)]
     pub fn peer_session(&self) -> Option<String> {
-        if self.members.len() < 2 {
-            return None;
-        }
-        self.members.iter().find(|m| *m != &self.session).cloned()
+        self.other_members().into_iter().next()
     }
 
+    pub fn other_members(&self) -> Vec<String> {
+        self.members
+            .iter()
+            .filter(|m| *m != &self.session)
+            .cloned()
+            .collect()
+    }
+
+    #[allow(dead_code)]
     pub fn focus_peer(&mut self, root: &FrameRoot) -> Result<bool, FrameError> {
-        let Some(peer) = self.peer_session() else {
-            return Ok(false);
-        };
-        if peer == self.session {
+        self.cycle_member(root, 1)
+    }
+
+    pub fn cycle_member(&mut self, root: &FrameRoot, delta: isize) -> Result<bool, FrameError> {
+        if self.members.len() < 2 {
             return Ok(false);
         }
-        self.session = peer;
-        self.idx = self
+        let i = self
             .members
             .iter()
             .position(|m| m == &self.session)
             .unwrap_or(0);
+        let n = self.members.len() as isize;
+        let next = (i as isize + delta).rem_euclid(n) as usize;
+        if self.members[next] == self.session {
+            return Ok(false);
+        }
+        self.session = self.members[next].clone();
+        self.idx = next;
         self.persist(root)?;
         Ok(true)
     }
@@ -407,6 +421,29 @@ mod tests {
         assert!(rail.focus_peer(&root).unwrap());
         assert_eq!(rail.session, "research");
         assert_eq!(rail.peer_session().as_deref(), Some("audit"));
+    }
+
+    #[test]
+    fn other_members_and_cycle_visit_every_member() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_session(&root, "audit").unwrap();
+        rail.create_pty(&root, "bash").unwrap();
+        rail.session = "default".into();
+        rail.refresh(&root).unwrap();
+        assert_eq!(
+            rail.other_members(),
+            vec!["audit".to_string(), "bash".into()]
+        );
+        assert!(rail.cycle_member(&root, 1).unwrap());
+        assert_eq!(rail.session, "audit");
+        assert!(rail.cycle_member(&root, 1).unwrap());
+        assert_eq!(rail.session, "bash");
+        assert!(rail.cycle_member(&root, 1).unwrap());
+        assert_eq!(rail.session, "default");
+        assert!(rail.cycle_member(&root, -1).unwrap());
+        assert_eq!(rail.session, "bash");
     }
 
     #[test]
