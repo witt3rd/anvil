@@ -76,6 +76,7 @@ pub(crate) struct State {
     pub(crate) slots: Mutex<HashMap<String, Arc<Mutex<Anvil>>>>,
     running: AtomicBool,
     pub(crate) sock: PathBuf,
+    last_active: Mutex<Option<String>>,
 }
 
 impl State {
@@ -93,10 +94,31 @@ impl State {
             slots: Mutex::new(HashMap::new()),
             running: AtomicBool::new(true),
             sock: opts.sock.clone(),
+            last_active: Mutex::new(None),
         })
     }
 
+    pub(crate) fn touch(&self, session: &str) {
+        if let Ok(mut g) = self.last_active.lock() {
+            *g = Some(session.to_string());
+        }
+    }
+
+    pub(crate) fn live_front(&self) -> Option<String> {
+        self.last_active
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .or_else(|| {
+                self.root
+                    .layout("default")
+                    .ok()
+                    .and_then(|l| l.front_session)
+            })
+    }
+
     fn slot(&self, session: &str) -> io::Result<Arc<Mutex<Anvil>>> {
+        self.touch(session);
         if !self.root.session_exists(session) {
             self.root
                 .create_session(session)
@@ -213,6 +235,10 @@ fn dispatch(req: &Req, state: &State, writer: &mut UnixStream) -> io::Result<()>
     match req {
         Req::Ping { id } => write_msg(writer, &Msg::Pong { id: id.clone() }),
         Req::Shutdown { .. } => Ok(()),
+        Req::Expose { id, session } => {
+            state.touch(session);
+            write_msg(writer, &Msg::Pong { id: id.clone() })
+        }
         Req::Inspect { id } => write_msg(
             writer,
             &Msg::Inspect {
@@ -612,7 +638,18 @@ mod tests {
             .expect("fox service");
         assert_eq!(fox.state, "hot");
         assert!(fox.events >= 1, "{report:?}");
-        assert!(report.slots.iter().any(|s| s.name == "session.transcript"));
+        let transcript = report
+            .slots
+            .iter()
+            .find(|s| s.name == "session.transcript")
+            .expect("transcript slot");
+        assert_eq!(transcript.occupant.as_deref(), Some("fox"));
+        let main = report
+            .slots
+            .iter()
+            .find(|s| s.name == "casing.main")
+            .expect("main slot");
+        assert_eq!(main.occupant.as_deref(), Some("fox"));
         let root = FrameRoot::open(tmp.path().join("root")).unwrap();
         let events = root.load_events("fox").unwrap();
         assert!(
@@ -621,6 +658,24 @@ mod tests {
                 .any(|e| matches!(e.body, EventBody::Strike { ok: true, .. })),
             "{events:?}"
         );
+        c.shutdown().unwrap();
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn expose_moves_slots_without_warming() {
+        let (_tmp, sock, handle) = boot();
+        let mut c = Client::connect(&sock).unwrap();
+        c.expose("research").unwrap();
+        let report = c.inspect().unwrap();
+        let transcript = report
+            .slots
+            .iter()
+            .find(|s| s.name == "session.transcript")
+            .unwrap();
+        assert_eq!(transcript.occupant.as_deref(), Some("research"));
+        let research = report.services.iter().find(|s| s.name == "research");
+        assert!(research.is_none() || research.map(|s| s.state.as_str()) == Some("cold"));
         c.shutdown().unwrap();
         let _ = handle.join();
     }

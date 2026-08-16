@@ -64,6 +64,7 @@ pub enum Card {
 enum Job {
     Ask { session: String, prompt: String },
     Strike { session: String, code: String },
+    Expose { session: String },
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +145,12 @@ struct PickerState {
 }
 
 impl App {
+    fn expose_live(&self) {
+        let _ = self.jobs.send(Job::Expose {
+            session: self.session_id(),
+        });
+    }
+
     fn session_id(&self) -> String {
         self.rail
             .as_ref()
@@ -411,6 +418,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
     };
     if app.frame.is_some() {
         app.load_session_cards();
+        app.expose_live();
         if app.cards.is_empty() {
             app.cards.push(Card::Status {
                 text: format!(
@@ -503,6 +511,11 @@ fn worker_serve(
                     }
                 }
             }
+            Job::Expose { session } => {
+                if let Err(err) = client.expose(&session) {
+                    let _ = ev.send(Ev::Failed(err.to_string()));
+                }
+            }
         }
     }
 }
@@ -545,6 +558,7 @@ fn worker_local(
                     }
                 }
             }
+            Job::Expose { .. } => {}
         }
     }
 }
@@ -709,6 +723,7 @@ fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
                     match rail.create_session(root, &name) {
                         Ok(()) => {
                             app.load_session_cards();
+                            app.expose_live();
                             app.status = format!("session {name}");
                         }
                         Err(err) => app.status = err.to_string(),
@@ -788,6 +803,7 @@ fn handle_rail_key(app: &mut App, key: KeyEvent) -> bool {
                     Ok(switched) => {
                         if switched {
                             app.load_session_cards();
+                            app.expose_live();
                             app.status = format!("session {}", app.session_id());
                         }
                     }

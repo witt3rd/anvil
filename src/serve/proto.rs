@@ -32,6 +32,11 @@ pub enum Req {
     Inspect {
         id: String,
     },
+    /// Occupy the stage with this session. Does not warm a hammer.
+    Expose {
+        id: String,
+        session: String,
+    },
 }
 
 impl Req {
@@ -42,7 +47,8 @@ impl Req {
             | Self::Reset { id, .. }
             | Self::Ask { id, .. }
             | Self::Shutdown { id }
-            | Self::Inspect { id } => id,
+            | Self::Inspect { id }
+            | Self::Expose { id, .. } => id,
         }
     }
 }

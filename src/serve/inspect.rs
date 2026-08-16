@@ -76,11 +76,7 @@ impl State {
                 state: if state == "hot" { "active" } else { "pending" }.into(),
             });
         }
-        let front = self
-            .root
-            .layout("default")
-            .ok()
-            .and_then(|l| l.front_session);
+        let front = self.live_front();
         let slots = vec![
             Slot {
                 name: SLOT_RAIL.into(),

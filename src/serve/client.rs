@@ -110,6 +110,19 @@ impl Client {
         }
     }
 
+    pub fn expose(&mut self, session: &str) -> io::Result<()> {
+        let id = self.next();
+        self.send(&Req::Expose {
+            id: id.clone(),
+            session: session.into(),
+        })?;
+        match self.recv_for(&id)? {
+            Msg::Pong { .. } => Ok(()),
+            Msg::Error { text, .. } => Err(io::Error::other(text)),
+            other => Err(io::Error::other(format!("unexpected {other:?}"))),
+        }
+    }
+
     pub fn inspect(&mut self) -> io::Result<Report> {
         let id = self.next();
         self.send(&Req::Inspect { id: id.clone() })?;
