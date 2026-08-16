@@ -231,8 +231,9 @@ The next ask is a projection of the event log, not a paste of cards.
 3. **Workspace + catalog** — done as persist + CLI + rail.
 4. **Event log** — first cut. `events.jsonl` is the source. Serve
    appends. Cards project. Legacy `transcript.jsonl` migrates.
-5. **Slots + inspect** — first cut. Named seats on the report;
-   `anvil inspect` (live if serve is up). Mount/unmount not yet.
+5. **Slots + inspect + mount** — first cut. `anvil inspect`;
+   `anvil mount clock` occupies `casing.status`; `anvil unmount dyn-1`
+   disposes to quiescence. Temporary, in memory.
 6. **Layout geometry + many casings** — splits; more than one smith.
 7. **Reboot** — systemd user unit; cold until exposed.
 8. **Remote** — SSH bridge.

@@ -136,6 +136,8 @@ struct App {
     frame: Option<FrameRoot>,
     rail: Option<Rail>,
     focus: Focus,
+    sock: Option<PathBuf>,
+    slot_status: Option<String>,
 }
 
 struct PickerState {
@@ -370,6 +372,10 @@ pub fn run(launch: Launch) -> io::Result<()> {
         .map_err(|err| io::Error::other(format!("anvil serve: {err}")))?;
         (Some(root), Some(rail), WorkerOpen::Serve { sock })
     };
+    let inspect_sock = match &opener {
+        WorkerOpen::Serve { sock } => Some(sock.clone()),
+        WorkerOpen::Raw(_) => None,
+    };
 
     let worker_provider_name = provider_name.clone();
     thread::Builder::new()
@@ -415,6 +421,8 @@ pub fn run(launch: Launch) -> io::Result<()> {
         frame,
         rail,
         focus: Focus::Compose,
+        sock: inspect_sock,
+        slot_status: None,
     };
     if app.frame.is_some() {
         app.load_session_cards();
@@ -593,6 +601,7 @@ fn event_loop(
     app: &mut App,
 ) -> io::Result<()> {
     let mut last_tick = Instant::now();
+    let mut last_inspect = Instant::now();
     loop {
         while let Ok(ev) = app.events.try_recv() {
             app.apply(ev);
@@ -600,6 +609,20 @@ fn event_loop(
         if last_tick.elapsed() >= Duration::from_millis(120) {
             app.tick = app.tick.wrapping_add(1);
             last_tick = Instant::now();
+        }
+        if last_inspect.elapsed() >= Duration::from_millis(400) {
+            last_inspect = Instant::now();
+            if let Some(sock) = &app.sock {
+                if let Ok(mut c) = Client::connect(sock) {
+                    if let Ok(report) = c.inspect() {
+                        app.slot_status = report
+                            .slots
+                            .iter()
+                            .find(|s| s.name == "casing.status")
+                            .and_then(|s| s.text.clone());
+                    }
+                }
+            }
         }
         terminal.draw(|frame| draw(frame, app))?;
 
@@ -901,8 +924,15 @@ fn draw(frame: &mut Frame, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(format!(
-            " {spin} {} · {} · {} · {} ",
-            app.status, focus, app.provider_name, app.model
+            " {spin} {} · {} · {} · {}{} ",
+            app.status,
+            focus,
+            app.provider_name,
+            app.model,
+            app.slot_status
+                .as_deref()
+                .map(|t| format!(" · {t}"))
+                .unwrap_or_default()
         ))),
         chunks[3],
     );

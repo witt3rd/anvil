@@ -15,6 +15,8 @@ pub struct Slot {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occupant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,27 +78,33 @@ impl State {
                 state: if state == "hot" { "active" } else { "pending" }.into(),
             });
         }
+        fibers.extend(self.mounts.fibers());
         let front = self.live_front();
+        let status = self.mounts.seat(SLOT_STATUS);
         let slots = vec![
             Slot {
                 name: SLOT_RAIL.into(),
                 kind: "chrome".into(),
                 occupant: None,
+                text: None,
             },
             Slot {
                 name: SLOT_MAIN.into(),
                 kind: "stage".into(),
                 occupant: front.clone(),
+                text: None,
             },
             Slot {
                 name: SLOT_STATUS.into(),
                 kind: "chrome".into(),
-                occupant: None,
+                occupant: status.as_ref().map(|s| s.occupant.clone()),
+                text: status.and_then(|s| s.text),
             },
             Slot {
                 name: SLOT_TRANSCRIPT.into(),
                 kind: "smith".into(),
                 occupant: front,
+                text: None,
             },
         ];
         Report {

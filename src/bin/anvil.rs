@@ -105,6 +105,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Mount a temporary fiber (in memory). First toy: `clock`. Needs serve.
+    Mount {
+        kind: String,
+        #[arg(long)]
+        slot: Option<String>,
+    },
+    /// Unmount a temporary fiber by id (`dyn-1`). Needs serve.
+    Unmount { id: String },
 }
 
 #[derive(Subcommand)]
@@ -155,6 +163,8 @@ fn main() -> ExitCode {
             return serve_cmd(&cli, sock.clone(), *stop, *status);
         }
         Command::Inspect { json } => return inspect_cmd(cli.root.as_deref(), *json),
+        Command::Mount { kind, slot } => return mount_cmd(kind, slot.as_deref()),
+        Command::Unmount { id } => return unmount_cmd(id),
         _ => {}
     }
 
@@ -234,7 +244,9 @@ fn main() -> ExitCode {
         | Command::Workspace { .. }
         | Command::Catalog { .. }
         | Command::Serve { .. }
-        | Command::Inspect { .. } => unreachable!("handled above"),
+        | Command::Inspect { .. }
+        | Command::Mount { .. }
+        | Command::Unmount { .. } => unreachable!("handled above"),
     }
 }
 
@@ -404,7 +416,10 @@ fn inspect_cmd(root: Option<&std::path::Path>, json: bool) -> ExitCode {
     println!("slots");
     for sl in &report.slots {
         let who = sl.occupant.as_deref().unwrap_or("-");
-        println!("  {}\t{}\t{}", sl.name, sl.kind, who);
+        match &sl.text {
+            Some(text) => println!("  {}\t{}\t{}\t{}", sl.name, sl.kind, who, text),
+            None => println!("  {}\t{}\t{}", sl.name, sl.kind, who),
+        }
     }
     if !report.workspaces.is_empty() {
         println!("workspaces\t{}", report.workspaces.join(","));
@@ -413,6 +428,34 @@ fn inspect_cmd(root: Option<&std::path::Path>, json: bool) -> ExitCode {
         println!("catalogs\t{}", report.catalogs.join(","));
     }
     ExitCode::SUCCESS
+}
+
+fn mount_cmd(kind: &str, slot: Option<&str>) -> ExitCode {
+    let mut c = match anvil::serve::Client::connect(anvil::serve::default_sock()) {
+        Ok(c) => c,
+        Err(_) => return fail("serve is down — start smith or `anvil serve`"),
+    };
+    match c.mount(kind, slot) {
+        Ok((id, seat)) => {
+            println!("{id}\t{kind}\t{seat}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(err),
+    }
+}
+
+fn unmount_cmd(id: &str) -> ExitCode {
+    let mut c = match anvil::serve::Client::connect(anvil::serve::default_sock()) {
+        Ok(c) => c,
+        Err(_) => return fail("serve is down — nothing to unmount"),
+    };
+    match c.unmount(id) {
+        Ok(()) => {
+            println!("unmounted\t{id}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(err),
+    }
 }
 
 fn cold_inspect(root: Option<&std::path::Path>) -> Result<anvil::serve::Report, String> {
@@ -449,21 +492,25 @@ fn cold_inspect(root: Option<&std::path::Path>) -> Result<anvil::serve::Report, 
                 name: "casing.rail".into(),
                 kind: "chrome".into(),
                 occupant: None,
+                text: None,
             },
             anvil::serve::Slot {
                 name: "casing.main".into(),
                 kind: "stage".into(),
                 occupant: front.clone(),
+                text: None,
             },
             anvil::serve::Slot {
                 name: "casing.status".into(),
                 kind: "chrome".into(),
                 occupant: None,
+                text: None,
             },
             anvil::serve::Slot {
                 name: "session.transcript".into(),
                 kind: "smith".into(),
                 occupant: front,
+                text: None,
             },
         ],
         workspaces: root

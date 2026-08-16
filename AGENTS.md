@@ -183,6 +183,8 @@ anvil catalog add compute-saturation fleet-os
 anvil serve --status
 anvil inspect
 anvil session log audit
+anvil mount clock
+anvil unmount dyn-1
 smith -p nim                     # casing + rail; starts serve
 smith -s audit -p nim
 ```

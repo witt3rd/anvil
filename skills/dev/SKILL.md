@@ -63,8 +63,9 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
   writes it. Cards project it. `anvil session log NAME`.
 - `anvil inspect` reports services, fibers, slots. Live if serve is
   up; otherwise cold from disk. Stage slots follow the last exposed
-  or struck session, not the saved layout front. Mount/unmount is
-  not built.
+  or struck session. `anvil mount clock` occupies `casing.status`
+  (smith shows the time). `anvil unmount dyn-1` stops the fiber.
+  Temporary. Gone when serve stops.
 - Conceptual objects: `anvil session|workspace|catalog` under
   `$ANVIL_ROOT` (default `~/.anvil`). Destroying a workspace or catalog
   does not destroy its occupants.

@@ -37,6 +37,16 @@ pub enum Req {
         id: String,
         session: String,
     },
+    Mount {
+        id: String,
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slot: Option<String>,
+    },
+    Unmount {
+        id: String,
+        mount_id: String,
+    },
 }
 
 impl Req {
@@ -48,7 +58,9 @@ impl Req {
             | Self::Ask { id, .. }
             | Self::Shutdown { id }
             | Self::Inspect { id }
-            | Self::Expose { id, .. } => id,
+            | Self::Expose { id, .. }
+            | Self::Mount { id, .. }
+            | Self::Unmount { id, .. } => id,
         }
     }
 }
@@ -98,6 +110,16 @@ pub enum Msg {
         id: String,
         report: crate::serve::Report,
     },
+    Mounted {
+        id: String,
+        mount_id: String,
+        mount_kind: String,
+        slot: String,
+    },
+    Unmounted {
+        id: String,
+        mount_id: String,
+    },
 }
 
 impl Msg {
@@ -111,7 +133,9 @@ impl Msg {
             | Self::Reply { id, .. }
             | Self::Error { id, .. }
             | Self::Bye { id }
-            | Self::Inspect { id, .. } => id,
+            | Self::Inspect { id, .. }
+            | Self::Mounted { id, .. }
+            | Self::Unmounted { id, .. } => id,
         }
     }
 }

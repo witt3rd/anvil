@@ -105,7 +105,12 @@ impl Client {
                 }
                 Msg::Answer { text, .. } => return Ok(text),
                 Msg::Error { text, .. } => return Err(io::Error::other(text)),
-                Msg::Pong { .. } | Msg::Reply { .. } | Msg::Bye { .. } | Msg::Inspect { .. } => {}
+                Msg::Pong { .. }
+                | Msg::Reply { .. }
+                | Msg::Bye { .. }
+                | Msg::Inspect { .. }
+                | Msg::Mounted { .. }
+                | Msg::Unmounted { .. } => {}
             }
         }
     }
@@ -118,6 +123,33 @@ impl Client {
         })?;
         match self.recv_for(&id)? {
             Msg::Pong { .. } => Ok(()),
+            Msg::Error { text, .. } => Err(io::Error::other(text)),
+            other => Err(io::Error::other(format!("unexpected {other:?}"))),
+        }
+    }
+
+    pub fn mount(&mut self, kind: &str, slot: Option<&str>) -> io::Result<(String, String)> {
+        let id = self.next();
+        self.send(&Req::Mount {
+            id: id.clone(),
+            kind: kind.into(),
+            slot: slot.map(str::to_string),
+        })?;
+        match self.recv_for(&id)? {
+            Msg::Mounted { mount_id, slot, .. } => Ok((mount_id, slot)),
+            Msg::Error { text, .. } => Err(io::Error::other(text)),
+            other => Err(io::Error::other(format!("unexpected {other:?}"))),
+        }
+    }
+
+    pub fn unmount(&mut self, mount_id: &str) -> io::Result<()> {
+        let id = self.next();
+        self.send(&Req::Unmount {
+            id: id.clone(),
+            mount_id: mount_id.into(),
+        })?;
+        match self.recv_for(&id)? {
+            Msg::Unmounted { .. } => Ok(()),
             Msg::Error { text, .. } => Err(io::Error::other(text)),
             other => Err(io::Error::other(format!("unexpected {other:?}"))),
         }

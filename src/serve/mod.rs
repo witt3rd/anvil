@@ -2,6 +2,7 @@
 
 mod client;
 mod inspect;
+mod mount;
 mod proto;
 
 pub use client::Client;
@@ -77,6 +78,7 @@ pub(crate) struct State {
     running: AtomicBool,
     pub(crate) sock: PathBuf,
     last_active: Mutex<Option<String>>,
+    pub(crate) mounts: Arc<mount::Mounts>,
 }
 
 impl State {
@@ -95,6 +97,7 @@ impl State {
             running: AtomicBool::new(true),
             sock: opts.sock.clone(),
             last_active: Mutex::new(None),
+            mounts: Arc::new(mount::Mounts::default()),
         })
     }
 
@@ -239,6 +242,45 @@ fn dispatch(req: &Req, state: &State, writer: &mut UnixStream) -> io::Result<()>
             state.touch(session);
             write_msg(writer, &Msg::Pong { id: id.clone() })
         }
+        Req::Mount { id, kind, slot } => {
+            let slot = slot
+                .clone()
+                .unwrap_or_else(|| inspect::SLOT_STATUS.to_string());
+            match state.mounts.mount(kind, &slot) {
+                Ok(mount_id) => write_msg(
+                    writer,
+                    &Msg::Mounted {
+                        id: id.clone(),
+                        mount_id,
+                        mount_kind: kind.clone(),
+                        slot,
+                    },
+                ),
+                Err(text) => write_msg(
+                    writer,
+                    &Msg::Error {
+                        id: id.clone(),
+                        text,
+                    },
+                ),
+            }
+        }
+        Req::Unmount { id, mount_id } => match state.mounts.unmount(mount_id) {
+            Ok(_) => write_msg(
+                writer,
+                &Msg::Unmounted {
+                    id: id.clone(),
+                    mount_id: mount_id.clone(),
+                },
+            ),
+            Err(text) => write_msg(
+                writer,
+                &Msg::Error {
+                    id: id.clone(),
+                    text,
+                },
+            ),
+        },
         Req::Inspect { id } => write_msg(
             writer,
             &Msg::Inspect {
@@ -676,6 +718,36 @@ mod tests {
         assert_eq!(transcript.occupant.as_deref(), Some("research"));
         let research = report.services.iter().find(|s| s.name == "research");
         assert!(research.is_none() || research.map(|s| s.state.as_str()) == Some("cold"));
+        c.shutdown().unwrap();
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn mount_clock_occupies_status_and_unmount_clears_it() {
+        let (_tmp, sock, handle) = boot();
+        let mut c = Client::connect(&sock).unwrap();
+        let (id, slot) = c.mount("clock", None).unwrap();
+        assert_eq!(slot, "casing.status");
+        assert_eq!(id, "dyn-1");
+        let report = c.inspect().unwrap();
+        let status = report
+            .slots
+            .iter()
+            .find(|s| s.name == "casing.status")
+            .unwrap();
+        assert_eq!(status.occupant.as_deref(), Some("dyn-1"));
+        assert!(status.text.as_ref().is_some_and(|t| t.contains(':')));
+        assert!(report.fibers.iter().any(|f| f.name == "mount/dyn-1"));
+        c.unmount(&id).unwrap();
+        let report = c.inspect().unwrap();
+        let status = report
+            .slots
+            .iter()
+            .find(|s| s.name == "casing.status")
+            .unwrap();
+        assert!(status.occupant.is_none());
+        assert!(status.text.is_none());
+        assert!(!report.fibers.iter().any(|f| f.name == "mount/dyn-1"));
         c.shutdown().unwrap();
         let _ = handle.join();
     }
