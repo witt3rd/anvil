@@ -1,6 +1,6 @@
 ---
 name: session-frame
-description: Conceptual vs UX taxonomy for anvil (session/member/workspace/catalog; pane/sash/window/layout/casing).
+description: Conceptual vs UX taxonomy; services vs fibers; event log; slots.
 ---
 
 # Session frame
@@ -46,9 +46,10 @@ Viewing a session is reading what the anvil already has. Acting is a
 one queue. No compose lock. Which workspace or catalog includes the
 session does not change that.
 
-**hot / cold** is process state on a member (hammer alive vs disk
-only), not a UX word. The serve owns the processes. Reboot starts
-cold.
+**hot / cold** is adapter-fiber state on a member (hammer alive vs
+disk only), not a UX word. The serve owns the processes. Reboot
+starts cold. A member may also be **failed** (adapter died and has
+not yet been hung again).
 
 There is no **jig**. Catalog is which workspaces. Layout (UI) is how
 a catalog is arranged.
@@ -126,6 +127,49 @@ ux:            pane             sash         layout    casing
 A sash that is a **list** (the rail) browses catalogs and workspaces.
 That is chrome of the layout, not a member.
 
+## Direction (services, fibers, log, slots)
+
+Scar: Cordis (spatiotemporal composability) and DeepSeek Harness
+(inspect / mount / unmount; trajectory). Not a host. We keep our
+words. We take the invariants.
+
+**Spatial / temporal, across our two vocabularies.** A **member** is
+a *service* (provided, persists). A **pane** (and the adapter that
+warms a hammer) is a *fiber* (injects the service; dispose reverts
+its effects). Workspace and catalog are loader groups, not owners.
+Serve is the root context.
+
+**The bruise stays in smith.** Demand paging moves in band: feel it
+in the seat, ask *smith* to mount a fiber, promote it if it earns
+its keep. Do not walk to another agent to edit Rust for a clock.
+
+Three verbs, later:
+
+| Verb | What it does |
+|---|---|
+| **inspect** | Live fibers, services, slots. Catalog ∩ running store. |
+| **mount** | Evaluate a temporary member/plugin. In memory. Same trust as a strike. |
+| **unmount** | Dispose to quiescence. Every listener, timer, pane, hammer effect gone. |
+
+Temporary mounts do not survive restart. Keeping one means writing a
+real member. No silent promote.
+
+**Slots** are named seats on the casing a live fiber can occupy (a
+rail chip, a sash, a status, a clock pane). Without slots there is
+nowhere to hang what smith writes. Without total unmount, a mount
+leaks.
+
+**The event log is the product.** One append-only stream per member
+(and serve lifecycle). Cards, the next ask, a trajectory sash, and
+telemetry are *projections*. **Model-visible means logged** — if the
+model saw it, the log can reconstruct it. Do not dump the transcript
+into the next ask; derive. Timing (strike wall, TTFT, queue wait,
+respawn) is data on that stream. Zoom/diagnose is a workspace member
+that injects the same session, not a debug flag.
+
+Self-mod without a log is a trick you cannot debug. A log without
+slots is a file you `less`.
+
 Mutations stay on the side they belong to:
 
 - **Workspace mutates** (add the bash, drop the research session):
@@ -151,7 +195,7 @@ Mutations stay on the side they belong to:
 Conceptual (serve, survive no casing):
 
 ```
-~/.anvil/sessions/<id>/      session member (meta, namespace.pkl, transcript)
+~/.anvil/sessions/<id>/      session member (meta, namespace.pkl, event log)
 ~/.anvil/workspaces/<name>   members
 ~/.anvil/catalogs/<name>     which workspaces
 ```
@@ -167,7 +211,7 @@ the catalog.
 
 On boot, serve loads members (cold), workspaces, catalogs, layouts.
 Nothing hot until a casing exposes a session that needs a hammer.
-Do not dump the transcript into the next ask.
+The next ask is a projection of the event log, not a paste of cards.
 
 ## Attach / remote
 
@@ -185,11 +229,14 @@ Do not dump the transcript into the next ask.
 2. **Serve** — done. Unix socket; smith attaches; hammers outlive the
    casing. No systemd unit yet (reboot is later).
 3. **Workspace + catalog** — done as persist + CLI + rail.
-4. **Layout + many casings** — first cut: layout stores front
-   catalog/workspace/session. One casing. No split geometry yet.
-5. **Reboot** — systemd user unit; cold until exposed.
-6. **Remote** — SSH bridge.
-7. **Mixed members** — bash / web as workspace members. Textbook: Zellij.
+4. **Event log** — replace card-transcript as source of truth.
+   Model-visible means logged. Cards and ask project the log.
+5. **Slots + inspect** — named seats on the casing; live report of
+   fibers/services/slots. Then mount/unmount can land.
+6. **Layout geometry + many casings** — splits; more than one smith.
+7. **Reboot** — systemd user unit; cold until exposed.
+8. **Remote** — SSH bridge.
+9. **Mixed members** — bash / web, and promoted mounts. Textbook: Zellij.
 
 ## Open
 

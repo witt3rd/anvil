@@ -89,22 +89,22 @@ dependency, no.
 ```
 
 **Now:** named sessions / workspaces / catalogs on disk. `anvil serve`
-owns hammers on a unix socket; smith attaches (starts serve if needed).
-Close the casing, work stays. Rail switches sessions. `ask` = complete
-→ extract Python → strike.
+owns hammers on a unix socket; smith attaches. Close the casing, work
+stays. Direction (not built): event log as source of truth; slots so
+smith can mount fibers in band; inspect / mount / unmount. Scar:
+Cordis + DeepSeek Harness. Not a host.
 
 **When use bruises us, in this order** (session frame first — that is
 the current bruise; in-process tiles wait):
 
-1. **Named sessions on disk** — persist store + transcript per
-   session. `skills/dev/references/session-frame.md`.
+1. **Named sessions on disk** — persist store + log per session.
+   `skills/dev/references/session-frame.md`.
 2. **`anvil serve` + smith attach** — daemon owns hammers; smith
    detaches; work continues.
-3. **Workspace + catalog + layout + casing** — benches and intents
-   (conceptual); layouts and casings (UI). Inputs are just
-   requests on the session.
-4. **Reboot, then SSH** — as in that design.
-5. In-process **tiles** (smith | pty) as workspace members — later.
+3. **Event log + slots + inspect** — model-visible means logged;
+   named seats; then mount/unmount can land.
+4. **Layout geometry, reboot, SSH** — as in that design.
+5. **Mixed members** (smith | pty | a promoted mount) — later.
    Textbook: Zellij.
 
 **Neighbors (stay neighbors):**
@@ -116,6 +116,7 @@ the current bruise; in-process tiles wait):
 | jcode | Anti-exemplar for providers (keep: named profiles, `grok login`). |
 | Prime | Keep: generic `!` → shell. Drop: IPython kernel, bare-word env lookup. |
 | Omarchy | DHH's daily Linux. Precedent for omakase: one chef, one machine, no committee desktop. |
+| cordis / DSH (`~/src/ext/cordis`, `~/src/ext/deepseek-harness`) | Scar: member = service, pane/adapter = fiber; inspect/mount/total unmount; model-visible ⟺ logged. Never `exec` or depend. |
 
 Subagents are more smiths, each with their own anvil and hammer. No
 special protocol beyond “another process.”
@@ -140,6 +141,8 @@ special protocol beyond “another process.”
 | **casing** | UI, live. What `smith` launches. Destroys its windows. Many casings can load one layout. |
 | **ask** | Model writes Python; extract; strike; print stdout. Not `complete`. |
 | **complete** | Raw HTTP chat. Will waffle. Smoke only. |
+| **slot** | Named seat on the casing a live fiber can occupy. Not yet built. |
+| **log** | Append-only events for one member. Cards and ask project it. Not yet the source of truth. |
 | **tile** | A pane we own: smith or pty. Not yet built. |
 
 ## Layout
