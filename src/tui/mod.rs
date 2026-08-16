@@ -65,6 +65,8 @@ enum Job {
     Ask { session: String, prompt: String },
     Strike { session: String, code: String },
     Expose { session: String },
+    Mount { kind: String, slot: Option<String> },
+    Unmount { id: Option<String> },
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +82,13 @@ enum Ev {
     },
     Answer(String),
     Failed(String),
+    Mounted {
+        id: String,
+        slot: String,
+    },
+    Unmounted {
+        id: String,
+    },
 }
 
 struct ChanSink {
@@ -138,6 +147,7 @@ struct App {
     focus: Focus,
     sock: Option<PathBuf>,
     slot_status: Option<String>,
+    last_mount: Option<String>,
 }
 
 struct PickerState {
@@ -188,6 +198,13 @@ impl App {
         if text.is_empty() || self.busy {
             return;
         }
+        if let Some(slash) = parse_slash(&text) {
+            self.input.clear();
+            self.cursor = 0;
+            self.picker = None;
+            self.dispatch_slash(slash);
+            return;
+        }
         self.input.clear();
         self.cursor = 0;
         self.picker = None;
@@ -199,6 +216,39 @@ impl App {
             session: self.session_id(),
             prompt: text,
         });
+    }
+
+    fn dispatch_slash(&mut self, slash: Slash) {
+        match slash {
+            Slash::Mount { kind, slot } => self.mount(&kind, slot.as_deref()),
+            Slash::Unmount { id } => self.unmount(id.as_deref()),
+        }
+    }
+
+    fn mount(&mut self, kind: &str, slot: Option<&str>) {
+        if self.sock.is_none() {
+            self.push_card(Card::Status {
+                text: "mount needs serve (no --store)".into(),
+            });
+            return;
+        }
+        self.status = format!("mount {kind}");
+        let _ = self.jobs.send(Job::Mount {
+            kind: kind.into(),
+            slot: slot.map(str::to_string),
+        });
+    }
+
+    fn unmount(&mut self, id: Option<&str>) {
+        if self.sock.is_none() {
+            self.push_card(Card::Status {
+                text: "unmount needs serve".into(),
+            });
+            return;
+        }
+        let id = id.map(str::to_string).or_else(|| self.last_mount.clone());
+        self.status = "unmount".into();
+        let _ = self.jobs.send(Job::Unmount { id });
     }
 
     fn submit_strike(&mut self) {
@@ -316,6 +366,23 @@ impl App {
                 self.busy = false;
                 self.status = "error".into();
             }
+            Ev::Mounted { id, slot } => {
+                self.last_mount = Some(id.clone());
+                self.status = format!("mounted {id}");
+                self.push_card(Card::Status {
+                    text: format!("mounted {id} on {slot}"),
+                });
+            }
+            Ev::Unmounted { id } => {
+                if self.last_mount.as_deref() == Some(id.as_str()) {
+                    self.last_mount = None;
+                }
+                self.slot_status = None;
+                self.status = format!("unmounted {id}");
+                self.push_card(Card::Status {
+                    text: format!("unmounted {id}"),
+                });
+            }
         }
     }
 
@@ -401,7 +468,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
     let mut app = App {
         cards: vec![Card::Status {
             text: format!(
-                "smith · {session_label} · {provider_name} · {model} · {} · Tab rail  n session  @ file  Enter ask  Ctrl+S strike  Ctrl+C close casing",
+                "smith · {session_label} · {provider_name} · {model} · {} · Tab rail  /mount clock  /unmount  Alt+M/U  Ctrl+S strike  Ctrl+C close",
                 cfg_path.display()
             ),
         }],
@@ -423,6 +490,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
         focus: Focus::Compose,
         sock: inspect_sock,
         slot_status: None,
+        last_mount: None,
     };
     if app.frame.is_some() {
         app.load_session_cards();
@@ -524,6 +592,43 @@ fn worker_serve(
                     let _ = ev.send(Ev::Failed(err.to_string()));
                 }
             }
+            Job::Mount { kind, slot } => match client.mount(&kind, slot.as_deref()) {
+                Ok((id, seat)) => {
+                    let _ = ev.send(Ev::Mounted { id, slot: seat });
+                }
+                Err(err) => {
+                    let _ = ev.send(Ev::Failed(err.to_string()));
+                }
+            },
+            Job::Unmount { id } => {
+                let id = match id {
+                    Some(id) => id,
+                    None => match client.inspect() {
+                        Ok(report) => report
+                            .slots
+                            .iter()
+                            .find(|s| s.name == "casing.status")
+                            .and_then(|s| s.occupant.clone())
+                            .unwrap_or_default(),
+                        Err(err) => {
+                            let _ = ev.send(Ev::Failed(err.to_string()));
+                            continue;
+                        }
+                    },
+                };
+                if id.is_empty() {
+                    let _ = ev.send(Ev::Failed("nothing mounted on casing.status".into()));
+                    continue;
+                }
+                match client.unmount(&id) {
+                    Ok(()) => {
+                        let _ = ev.send(Ev::Unmounted { id });
+                    }
+                    Err(err) => {
+                        let _ = ev.send(Ev::Failed(err.to_string()));
+                    }
+                }
+            }
         }
     }
 }
@@ -567,6 +672,9 @@ fn worker_local(
                 }
             }
             Job::Expose { .. } => {}
+            Job::Mount { .. } | Job::Unmount { .. } => {
+                let _ = ev.send(Ev::Failed("mount needs serve (no --store)".into()));
+            }
         }
     }
 }
@@ -701,6 +809,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.insert('\n');
         }
         (KeyCode::Char('.'), KeyModifiers::ALT) => app.toggle_last_fold(),
+        (KeyCode::Char('m'), KeyModifiers::ALT) => app.mount("clock", None),
+        (KeyCode::Char('u'), KeyModifiers::ALT) => app.unmount(None),
         (KeyCode::PageUp, _) => {
             app.stick_bottom = false;
             app.scroll = app.scroll.saturating_sub(10);
@@ -816,6 +926,8 @@ fn handle_rail_key(app: &mut App, key: KeyEvent) -> bool {
                 rail.naming = Some(Naming::Session(String::new()));
             }
         }
+        (KeyCode::Char('m'), KeyModifiers::NONE) => app.mount("clock", None),
+        (KeyCode::Char('u'), KeyModifiers::NONE) => app.unmount(None),
         (KeyCode::Enter, _) => {
             if app.busy {
                 app.status = "busy — wait to switch".into();
@@ -1176,5 +1288,73 @@ pub fn default_launch() -> Launch {
         provider: None,
         model: None,
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    }
+}
+
+enum Slash {
+    Mount { kind: String, slot: Option<String> },
+    Unmount { id: Option<String> },
+}
+
+fn parse_slash(text: &str) -> Option<Slash> {
+    let text = text.trim();
+    if !text.starts_with('/') {
+        return None;
+    }
+    let mut parts = text[1..].split_whitespace();
+    match parts.next()? {
+        "mount" => Some(Slash::Mount {
+            kind: parts.next().unwrap_or("clock").to_string(),
+            slot: parts.next().map(str::to_string),
+        }),
+        "unmount" => Some(Slash::Unmount {
+            id: parts.next().map(str::to_string),
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod slash_tests {
+    use super::*;
+
+    #[test]
+    fn mount_defaults_to_clock() {
+        match parse_slash("/mount").unwrap() {
+            Slash::Mount { kind, slot } => {
+                assert_eq!(kind, "clock");
+                assert!(slot.is_none());
+            }
+            _ => panic!("expected mount"),
+        }
+    }
+
+    #[test]
+    fn mount_takes_kind_and_slot() {
+        match parse_slash("/mount clock casing.status").unwrap() {
+            Slash::Mount { kind, slot } => {
+                assert_eq!(kind, "clock");
+                assert_eq!(slot.as_deref(), Some("casing.status"));
+            }
+            _ => panic!("expected mount"),
+        }
+    }
+
+    #[test]
+    fn unmount_optional_id() {
+        match parse_slash("/unmount").unwrap() {
+            Slash::Unmount { id } => assert!(id.is_none()),
+            _ => panic!("expected unmount"),
+        }
+        match parse_slash("/unmount dyn-1").unwrap() {
+            Slash::Unmount { id } => assert_eq!(id.as_deref(), Some("dyn-1")),
+            _ => panic!("expected unmount"),
+        }
+    }
+
+    #[test]
+    fn other_slashes_fall_through() {
+        assert!(parse_slash("/help").is_none());
+        assert!(parse_slash("mount clock").is_none());
     }
 }

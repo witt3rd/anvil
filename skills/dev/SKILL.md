@@ -100,7 +100,9 @@ cargo build --bins
 Enter asks (model → strike). Ctrl+S raw-strikes the compose buffer as
 Python. `@` opens a fuzzy file picker (cwd, skips `.git`/`target`).
 Alt+. folds the last thinking/strike card. Wheel / PgUp / PgDn scroll.
-Tab focuses the rail. Ctrl+C closes the casing; serve keeps the hammers.
+Tab focuses the rail. `/mount clock` and `/unmount` (Alt+M / Alt+U;
+rail `m`/`u`) mount a temporary clock on `casing.status`. Ctrl+C
+closes the casing; serve keeps the hammers.
 The ask worker talks to serve so the spinner keeps moving.
 
 ## Ask
