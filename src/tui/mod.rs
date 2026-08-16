@@ -11,6 +11,12 @@ use std::time::{Duration, Instant};
 
 use rail::{Focus, Naming, Rail, RailKind};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainView {
+    Smith,
+    Trajectory,
+}
+
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseEventKind,
@@ -148,6 +154,8 @@ struct App {
     sock: Option<PathBuf>,
     slot_status: Option<String>,
     last_mount: Option<String>,
+    view: MainView,
+    log_events: Vec<LogEvent>,
 }
 
 struct PickerState {
@@ -177,20 +185,23 @@ impl App {
 
     fn load_session_cards(&mut self) {
         self.cards.clear();
+        self.reload_log();
+        let start = self.log_events.len().saturating_sub(200);
+        self.cards = self.log_events[start..]
+            .iter()
+            .filter_map(card_from_event)
+            .collect();
+        self.stick_bottom = true;
+    }
+
+    fn reload_log(&mut self) {
+        self.log_events.clear();
         let Some(root) = &self.frame else {
             return;
         };
-        let id = self.session_id();
-        match root.load_events(&id) {
-            Ok(events) => {
-                let start = events.len().saturating_sub(200);
-                self.cards = events[start..].iter().filter_map(card_from_event).collect();
-            }
-            Err(err) => self.cards.push(Card::Status {
-                text: format!("log: {err}"),
-            }),
+        if let Ok(events) = root.load_events(&self.session_id()) {
+            self.log_events = events;
         }
-        self.stick_bottom = true;
     }
 
     fn submit_ask(&mut self) {
@@ -352,6 +363,7 @@ impl App {
                     ok,
                     folded,
                 });
+                self.reload_log();
             }
             Ev::Answer(text) => {
                 if !text.is_empty() {
@@ -360,6 +372,7 @@ impl App {
                 self.busy = false;
                 self.status = "idle".into();
                 self.stick_bottom = true;
+                self.reload_log();
             }
             Ev::Failed(text) => {
                 self.push_card(Card::Status { text });
@@ -468,7 +481,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
     let mut app = App {
         cards: vec![Card::Status {
             text: format!(
-                "smith · {session_label} · {provider_name} · {model} · {} · Tab rail  /mount clock  /unmount  Alt+M/U  Ctrl+S strike  Ctrl+C close",
+                "smith · {session_label} · {provider_name} · {model} · {} · Tab rail  Alt+L log  /mount clock  Alt+M/U  Ctrl+S strike  Ctrl+C close",
                 cfg_path.display()
             ),
         }],
@@ -491,6 +504,8 @@ pub fn run(launch: Launch) -> io::Result<()> {
         sock: inspect_sock,
         slot_status: None,
         last_mount: None,
+        view: MainView::Smith,
+        log_events: Vec::new(),
     };
     if app.frame.is_some() {
         app.load_session_cards();
@@ -811,6 +826,16 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Char('.'), KeyModifiers::ALT) => app.toggle_last_fold(),
         (KeyCode::Char('m'), KeyModifiers::ALT) => app.mount("clock", None),
         (KeyCode::Char('u'), KeyModifiers::ALT) => app.unmount(None),
+        (KeyCode::Char('l'), KeyModifiers::ALT) => {
+            app.view = match app.view {
+                MainView::Smith => MainView::Trajectory,
+                MainView::Trajectory => MainView::Smith,
+            };
+            if app.view == MainView::Trajectory {
+                app.reload_log();
+                app.stick_bottom = true;
+            }
+        }
         (KeyCode::PageUp, _) => {
             app.stick_bottom = false;
             app.scroll = app.scroll.saturating_sub(10);
@@ -978,7 +1003,10 @@ fn draw(frame: &mut Frame, app: &App) {
         ])
         .split(body);
 
-    let lines = render_cards(&app.cards);
+    let lines = match app.view {
+        MainView::Smith => render_cards(&app.cards),
+        MainView::Trajectory => render_trajectory(&app.log_events),
+    };
     let view_h = chunks[0].height.saturating_sub(2);
     let max_scroll = lines.len().saturating_sub(view_h as usize) as u16;
     let scroll = if app.stick_bottom {
@@ -986,9 +1014,11 @@ fn draw(frame: &mut Frame, app: &App) {
     } else {
         app.scroll.min(max_scroll)
     };
-    let title = match &app.rail {
-        Some(r) => format!(" smith · {} ", r.session),
-        None => " smith ".into(),
+    let title = match (app.view, &app.rail) {
+        (MainView::Trajectory, Some(r)) => format!(" trajectory · {} · Alt+L ", r.session),
+        (MainView::Trajectory, None) => " trajectory · Alt+L ".into(),
+        (MainView::Smith, Some(r)) => format!(" smith · {} ", r.session),
+        (MainView::Smith, None) => " smith ".into(),
     };
     let transcript = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(title))
@@ -1038,7 +1068,11 @@ fn draw(frame: &mut Frame, app: &App) {
         Paragraph::new(Line::from(format!(
             " {spin} {} · {} · {} · {}{} ",
             app.status,
-            focus,
+            if app.view == MainView::Trajectory {
+                "log"
+            } else {
+                focus
+            },
             app.provider_name,
             app.model,
             app.slot_status
@@ -1175,6 +1209,55 @@ fn cursor_in(input: &str, cursor: usize) -> (u16, u16) {
     let y = before.matches('\n').count() as u16;
     let x = before.rsplit('\n').next().unwrap_or(before).chars().count() as u16;
     (x, y)
+}
+
+fn render_trajectory(events: &[LogEvent]) -> Vec<Line<'static>> {
+    if events.is_empty() {
+        return vec![Line::from(Span::styled(
+            " (empty log) ",
+            Style::default().fg(Color::DarkGray),
+        ))];
+    }
+    events.iter().map(trajectory_line).collect()
+}
+
+fn trajectory_line(event: &LogEvent) -> Line<'static> {
+    let vis = if event.body.model_visible() { "v" } else { " " };
+    let (kind, detail) = match &event.body {
+        EventBody::User { text } => ("user", clip(text, 60)),
+        EventBody::Ask { prompt, .. } => ("ask", clip(prompt, 60)),
+        EventBody::Thinking { text } => ("think", clip(text, 60)),
+        EventBody::Strike { code, ok, ms, .. } => {
+            let mark = if *ok { "ok" } else { "fail" };
+            let time = ms.map(|n| format!(" {n}ms")).unwrap_or_default();
+            ("strike", format!("{mark}{time} {}", clip(code, 40)))
+        }
+        EventBody::Answer { text } => ("answer", clip(text, 60)),
+        EventBody::Status { text } => ("status", clip(text, 60)),
+        EventBody::Fiber { state } => ("fiber", state.clone()),
+    };
+    let color = match &event.body {
+        EventBody::Strike { ok: false, .. } => Color::Red,
+        EventBody::Strike { .. } => Color::Green,
+        EventBody::Ask { .. } | EventBody::User { .. } => Color::Cyan,
+        EventBody::Answer { .. } => Color::White,
+        EventBody::Thinking { .. } => Color::Yellow,
+        EventBody::Fiber { .. } | EventBody::Status { .. } => Color::DarkGray,
+    };
+    Line::from(Span::styled(
+        format!("{:>4} {vis} {kind:<6} {detail}", event.seq),
+        Style::default().fg(color),
+    ))
+}
+
+fn clip(text: &str, max: usize) -> String {
+    let one = text.lines().next().unwrap_or("").trim();
+    let chars: Vec<char> = one.chars().collect();
+    if chars.len() <= max {
+        one.to_string()
+    } else {
+        format!("{}…", chars[..max].iter().collect::<String>())
+    }
 }
 
 fn render_cards(cards: &[Card]) -> Vec<Line<'static>> {
@@ -1356,5 +1439,30 @@ mod slash_tests {
     fn other_slashes_fall_through() {
         assert!(parse_slash("/help").is_none());
         assert!(parse_slash("mount clock").is_none());
+    }
+
+    #[test]
+    fn trajectory_line_marks_visible_strike() {
+        let ev = LogEvent {
+            seq: 1,
+            ts: 0,
+            body: EventBody::Strike {
+                code: "2+2".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                error: None,
+                ok: true,
+                ms: Some(22),
+            },
+        };
+        let s: String = trajectory_line(&ev)
+            .spans
+            .iter()
+            .map(|sp| sp.content.as_ref())
+            .collect();
+        assert!(s.contains('v'), "{s}");
+        assert!(s.contains("strike"), "{s}");
+        assert!(s.contains("22ms"), "{s}");
+        assert!(s.contains("2+2"), "{s}");
     }
 }

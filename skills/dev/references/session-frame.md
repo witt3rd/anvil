@@ -235,10 +235,12 @@ The next ask is a projection of the event log, not a paste of cards.
 5. **Slots + inspect + mount** — first cut. `anvil inspect`;
    `anvil mount clock` occupies `casing.status`; `anvil unmount dyn-1`
    disposes to quiescence. Temporary, in memory.
-6. **Layout geometry + many casings** — splits; more than one smith.
-7. **Reboot** — systemd user unit; cold until exposed.
-8. **Remote** — SSH bridge.
-9. **Mixed members** — bash / web, and promoted mounts. Textbook: Zellij.
+6. **Trajectory sash** — first cut. Alt+L in smith lists the event
+   log (seq, visible, kind, timing). Not a zoomed timeline yet.
+7. **Layout geometry + many casings** — splits; more than one smith.
+8. **Reboot** — systemd user unit; cold until exposed.
+9. **Remote** — SSH bridge.
+10. **Mixed members** — bash / web, and promoted mounts. Textbook: Zellij.
 
 ## Open
 
