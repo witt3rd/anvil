@@ -125,6 +125,12 @@ pub enum Msg {
         session: String,
         text: String,
     },
+    Delta {
+        id: String,
+        session: String,
+        delta_kind: String,
+        text: String,
+    },
     Strike {
         id: String,
         session: String,
@@ -199,7 +205,8 @@ impl Msg {
             | Self::Mounted { id, .. }
             | Self::Unmounted { id, .. }
             | Self::PtyScreen { id, .. }
-            | Self::EditBuf { id, .. } => id,
+            | Self::EditBuf { id, .. }
+            | Self::Delta { id, .. } => id,
         }
     }
 }

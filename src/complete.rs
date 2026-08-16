@@ -111,6 +111,15 @@ pub fn complete_messages_timed(
     model: &str,
     messages: &[(&str, &str)],
 ) -> Result<CompleteStats, CompleteError> {
+    complete_messages_timed_with(provider, model, messages, |_, _| {})
+}
+
+pub fn complete_messages_timed_with(
+    provider: &Provider,
+    model: &str,
+    messages: &[(&str, &str)],
+    on_delta: impl FnMut(&str, &str),
+) -> Result<CompleteStats, CompleteError> {
     let model = model.trim();
     if model.is_empty() {
         return Err(CompleteError::NoModel);
@@ -145,7 +154,7 @@ pub fn complete_messages_timed(
             detail: err.to_string(),
         })?;
     let reader = BufReader::new(resp.into_reader());
-    let stats = read_completion(&url, reader, t0)?;
+    let stats = read_completion(&url, reader, t0, on_delta)?;
     prof::counter(
         "model.tokens_out",
         stats.timing.tokens_out.unwrap_or(0) as u64,
@@ -188,36 +197,47 @@ fn read_completion(
     url: &str,
     reader: impl BufRead,
     t0: Instant,
+    mut on_delta: impl FnMut(&str, &str),
 ) -> Result<CompleteStats, CompleteError> {
-    let mut first_line: Option<String> = None;
-    let mut rest = String::new();
-    for line in reader.lines() {
+    let mut lines = reader.lines();
+    let first = loop {
+        match lines.next() {
+            None => {
+                return Err(CompleteError::Http {
+                    url: url.into(),
+                    detail: "empty completion".into(),
+                })
+            }
+            Some(Err(err)) => {
+                return Err(CompleteError::Http {
+                    url: url.into(),
+                    detail: err.to_string(),
+                })
+            }
+            Some(Ok(line)) if line.trim().is_empty() => continue,
+            Some(Ok(line)) => break line,
+        }
+    };
+    if first.trim_start().starts_with('{') {
+        let mut rest = first;
+        rest.push('\n');
+        for line in lines {
+            rest.push_str(&line.map_err(|err| CompleteError::Http {
+                url: url.into(),
+                detail: err.to_string(),
+            })?);
+            rest.push('\n');
+        }
+        return from_json(url, &rest, t0);
+    }
+    let mut acc = StreamAcc::new(t0);
+    acc.ingest_line(&first, &mut on_delta);
+    for line in lines {
         let line = line.map_err(|err| CompleteError::Http {
             url: url.into(),
             detail: err.to_string(),
         })?;
-        if first_line.is_none() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            first_line = Some(line);
-        } else {
-            rest.push_str(&line);
-            rest.push('\n');
-        }
-    }
-    let first = first_line.ok_or_else(|| CompleteError::Http {
-        url: url.into(),
-        detail: "empty completion".into(),
-    })?;
-    if first.trim_start().starts_with('{') {
-        rest.insert_str(0, &format!("{first}\n"));
-        return from_json(url, &rest, t0);
-    }
-    let mut acc = StreamAcc::new(t0);
-    acc.ingest_line(&first);
-    for line in rest.lines() {
-        acc.ingest_line(line);
+        acc.ingest_line(&line, &mut on_delta);
     }
     acc.finish(url)
 }
@@ -262,7 +282,7 @@ impl StreamAcc {
         }
     }
 
-    fn ingest_line(&mut self, line: &str) {
+    fn ingest_line(&mut self, line: &str, on_delta: &mut impl FnMut(&str, &str)) {
         if let Some(delta) = parse_sse_line(line) {
             if let Some(err) = delta.error {
                 self.error = Some(err);
@@ -281,17 +301,18 @@ impl StreamAcc {
                     }
                     self.last_reason = Some(now);
                     self.reasoning.push_str(&r);
+                    on_delta("reason", &r);
                 }
             }
             if let Some(c) = delta.content {
                 if !c.is_empty() {
-                    self.push_content(&c);
+                    self.push_content(&c, on_delta);
                 }
             }
         }
     }
 
-    fn push_content(&mut self, chunk: &str) {
+    fn push_content(&mut self, chunk: &str, on_delta: &mut impl FnMut(&str, &str)) {
         self.mark_any();
         let now = Instant::now();
         if chunk.contains("<think>") {
@@ -303,6 +324,7 @@ impl StreamAcc {
         if self.in_think {
             self.last_reason = Some(now);
             self.reasoning.push_str(chunk);
+            on_delta("reason", chunk);
             if chunk.contains("</think>") {
                 self.in_think = false;
             }
@@ -313,6 +335,7 @@ impl StreamAcc {
         }
         self.last_token = Some(now);
         self.text.push_str(chunk);
+        on_delta("content", chunk);
     }
 
     fn finish(self, url: &str) -> Result<CompleteStats, CompleteError> {
@@ -488,9 +511,21 @@ mod tests {
     fn stream_acc_folds_ttft_and_tok_s() {
         let t0 = Instant::now();
         let mut acc = StreamAcc::new(t0);
-        acc.ingest_line(r#"data: {"choices":[{"delta":{"reasoning_content":"plan"}}]}"#);
-        acc.ingest_line(r#"data: {"choices":[{"delta":{"content":"print(1)"}}]}"#);
-        acc.ingest_line(r#"data: {"usage":{"prompt_tokens":8,"completion_tokens":2}}"#);
+        let mut saw = Vec::new();
+        acc.ingest_line(
+            r#"data: {"choices":[{"delta":{"reasoning_content":"plan"}}]}"#,
+            &mut |k, t| saw.push((k.to_string(), t.to_string())),
+        );
+        acc.ingest_line(
+            r#"data: {"choices":[{"delta":{"content":"print(1)"}}]}"#,
+            &mut |k, t| saw.push((k.to_string(), t.to_string())),
+        );
+        acc.ingest_line(
+            r#"data: {"usage":{"prompt_tokens":8,"completion_tokens":2}}"#,
+            &mut |_, _| {},
+        );
+        assert_eq!(saw[0], ("reason".into(), "plan".into()));
+        assert_eq!(saw[1], ("content".into(), "print(1)".into()));
         let stats = acc.finish("http://x").unwrap();
         assert_eq!(stats.text, "print(1)");
         assert!(stats.reasoning.contains("plan"));

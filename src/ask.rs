@@ -55,7 +55,11 @@ pub struct AskResult {
 
 pub trait Completer {
     fn complete(&mut self, messages: &[Message]) -> Result<String, AskError>;
-    fn complete_timed(&mut self, messages: &[Message]) -> Result<CompleteStats, AskError> {
+    fn complete_timed(
+        &mut self,
+        messages: &[Message],
+        _sink: &mut dyn AskSink,
+    ) -> Result<CompleteStats, AskError> {
         let t0 = std::time::Instant::now();
         let text = self.complete(messages)?;
         Ok(CompleteStats {
@@ -68,6 +72,7 @@ pub trait Completer {
 
 pub trait AskSink {
     fn on_status(&mut self, _status: &str) {}
+    fn on_delta(&mut self, _kind: &str, _text: &str) {}
     fn on_draft(&mut self, _text: &str) {}
     fn on_strike(&mut self, _code: &str, _reply: &StrikeReply) {}
     fn on_strike_timed(&mut self, code: &str, reply: &StrikeReply, _timing: &Timing) {
@@ -109,8 +114,8 @@ pub fn ask_with_log(
     let _ask = prof::span("model.ask", "model");
 
     for turn in 1..=MAX_TURNS {
-        sink.on_status("thinking");
-        let stats = completer.complete_timed(&messages)?;
+        sink.on_status("waiting");
+        let stats = completer.complete_timed(&messages, sink)?;
         timing.merge_model(&stats.timing);
         sink.on_draft(&stats.text);
         messages.push(Message {
@@ -345,18 +350,23 @@ pub struct HttpCompleter {
 
 impl Completer for HttpCompleter {
     fn complete(&mut self, messages: &[Message]) -> Result<String, AskError> {
-        Ok(self.complete_timed(messages)?.text)
+        Ok(self.complete_timed(messages, &mut ())?.text)
     }
 
-    fn complete_timed(&mut self, messages: &[Message]) -> Result<CompleteStats, AskError> {
+    fn complete_timed(
+        &mut self,
+        messages: &[Message],
+        sink: &mut dyn AskSink,
+    ) -> Result<CompleteStats, AskError> {
         let pairs: Vec<(&str, &str)> = messages
             .iter()
             .map(|m| (m.role.as_str(), m.content.as_str()))
             .collect();
-        Ok(complete::complete_messages_timed(
+        Ok(complete::complete_messages_timed_with(
             &self.provider,
             &self.model,
             &pairs,
+            |kind, text| sink.on_delta(kind, text),
         )?)
     }
 }

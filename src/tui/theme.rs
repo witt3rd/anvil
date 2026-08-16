@@ -76,6 +76,11 @@ pub enum Face {
     EditEmpty,
     EditCursor,
     Trajectory,
+    StepThink,
+    StepRun,
+    StepWait,
+    StepFail,
+    StepMute,
 }
 
 impl Face {
@@ -125,6 +130,11 @@ impl Face {
         Face::EditEmpty,
         Face::EditCursor,
         Face::Trajectory,
+        Face::StepThink,
+        Face::StepRun,
+        Face::StepWait,
+        Face::StepFail,
+        Face::StepMute,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -174,6 +184,11 @@ impl Face {
             Face::EditEmpty => "edit.empty",
             Face::EditCursor => "edit.cursor",
             Face::Trajectory => "trajectory",
+            Face::StepThink => "step.think",
+            Face::StepRun => "step.run",
+            Face::StepWait => "step.wait",
+            Face::StepFail => "step.fail",
+            Face::StepMute => "step.mute",
         }
     }
 
@@ -423,6 +438,11 @@ fn default_faces() -> BTreeMap<Face, FaceSpec> {
         (EditEmpty, f(Ink::Faint, Ink::Canvas)),
         (EditCursor, f(Ink::Ink, Ink::Raised)),
         (Trajectory, f(Ink::Mute, Ink::Canvas)),
+        (StepThink, f(Ink::Mute, Ink::Canvas)),
+        (StepRun, f(Ink::Good, Ink::Canvas)),
+        (StepWait, f(Ink::Faint, Ink::Canvas)),
+        (StepFail, f(Ink::Bad, Ink::Canvas)),
+        (StepMute, f(Ink::Faint, Ink::Canvas)),
     ]
     .into_iter()
     .collect()

@@ -566,6 +566,17 @@ impl AskSink for WireSink<'_> {
             },
         );
     }
+    fn on_delta(&mut self, kind: &str, text: &str) {
+        let _ = write_msg(
+            self.writer,
+            &Msg::Delta {
+                id: self.id.clone(),
+                session: self.session.clone(),
+                delta_kind: kind.into(),
+                text: text.into(),
+            },
+        );
+    }
     fn on_draft(&mut self, text: &str) {
         if ask::extract_python(text).is_none() {
             let _ = self

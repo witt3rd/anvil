@@ -120,7 +120,10 @@ cargo build --bins
 
 Enter asks (model → strike). Ctrl+S raw-strikes the compose buffer as
 Python. `@` opens a fuzzy file picker (cwd, skips `.git`/`target`).
-Alt+. folds the last thinking/strike card. Wheel / PgUp / PgDn scroll.
+Alt+. folds the last thinking/strike card. Alt+V cycles ask verbosity
+(quiet / steps / full): a live chip (`⋮ Waiting · 12s · ↑ 1.2k tok`)
+and diamond steps (`◆ Thought for 7.5s`, `◆ python · print… · 7ms`).
+Wheel / PgUp / PgDn scroll.
 Tab focuses the rail. Click a tab, rail row, or pane to focus it.
 Wheel scrolls the pane under the cursor (a focused PTY gets up/down;
 wheel on the rail moves the cursor; wheel on the sash cycles

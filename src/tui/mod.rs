@@ -1,5 +1,6 @@
 //! smith TUI: transcript blocks, ask worker, `@` file picker, casing rail.
 
+mod activity;
 mod hits;
 mod picker;
 mod rail;
@@ -56,6 +57,7 @@ pub enum Card {
     Thinking {
         text: String,
         folded: bool,
+        label: Option<String>,
     },
     Strike {
         code: String,
@@ -85,6 +87,10 @@ enum Job {
 #[derive(Debug, Clone)]
 enum Ev {
     Status(String),
+    Delta {
+        kind: String,
+        text: String,
+    },
     Draft(String),
     Strike {
         code: String,
@@ -111,6 +117,12 @@ struct ChanSink {
 impl AskSink for ChanSink {
     fn on_status(&mut self, status: &str) {
         let _ = self.tx.send(Ev::Status(status.into()));
+    }
+    fn on_delta(&mut self, kind: &str, text: &str) {
+        let _ = self.tx.send(Ev::Delta {
+            kind: kind.into(),
+            text: text.into(),
+        });
     }
     fn on_draft(&mut self, text: &str) {
         let _ = self.tx.send(Ev::Draft(text.into()));
@@ -146,6 +158,8 @@ struct App {
     cursor: usize,
     status: String,
     busy: bool,
+    activity: Option<activity::Activity>,
+    verbosity: activity::Verbosity,
     views: HashMap<String, PaneView>,
     hits: Hits,
     tick: u8,
@@ -517,7 +531,8 @@ impl App {
         self.picker = None;
         self.push_card(Card::User { text: text.clone() });
         self.busy = true;
-        self.status = "thinking".into();
+        self.status = "waiting".into();
+        self.activity = Some(activity::Activity::start());
         self.stick_focused();
         let _ = self.jobs.send(Job::Ask {
             session: self.session_id(),
@@ -637,10 +652,36 @@ impl App {
 
     fn apply(&mut self, ev: Ev) {
         match ev {
-            Ev::Status(s) => self.status = s,
+            Ev::Status(s) => {
+                if let Some(act) = &mut self.activity {
+                    act.on_status(&s);
+                }
+                self.status = s;
+            }
+            Ev::Delta { kind, text } => {
+                if let Some(act) = &mut self.activity {
+                    act.on_delta(&kind, &text);
+                }
+                self.status = match kind.as_str() {
+                    "reason" => "thinking".into(),
+                    _ => "decode".into(),
+                };
+            }
             Ev::Draft(text) => {
+                let label = self.activity.as_mut().map(|act| {
+                    act.close_think();
+                    act.steps
+                        .iter()
+                        .rev()
+                        .find(|s| s.kind == activity::StepKind::Think)
+                        .map(|s| s.title.clone())
+                });
                 if ask::extract_python(&text).is_none() {
-                    self.push_card(Card::Thinking { text, folded: true });
+                    self.push_card(Card::Thinking {
+                        text,
+                        folded: true,
+                        label: label.flatten(),
+                    });
                 }
             }
             Ev::Strike {
@@ -650,6 +691,11 @@ impl App {
                 error,
                 ok,
             } => {
+                if let Some(act) = &mut self.activity {
+                    let first = code.lines().next().unwrap_or("");
+                    act.on_strike(&code, &stdout, ok, None);
+                    let _ = first;
+                }
                 let folded = code.lines().count() > 8;
                 self.push_card(Card::Strike {
                     code,
@@ -668,6 +714,9 @@ impl App {
                 }
                 self.busy = false;
                 self.status = "idle".into();
+                if let Some(act) = &mut self.activity {
+                    act.finish();
+                }
                 self.stick_focused();
                 self.reload_log();
             }
@@ -675,6 +724,9 @@ impl App {
                 self.push_card(Card::Status { text });
                 self.busy = false;
                 self.status = "error".into();
+                if let Some(act) = &mut self.activity {
+                    act.finish();
+                }
             }
             Ev::Mounted { id, slot } => {
                 self.last_mount = Some(id.clone());
@@ -790,6 +842,8 @@ pub fn run(launch: Launch) -> io::Result<()> {
         cursor: 0,
         status: "idle".into(),
         busy: false,
+        activity: None,
+        verbosity: activity::Verbosity::Steps,
         views: HashMap::new(),
         hits: Hits::default(),
         tick: 0,
@@ -1383,6 +1437,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.insert('\n');
         }
         (KeyCode::Char('.'), KeyModifiers::ALT) => app.toggle_last_fold(),
+        (KeyCode::Char('v'), KeyModifiers::ALT) => {
+            app.verbosity = app.verbosity.next();
+            app.status = format!("verbose {}", app.verbosity.label());
+        }
         (KeyCode::Char('m'), KeyModifiers::ALT) => app.mount("clock", None),
         (KeyCode::Char('u'), KeyModifiers::ALT) => app.unmount(None),
         (KeyCode::Char('l'), KeyModifiers::ALT) => {
@@ -1736,7 +1794,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
     let main = chunks[1];
     let inner_w = main.width.saturating_sub(2);
     let lines = match app.view {
-        MainView::Smith => render_cards(&app.cards, inner_w),
+        MainView::Smith => render_cards(&app.cards, inner_w, app.verbosity, app.activity.as_ref()),
         MainView::Trajectory => render_trajectory(&app.log_events, inner_w),
     };
     let title = match (app.view, &app.rail) {
@@ -1978,7 +2036,12 @@ fn draw_member_pane(
     } else {
         app.other_cards.get(id).map(Vec::as_slice).unwrap_or(&[])
     };
-    let lines = render_cards(cards, area.width.saturating_sub(2));
+    let lines = render_cards(
+        cards,
+        area.width.saturating_sub(2),
+        app.verbosity,
+        if focused { app.activity.as_ref() } else { None },
+    );
     let embed = focused && app.focus == Focus::Compose && app.view == MainView::Smith;
     if embed {
         draw_session_seat(frame, area, app, &label, &lines, id, true, hits);
@@ -2077,10 +2140,12 @@ fn draw_session_seat(
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let input_h = (app.input.matches('\n').count() as u16 + 1).clamp(1, 6);
+    let chip_h = if app.busy { 1 } else { 0 };
     let parts = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(2),
+            Constraint::Length(chip_h),
             Constraint::Length(input_h),
             Constraint::Length(1),
         ])
@@ -2094,7 +2159,9 @@ fn draw_session_seat(
         view.scroll.min(max_scroll)
     };
     hits.push(parts[0], HitKind::Pane(id.to_string()));
-    hits.push(parts[1], HitKind::Compose);
+    let compose_i = 2;
+    let status_i = 3;
+    hits.push(parts[compose_i], HitKind::Compose);
     frame.render_widget(
         Paragraph::new(lines.to_vec())
             .style(pal.bg())
@@ -2102,8 +2169,16 @@ fn draw_session_seat(
             .scroll((scroll, 0)),
         parts[0],
     );
-    draw_compose(frame, parts[1], app);
-    draw_status_line(frame, parts[2], app);
+    if chip_h == 1 {
+        let chip = app
+            .activity
+            .as_ref()
+            .map(|a| a.chip())
+            .unwrap_or_else(|| "⋮ Waiting".into());
+        frame.render_widget(Paragraph::new(activity::chip_line(&chip)), parts[1]);
+    }
+    draw_compose(frame, parts[compose_i], app);
+    draw_status_line(frame, parts[status_i], app);
 }
 
 fn draw_compose(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
@@ -2139,6 +2214,7 @@ fn bottom_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Tab", "rail"),
             ("Enter", "ask"),
             ("Ctrl+S", "strike"),
+            ("Alt+V", "verbose"),
             ("Alt+[/]", "sash"),
             ("Alt+J/K", "pane"),
             ("Ctrl+C", "close"),
@@ -2394,6 +2470,7 @@ fn card_from_event(event: &LogEvent) -> Option<Card> {
         EventBody::Thinking { text } => Some(Card::Thinking {
             text: text.clone(),
             folded: true,
+            label: None,
         }),
         EventBody::Strike {
             code,
@@ -2507,8 +2584,15 @@ fn clip(text: &str, max: usize) -> String {
     }
 }
 
-fn render_cards(cards: &[Card], width: u16) -> Vec<Line<'static>> {
+fn render_cards(
+    cards: &[Card],
+    width: u16,
+    verbosity: activity::Verbosity,
+    live: Option<&activity::Activity>,
+) -> Vec<Line<'static>> {
     let th = theme::t();
+    let quiet = verbosity == activity::Verbosity::Quiet;
+    let full = verbosity == activity::Verbosity::Full;
     let mut lines = Vec::new();
     for card in cards {
         match card {
@@ -2522,32 +2606,36 @@ fn render_cards(cards: &[Card], width: u16) -> Vec<Line<'static>> {
                 );
                 lines.push(Line::from(""));
             }
-            Card::Thinking { text, folded } => {
-                let n = text.lines().count();
-                let title = if *folded {
-                    format!(" thinking · {n} lines · Alt+. ")
-                } else {
-                    " thinking ".into()
+            Card::Thinking {
+                text,
+                folded,
+                label,
+            } => {
+                if quiet {
+                    continue;
+                }
+                let title = label.clone().unwrap_or_else(|| "Thought".into());
+                let step = activity::Step {
+                    kind: activity::StepKind::Think,
+                    title,
+                    body: text.clone(),
+                    t0: std::time::Instant::now(),
+                    dur: None,
+                    ok: None,
+                    tokens: 0,
+                    out_lines: 0,
                 };
-                push_field(
-                    &mut lines,
-                    &title,
-                    th.style(Face::MessageThinkInk),
-                    width,
-                    "",
-                );
-                if *folded {
+                lines.extend(activity::step_line(&step, full && !*folded));
+                if full && *folded {
                     if let Some(first) = text.lines().find(|l| !l.trim().is_empty()) {
                         push_field(
                             &mut lines,
                             &format!("{first}…"),
-                            th.style(Face::MessageMute),
+                            th.style(Face::StepMute),
                             width,
-                            "  ",
+                            "    ",
                         );
                     }
-                } else {
-                    push_field(&mut lines, text, th.style(Face::MessageThinkInk), width, "");
                 }
                 lines.push(Line::from(""));
             }
@@ -2559,25 +2647,24 @@ fn render_cards(cards: &[Card], width: u16) -> Vec<Line<'static>> {
                 ok,
                 folded,
             } => {
-                let strike = if *ok {
-                    Face::MessageStrikeOk
-                } else {
-                    Face::MessageStrikeFail
+                if quiet {
+                    continue;
+                }
+                let first = code.lines().next().unwrap_or("").trim().to_string();
+                let step = activity::Step {
+                    kind: activity::StepKind::Strike,
+                    title: first,
+                    body: code.clone(),
+                    t0: std::time::Instant::now(),
+                    dur: None,
+                    ok: Some(*ok),
+                    tokens: 0,
+                    out_lines: stdout.lines().count() as u32,
                 };
-                let tag = if *ok { "strike" } else { "strike failed" };
-                push_field(&mut lines, tag, th.style(strike), width, "");
-                if *folded {
-                    let first = code.lines().next().unwrap_or("");
-                    let extra = code.lines().count().saturating_sub(1);
-                    push_field(
-                        &mut lines,
-                        &format!("{first}  +{extra}"),
-                        th.style(Face::MessageMute),
-                        width,
-                        "  ",
-                    );
-                } else {
-                    push_field(&mut lines, code, th.style(strike), width, "");
+                lines.extend(activity::step_line(&step, full && !*folded));
+                if !full {
+                    lines.push(Line::from(""));
+                    continue;
                 }
                 if !stdout.is_empty() {
                     push_field(
@@ -2609,6 +2696,15 @@ fn render_cards(cards: &[Card], width: u16) -> Vec<Line<'static>> {
             Card::Status { text } => {
                 push_field(&mut lines, text, th.style(Face::MessageMute), width, "");
                 lines.push(Line::from(""));
+            }
+        }
+    }
+    if !quiet {
+        if let Some(act) = live {
+            if let Some(s) = act.steps.last() {
+                if s.dur.is_none() {
+                    lines.extend(activity::step_line(s, full));
+                }
             }
         }
     }
