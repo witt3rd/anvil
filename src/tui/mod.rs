@@ -5,6 +5,8 @@ mod rail;
 mod term;
 mod theme;
 
+use theme::Face;
+
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
@@ -30,7 +32,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
@@ -582,6 +584,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
         None => Config::load(),
     }
     .map_err(|err| io::Error::other(err.to_string()))?;
+    theme::install(theme::Theme::from_config(&cfg.theme));
     let (provider_name, provider) = cfg
         .provider(launch.provider.as_deref())
         .map_err(|err| io::Error::other(err.to_string()))?;
@@ -1397,17 +1400,23 @@ fn handle_rail_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn draw(frame: &mut Frame, app: &App) {
-    let pal = theme::p();
-    frame.render_widget(Block::default().style(pal.bg()), frame.area());
+    let th = theme::t();
+    frame.render_widget(Block::default().style(th.style(Face::Canvas)), frame.area());
+    let shell = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(6), Constraint::Length(1)])
+        .split(frame.area());
+    let work = shell[0];
+    draw_hint_bar(frame, shell[1], bottom_hints(app));
     let body = if app.rail.is_some() {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(22), Constraint::Min(20)])
-            .split(frame.area());
+            .split(work);
         draw_rail(frame, app, cols[0]);
         cols[1]
     } else {
-        frame.area()
+        work
     };
     let picker_h = app
         .picker
@@ -1441,9 +1450,10 @@ fn draw(frame: &mut Frame, app: &App) {
         draw_sashes(frame, app, chunks[0]);
     }
     let main = chunks[1];
+    let inner_w = main.width.saturating_sub(2);
     let lines = match app.view {
-        MainView::Smith => render_cards(&app.cards),
-        MainView::Trajectory => render_trajectory(&app.log_events),
+        MainView::Smith => render_cards(&app.cards, inner_w),
+        MainView::Trajectory => render_trajectory(&app.log_events, inner_w),
     };
     let title = match (app.view, &app.rail) {
         (MainView::Trajectory, Some(r)) => format!("trajectory · {}", r.session),
@@ -1509,29 +1519,29 @@ fn draw(frame: &mut Frame, app: &App) {
     let status_area = chunks[4];
 
     if let Some(picker) = &app.picker {
+        let th = theme::t();
         let items: Vec<ListItem> = picker
             .hits
             .iter()
             .enumerate()
             .map(|(i, hit)| {
                 let style = if i == picker.selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
+                    th.style(Face::PickerHitActive)
                 } else {
-                    Style::default()
+                    th.style(Face::PickerHit)
                 };
                 ListItem::new(hit.path.clone()).style(style)
             })
             .collect();
-        let pal = theme::p();
         let list = List::new(items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(pal.pane_border(true))
+                .border_style(th.pane_border(true))
                 .title(Span::styled(
                     format!(" @{} ", picker.query),
-                    pal.pane_title(true),
+                    th.pane_title(true),
                 ))
-                .style(pal.bg()),
+                .style(th.style(Face::PickerField)),
         );
         frame.render_widget(Clear, picker_area);
         frame.render_widget(list, picker_area);
@@ -1539,7 +1549,10 @@ fn draw(frame: &mut Frame, app: &App) {
 
     if !embed {
         if pty_compose {
-            frame.render_widget(Paragraph::new(term::hint()).style(pal.dim()), compose_area);
+            frame.render_widget(
+                Paragraph::new(term::hint()).style(theme::t().style(Face::StatusInk)),
+                compose_area,
+            );
         } else {
             draw_compose(frame, compose_area, app);
         }
@@ -1554,16 +1567,17 @@ fn draw_edit_pane(
     buf: Option<&EditBuf>,
     focused: bool,
 ) {
+    let th = theme::t();
     let text = buf.map(|b| b.text.as_str()).unwrap_or("");
     let (row, col) = buf.map(|b| b.cursor_row_col()).unwrap_or((0, 0));
     let mut lines: Vec<Line> = if text.is_empty() {
         vec![Line::from(Span::styled(
             " (empty) ",
-            Style::default().fg(Color::DarkGray),
+            th.style(Face::EditEmpty),
         ))]
     } else {
         text.split('\n')
-            .map(|line| Line::from(Span::raw(line.to_string())))
+            .map(|line| Line::from(Span::styled(line.to_string(), th.style(Face::PaneField))))
             .collect()
     };
     if let Some(line) = lines.get_mut(row as usize) {
@@ -1573,7 +1587,7 @@ fn draw_edit_pane(
                     .iter()
                     .map(|s| s.content.as_ref())
                     .collect::<String>(),
-                Style::default().bg(Color::DarkGray),
+                th.style(Face::EditCursor),
             ));
         }
     }
@@ -1610,7 +1624,7 @@ fn draw_member_pane(
         } else {
             app.other_logs.get(id).map(Vec::as_slice).unwrap_or(&[])
         };
-        let lines = render_trajectory(events);
+        let lines = render_trajectory(events, area.width.saturating_sub(2));
         draw_scroll_pane(frame, area, &label, &lines, app, focused);
         return;
     }
@@ -1649,7 +1663,7 @@ fn draw_member_pane(
     } else {
         app.other_cards.get(id).map(Vec::as_slice).unwrap_or(&[])
     };
-    let lines = render_cards(cards);
+    let lines = render_cards(cards, area.width.saturating_sub(2));
     let embed = focused && app.focus == Focus::Compose && app.view == MainView::Smith;
     if embed {
         draw_session_seat(frame, area, app, &label, &lines, true);
@@ -1672,7 +1686,7 @@ fn pane_block(title: &str, focused: bool) -> Block<'static> {
 fn draw_sashes(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let pal = theme::p();
     frame.render_widget(
-        Paragraph::new(" ".repeat(area.width as usize)).style(Style::default().bg(pal.panel_bg)),
+        Paragraph::new(" ".repeat(area.width as usize)).style(pal.style(Face::TabBar)),
         area,
     );
     let Some(rail) = &app.rail else {
@@ -1704,10 +1718,11 @@ fn draw_sashes(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
     if x + 3 <= area.x + area.width {
         frame.render_widget(
-            Paragraph::new(" + ").style(Style::default().fg(pal.overlay1).bg(pal.panel_bg)),
+            Paragraph::new(" + ").style(pal.style(Face::TabAdd)),
             ratatui::layout::Rect::new(x, y, 3, 1),
         );
     }
+    draw_top_hints(frame, area, app);
 }
 
 fn draw_scroll_pane(
@@ -1785,6 +1800,79 @@ fn draw_compose(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     }
 }
 
+fn hint_pair<'a>(key: &'a str, label: &'a str) -> Vec<Span<'a>> {
+    let th = theme::t();
+    vec![
+        Span::styled(key, th.style(Face::HintKey)),
+        Span::styled(":", th.style(Face::HintSep)),
+        Span::styled(label, th.style(Face::HintLabel)),
+    ]
+}
+
+fn bottom_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    if app.focused_is_pty() {
+        vec![("Tab", "rail"), ("keys", "shell"), ("Ctrl+Q", "close")]
+    } else if app.focused_is_edit() {
+        vec![("Tab", "rail"), ("type", "edit"), ("Ctrl+Q", "close")]
+    } else {
+        vec![
+            ("Tab", "rail"),
+            ("Enter", "ask"),
+            ("Ctrl+S", "strike"),
+            ("Alt+[/]", "sash"),
+            ("Alt+J/K", "pane"),
+            ("Ctrl+C", "close"),
+        ]
+    }
+}
+
+fn draw_hint_bar(frame: &mut Frame, area: ratatui::layout::Rect, pairs: Vec<(&str, &str)>) {
+    let th = theme::t();
+    frame.render_widget(Block::default().style(th.style(Face::HintBar)), area);
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, (key, label)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  │  ", th.style(Face::HintSep)));
+        }
+        spans.extend(hint_pair(key, label));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(th.style(Face::HintBar)),
+        area,
+    );
+}
+
+fn draw_top_hints(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
+    let th = theme::t();
+    let (idx, n, catalog) = app
+        .rail
+        .as_ref()
+        .map(|r| {
+            let i = r
+                .workspaces
+                .iter()
+                .position(|w| w == &r.workspace)
+                .unwrap_or(0)
+                + 1;
+            (i, r.workspaces.len().max(1), r.catalog.as_str())
+        })
+        .unwrap_or((1, 1, "smith"));
+    let pills = if n > 1 {
+        format!(" {idx}/{n} [<] [>] [{catalog}] ")
+    } else {
+        format!(" [<] [>] [{catalog}] ")
+    };
+    let w = pills.chars().count() as u16;
+    if w + 2 >= area.width {
+        return;
+    }
+    let x = area.x + area.width.saturating_sub(w);
+    frame.render_widget(
+        Paragraph::new(pills).style(th.style(Face::HintPill)),
+        ratatui::layout::Rect::new(x, area.y, w, 1),
+    );
+}
+
 fn draw_status_line(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let pal = theme::p();
     let spin = if app.busy {
@@ -1819,8 +1907,8 @@ fn draw_status_line(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 }
 
 fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let pal = theme::p();
-    frame.render_widget(Block::default().style(pal.bg()), area);
+    let th = theme::t();
+    frame.render_widget(Block::default().style(th.style(Face::Rail)), area);
     let Some(rail) = &app.rail else {
         return;
     };
@@ -1829,11 +1917,14 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
-    let mut spaces: Vec<Line> = vec![Line::from(Span::styled(" spaces", pal.header()))];
+    let mut spaces: Vec<Line> = vec![Line::from(Span::styled(
+        " spaces",
+        th.style(Face::RailHeader),
+    ))];
     if !rail.catalog.is_empty() {
         spaces.push(Line::from(Span::styled(
             format!(" {}", rail.catalog),
-            pal.dim(),
+            th.style(Face::StatusInk),
         )));
     }
     push_dot_rows(
@@ -1843,12 +1934,18 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         rail.kind == RailKind::Workspace,
         rail.idx,
         focused,
-        |_| pal.teal,
+        |_| Face::RailDotSession,
         |s| s.to_string(),
     );
-    frame.render_widget(Paragraph::new(spaces).style(pal.bg()), halves[0]);
+    frame.render_widget(
+        Paragraph::new(spaces).style(th.style(Face::Rail)),
+        halves[0],
+    );
 
-    let mut members: Vec<Line> = vec![Line::from(Span::styled(" members", pal.header()))];
+    let mut members: Vec<Line> = vec![Line::from(Span::styled(
+        " members",
+        th.style(Face::RailHeader),
+    ))];
     push_dot_rows(
         &mut members,
         &rail.members,
@@ -1858,15 +1955,15 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         focused,
         |id| {
             if rail.ptys.iter().any(|p| p == id) {
-                pal.green
+                Face::RailDotPty
             } else if rail.edits.iter().any(|e| e == id) {
-                pal.peach
+                Face::RailDotEdit
             } else if rail.member_is_log(id) {
-                pal.blue
+                Face::RailDotLog
             } else if rail.member_is_clock(id) {
-                pal.mauve
+                Face::RailDotClock
             } else {
-                pal.teal
+                Face::RailDotSession
             }
         },
         |id| rail.member_label(id),
@@ -1874,19 +1971,22 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     match &rail.naming {
         Some(Naming::Session(buf)) => members.push(Line::from(Span::styled(
             format!(" new session: {buf}_"),
-            pal.accent_text(),
+            th.style(Face::ComposePrompt),
         ))),
         Some(Naming::Pty(buf)) => members.push(Line::from(Span::styled(
             format!(" new pty: {buf}_"),
-            pal.accent_text(),
+            th.style(Face::ComposePrompt),
         ))),
         Some(Naming::Edit(buf)) => members.push(Line::from(Span::styled(
             format!(" new edit: {buf}_"),
-            pal.accent_text(),
+            th.style(Face::ComposePrompt),
         ))),
         None => {}
     }
-    frame.render_widget(Paragraph::new(members).style(pal.bg()), halves[1]);
+    frame.render_widget(
+        Paragraph::new(members).style(th.style(Face::Rail)),
+        halves[1],
+    );
 }
 
 fn push_dot_rows(
@@ -1896,33 +1996,32 @@ fn push_dot_rows(
     active: bool,
     idx: usize,
     focused: bool,
-    current_dot: impl Fn(&str) -> Color,
+    current_dot: impl Fn(&str) -> Face,
     display: impl Fn(&str) -> String,
 ) {
-    let pal = theme::p();
+    let th = theme::t();
     if items.is_empty() {
-        lines.push(Line::from(Span::styled("  —", pal.dim())));
+        lines.push(Line::from(Span::styled("  —", th.style(Face::StatusInk))));
         return;
     }
     for (i, name) in items.iter().enumerate() {
         let on = name == current;
         let cursor = active && focused && i == idx;
         let dot = if on { "●" } else { "○" };
-        let dot_style = if on {
-            Style::default().fg(current_dot(name)).bg(if cursor {
-                pal.active_row_bg
-            } else {
-                pal.surface_dim
-            })
+        let mut dot_style = if on {
+            th.style(current_dot(name))
         } else {
-            pal.dim()
+            th.style(Face::RailDotIdle)
         };
+        if cursor {
+            dot_style = dot_style.bg(th.bg_of(Face::RailRowActive));
+        }
         let label_style = if cursor {
-            pal.active_row()
+            th.style(Face::RailRowActive)
         } else if on {
-            pal.body()
+            th.style(Face::PaneField)
         } else {
-            pal.label()
+            th.style(Face::RailRow)
         };
         lines.push(Line::from(vec![
             Span::styled(format!(" {dot} "), dot_style),
@@ -1973,17 +2072,18 @@ fn cursor_in(input: &str, cursor: usize) -> (u16, u16) {
     (x, y)
 }
 
-fn render_trajectory(events: &[LogEvent]) -> Vec<Line<'static>> {
+fn render_trajectory(events: &[LogEvent], width: u16) -> Vec<Line<'static>> {
     if events.is_empty() {
-        return vec![Line::from(Span::styled(
+        return vec![field_line(
             " (empty log) ",
-            Style::default().fg(Color::DarkGray),
-        ))];
+            theme::t().style(Face::EditEmpty),
+            width,
+        )];
     }
-    events.iter().map(trajectory_line).collect()
+    events.iter().map(|e| trajectory_line(e, width)).collect()
 }
 
-fn trajectory_line(event: &LogEvent) -> Line<'static> {
+fn trajectory_line(event: &LogEvent, width: u16) -> Line<'static> {
     let vis = if event.body.model_visible() { "v" } else { " " };
     let (kind, detail) = match &event.body {
         EventBody::User { text } => ("user", clip(text, 60)),
@@ -1999,20 +2099,21 @@ fn trajectory_line(event: &LogEvent) -> Line<'static> {
         EventBody::Fiber { state } => ("fiber", state.clone()),
         EventBody::See { member, .. } => ("see", member.clone()),
     };
-    let pal = theme::p();
-    let color = match &event.body {
-        EventBody::Strike { ok: false, .. } => pal.red,
-        EventBody::Strike { .. } => pal.green,
-        EventBody::Ask { .. } | EventBody::User { .. } => pal.teal,
-        EventBody::Answer { .. } => pal.text,
-        EventBody::Thinking { .. } => pal.yellow,
-        EventBody::See { .. } => pal.mauve,
-        EventBody::Fiber { .. } | EventBody::Status { .. } => pal.overlay0,
+    let th = theme::t();
+    let face = match &event.body {
+        EventBody::Strike { ok: false, .. } => Face::MessageStrikeFail,
+        EventBody::Strike { .. } => Face::MessageStrikeOk,
+        EventBody::Ask { .. } | EventBody::User { .. } => Face::MessageUserInk,
+        EventBody::Answer { .. } => Face::MessageAgentInk,
+        EventBody::Thinking { .. } => Face::MessageThinkInk,
+        EventBody::See { .. } => Face::MessageSee,
+        EventBody::Fiber { .. } | EventBody::Status { .. } => Face::MessageMute,
     };
-    Line::from(Span::styled(
+    field_line(
         format!("{:>4} {vis} {kind:<6} {detail}", event.seq),
-        Style::default().fg(color).bg(pal.surface_dim),
-    ))
+        th.style(face).bg(th.bg_of(Face::Trajectory)),
+        width,
+    )
 }
 
 fn clip(text: &str, max: usize) -> String {
@@ -2025,23 +2126,18 @@ fn clip(text: &str, max: usize) -> String {
     }
 }
 
-fn render_cards(cards: &[Card]) -> Vec<Line<'static>> {
-    let pal = theme::p();
+fn render_cards(cards: &[Card], width: u16) -> Vec<Line<'static>> {
+    let th = theme::t();
     let mut lines = Vec::new();
     for card in cards {
         match card {
             Card::User { text } => {
-                lines.push(Line::from(Span::styled(
-                    " you ",
-                    Style::default()
-                        .fg(pal.teal)
-                        .bg(pal.surface_dim)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                push_wrapped(
+                push_field(
                     &mut lines,
                     text,
-                    Style::default().fg(pal.teal).bg(pal.surface_dim),
+                    th.style(Face::MessageUserInk),
+                    width,
+                    "❯ ",
                 );
                 lines.push(Line::from(""));
             }
@@ -2052,23 +2148,25 @@ fn render_cards(cards: &[Card]) -> Vec<Line<'static>> {
                 } else {
                     " thinking ".into()
                 };
-                lines.push(Line::from(Span::styled(
-                    title,
-                    Style::default()
-                        .fg(pal.yellow)
-                        .bg(pal.surface_dim)
-                        .add_modifier(Modifier::BOLD),
-                )));
+                push_field(
+                    &mut lines,
+                    &title,
+                    th.style(Face::MessageThinkInk),
+                    width,
+                    "",
+                );
                 if *folded {
                     if let Some(first) = text.lines().find(|l| !l.trim().is_empty()) {
-                        lines.push(Line::from(Span::styled(format!("  {first}…"), pal.dim())));
+                        push_field(
+                            &mut lines,
+                            &format!("{first}…"),
+                            th.style(Face::MessageMute),
+                            width,
+                            "  ",
+                        );
                     }
                 } else {
-                    push_wrapped(
-                        &mut lines,
-                        text,
-                        Style::default().fg(pal.yellow).bg(pal.surface_dim),
-                    );
+                    push_field(&mut lines, text, th.style(Face::MessageThinkInk), width, "");
                 }
                 lines.push(Line::from(""));
             }
@@ -2080,57 +2178,55 @@ fn render_cards(cards: &[Card]) -> Vec<Line<'static>> {
                 ok,
                 folded,
             } => {
-                let tag = if *ok { " strike " } else { " strike failed " };
-                let color = if *ok { pal.green } else { pal.red };
-                lines.push(Line::from(Span::styled(
-                    tag,
-                    Style::default()
-                        .fg(color)
-                        .bg(pal.surface_dim)
-                        .add_modifier(Modifier::BOLD),
-                )));
+                let strike = if *ok {
+                    Face::MessageStrikeOk
+                } else {
+                    Face::MessageStrikeFail
+                };
+                let tag = if *ok { "strike" } else { "strike failed" };
+                push_field(&mut lines, tag, th.style(strike), width, "");
                 if *folded {
                     let first = code.lines().next().unwrap_or("");
                     let extra = code.lines().count().saturating_sub(1);
-                    lines.push(Line::from(Span::styled(
-                        format!("  {first}  +{extra}"),
-                        pal.dim(),
-                    )));
-                } else {
-                    push_wrapped(
+                    push_field(
                         &mut lines,
-                        code,
-                        Style::default().fg(pal.green).bg(pal.surface_dim),
+                        &format!("{first}  +{extra}"),
+                        th.style(Face::MessageMute),
+                        width,
+                        "  ",
                     );
+                } else {
+                    push_field(&mut lines, code, th.style(strike), width, "");
                 }
                 if !stdout.is_empty() {
-                    push_wrapped(&mut lines, stdout, pal.body());
+                    push_field(
+                        &mut lines,
+                        stdout,
+                        th.style(Face::MessageAgentInk),
+                        width,
+                        "",
+                    );
                 }
                 if !stderr.is_empty() {
-                    push_wrapped(&mut lines, stderr, pal.dim());
+                    push_field(&mut lines, stderr, th.style(Face::MessageMute), width, "");
                 }
                 if let Some(err) = error {
-                    push_wrapped(
+                    push_field(
                         &mut lines,
                         err,
-                        Style::default().fg(pal.red).bg(pal.surface_dim),
+                        th.style(Face::MessageStrikeFail),
+                        width,
+                        "",
                     );
                 }
                 lines.push(Line::from(""));
             }
             Card::Answer { text } => {
-                lines.push(Line::from(Span::styled(
-                    " answer ",
-                    Style::default()
-                        .fg(pal.text)
-                        .bg(pal.surface_dim)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                push_wrapped(&mut lines, text, pal.body());
+                push_field(&mut lines, text, th.style(Face::MessageAgentInk), width, "");
                 lines.push(Line::from(""));
             }
             Card::Status { text } => {
-                push_wrapped(&mut lines, text, pal.dim());
+                push_field(&mut lines, text, th.style(Face::MessageMute), width, "");
                 lines.push(Line::from(""));
             }
         }
@@ -2138,9 +2234,36 @@ fn render_cards(cards: &[Card]) -> Vec<Line<'static>> {
     lines
 }
 
-fn push_wrapped(lines: &mut Vec<Line<'static>>, text: &str, style: Style) {
-    for line in text.trim_end_matches('\n').lines() {
-        lines.push(Line::from(Span::styled(line.to_string(), style)));
+fn field_line(text: impl Into<String>, style: Style, width: u16) -> Line<'static> {
+    let mut text = text.into();
+    let w = width.max(1) as usize;
+    let n = text.chars().count();
+    if n < w {
+        text.push_str(&" ".repeat(w - n));
+    }
+    Line::from(Span::styled(text, style))
+}
+
+fn push_field(lines: &mut Vec<Line<'static>>, text: &str, style: Style, width: u16, prefix: &str) {
+    let w = width.max(1) as usize;
+    let body = if text.is_empty() { " " } else { text };
+    let mut first = true;
+    for raw in body.trim_end_matches('\n').lines() {
+        let mut row = String::new();
+        if first {
+            row.push_str(prefix);
+            first = false;
+        }
+        row.push_str(raw);
+        let chars: Vec<char> = row.chars().collect();
+        if chars.is_empty() {
+            lines.push(field_line(String::new(), style, width));
+            continue;
+        }
+        for chunk in chars.chunks(w) {
+            let s: String = chunk.iter().collect();
+            lines.push(field_line(s, style, width));
+        }
     }
 }
 
@@ -2240,7 +2363,7 @@ mod slash_tests {
                 ms: Some(22),
             },
         };
-        let s: String = trajectory_line(&ev)
+        let s: String = trajectory_line(&ev, 80)
             .spans
             .iter()
             .map(|sp| sp.content.as_ref())

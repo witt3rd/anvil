@@ -26,3 +26,16 @@ providers:
     auth:
       type: oauth
       vendor: grok
+
+# Theme: pack fills the inks; faces are dotted names for every painted
+# surface (`message.user.field`, `hint.key`, `tab.active`). Override an
+# ink or a face without touching the TUI. Full list: Face::as_str in
+# src/tui/theme.rs. Restart smith to pick up a change; serve can stay.
+theme:
+  pack: mocha          # mocha | terminal
+  # ink:
+  #   accent: "#cba6f7"
+  # face:
+  #   hint.key: { fg: accent, bold: true }
+  #   message.user.field: { bg: raised }
+  #   message.agent.field: { bg: canvas }

@@ -162,6 +162,7 @@ one Cargo.toml, two bins
   src/frame/           sessions, workspaces, catalogs, layouts, transcript
   src/serve/           unix socket daemon + client + PTY host
   src/tui/             smith casing (rail, blocks, worker, @ picker, pty pane)
+  src/tui/theme.rs     named faces + ink packs (mocha, terminal)
   src/bin/anvil.rs     CLI
   src/bin/smith.rs     TUI binary
 hammer/hammer.py       guest

@@ -130,8 +130,12 @@ closes the casing; serve keeps the hammers. Rail `p` names a PTY
 member. When that pane is focused, keys go to `$SHELL` and Ctrl+Q
 closes the casing (Ctrl+C is SIGINT).
 The ask worker talks to serve so the spinner keeps moving.
-Chrome is herdr's Catppuccin Mocha (mauve tab pill, purple focused
-borders, flat spaces/members rail). Restart smith to pick up a theme
+Every painted surface has a dotted face (`message.user.field`,
+`hint.key`, `tab.active`, …) filled by a pack (`mocha`, `terminal`).
+`theme:` in `~/.config/anvil/config.yaml` retints inks or overrides
+faces. User messages sit on a raised field; agent messages stay on
+the canvas. The sash carries `[<] [>] [catalog]` pills; the bottom
+row is the keybind hint bar. Restart smith to pick up a theme
 change; serve can stay.
 
 ## Ask

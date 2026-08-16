@@ -41,6 +41,28 @@ pub struct Config {
     pub default_model: Option<String>,
     #[serde(default)]
     pub providers: BTreeMap<String, Provider>,
+    #[serde(default)]
+    pub theme: ThemeConfig,
+}
+
+/// Pack name plus optional ink/face overrides. Faces are dotted names
+/// (`message.user.field`, `hint.key`) resolved by the TUI theme engine.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ThemeConfig {
+    pub pack: Option<String>,
+    #[serde(default)]
+    pub ink: BTreeMap<String, String>,
+    #[serde(default)]
+    pub face: BTreeMap<String, ThemeFace>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ThemeFace {
+    pub fg: Option<String>,
+    pub bg: Option<String>,
+    pub bold: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,5 +240,36 @@ providers:
             grok.models_url().as_deref(),
             Some("https://api.x.ai/v1/models")
         );
+        assert!(cfg.theme.pack.is_none());
+    }
+
+    #[test]
+    fn theme_pack_and_overrides_parse() {
+        let raw = r##"
+default_provider: omni
+providers:
+  omni:
+    base_url: http://x
+    auth:
+      type: api_key
+      key: k
+theme:
+  pack: terminal
+  ink:
+    accent: "#ff00aa"
+  face:
+    hint.key:
+      fg: accent
+      bold: true
+"##;
+        let cfg: Config = serde_yaml::from_str(raw).unwrap();
+        assert_eq!(cfg.theme.pack.as_deref(), Some("terminal"));
+        assert_eq!(
+            cfg.theme.ink.get("accent").map(String::as_str),
+            Some("#ff00aa")
+        );
+        let face = cfg.theme.face.get("hint.key").expect("hint.key");
+        assert_eq!(face.fg.as_deref(), Some("accent"));
+        assert_eq!(face.bold, Some(true));
     }
 }
