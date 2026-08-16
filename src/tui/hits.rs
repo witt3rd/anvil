@@ -28,6 +28,8 @@ pub enum HitKind {
     Compose,
     PasteChip(usize),
     Picker(usize),
+    Menu(usize),
+    Prompt,
 }
 
 #[derive(Debug, Clone)]

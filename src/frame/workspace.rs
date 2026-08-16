@@ -99,6 +99,18 @@ impl MemberRef {
         }
     }
 
+    pub fn set_id(&mut self, next: impl Into<String>) {
+        let next = next.into();
+        match self {
+            Self::Session { id }
+            | Self::Pty { id }
+            | Self::Clock { id }
+            | Self::Log { id, .. }
+            | Self::Edit { id }
+            | Self::Plot { id, .. } => *id = next,
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::Session { id } => id.clone(),

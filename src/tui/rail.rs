@@ -17,9 +17,9 @@ pub enum Naming {
     Edit(String),
     Tab(String),
     Catalog(String),
-    RenameTab(String),
+    RenameTab { name: String, buf: String },
     RenameCatalog(String),
-    RenamePane(String),
+    RenamePane { id: String, buf: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -867,8 +867,30 @@ impl Rail {
     }
 
     pub fn rename_tab(&mut self, root: &FrameRoot, name: &str) -> Result<String, FrameError> {
-        let new = root.rename_workspace(&self.workspace, name)?;
-        self.workspace = new.clone();
+        let old = self.workspace.clone();
+        self.rename_space(root, &old, name)
+    }
+
+    pub fn rename_space(
+        &mut self,
+        root: &FrameRoot,
+        old: &str,
+        name: &str,
+    ) -> Result<String, FrameError> {
+        let was_front = self.workspace == old;
+        let new = root.rename_workspace(old, name)?;
+        if let Ok(mut layout) = root.layout(&self.layout_name) {
+            if let Some(t) = layout.tiles.remove(old) {
+                layout.tiles.insert(new.clone(), t);
+            }
+            if layout.front_workspace.as_deref() == Some(old) {
+                layout.front_workspace = Some(new.clone());
+            }
+            root.save_layout(&layout)?;
+        }
+        if was_front {
+            self.workspace = new.clone();
+        }
         self.refresh(root)?;
         self.adopt_tiles(root);
         self.persist(root)?;
@@ -910,6 +932,151 @@ impl Rail {
             .unwrap_or(0);
         self.persist(root)?;
         Ok(true)
+    }
+
+    pub fn remove_member(&mut self, root: &FrameRoot, id: &str) -> Result<bool, FrameError> {
+        if !self.members.iter().any(|m| m == id) {
+            return Ok(false);
+        }
+        let clock = self.member_is_clock(id);
+        if !clock && self.stage_members().len() < 2 {
+            return Ok(false);
+        }
+        if root.workspace_exists(&self.workspace) {
+            let mut ws = root.workspace(&self.workspace)?;
+            ws.members.retain(|m| m.id() != id);
+            root.save_workspace(&ws)?;
+        }
+        let next = if self.session == id {
+            self.stage_members()
+                .into_iter()
+                .find(|m| m != id)
+                .or_else(|| self.members.iter().find(|m| *m != id).cloned())
+                .unwrap_or_else(|| self.session.clone())
+        } else {
+            self.session.clone()
+        };
+        self.refresh(root)?;
+        self.ensure_tiles();
+        self.session = if self.members.iter().any(|m| m == &next) {
+            next
+        } else {
+            self.members
+                .first()
+                .cloned()
+                .unwrap_or_else(|| self.session.clone())
+        };
+        self.kind = RailKind::Member;
+        self.idx = self
+            .members
+            .iter()
+            .position(|m| m == &self.session)
+            .unwrap_or(0);
+        self.persist(root)?;
+        Ok(true)
+    }
+
+    pub fn destroy_member(&mut self, root: &FrameRoot, id: &str) -> Result<bool, FrameError> {
+        let is_session = root.session_exists(id);
+        let is_edit = self.edits.iter().any(|e| e == id);
+        if !self.remove_member(root, id)? {
+            return Ok(false);
+        }
+        if is_session {
+            self.purge_id(root, id)?;
+            let _ = root.delete_session(id);
+        }
+        if is_edit {
+            let path = root.root().join("edits").join(format!("{id}.txt"));
+            let _ = std::fs::remove_file(path);
+        }
+        Ok(true)
+    }
+
+    fn purge_id(&mut self, root: &FrameRoot, id: &str) -> Result<(), FrameError> {
+        for mut ws in root.list_workspaces()? {
+            let before = ws.members.len();
+            ws.members.retain(|m| m.id() != id);
+            if ws.members.len() != before {
+                root.save_workspace(&ws)?;
+            }
+        }
+        self.refresh(root)?;
+        self.ensure_tiles();
+        self.persist(root)
+    }
+
+    pub fn remove_space(&mut self, root: &FrameRoot, name: &str) -> Result<bool, FrameError> {
+        if !self.workspaces.iter().any(|w| w == name) {
+            return Ok(false);
+        }
+        if self.workspaces.len() < 2 {
+            return Ok(false);
+        }
+        self.workspace = name.to_string();
+        self.close_tab(root)
+    }
+
+    pub fn destroy_space(&mut self, root: &FrameRoot, name: &str) -> Result<bool, FrameError> {
+        if !self.remove_space(root, name)? {
+            return Ok(false);
+        }
+        let _ = root.delete_workspace(name);
+        Ok(true)
+    }
+
+    pub fn rename_member(
+        &mut self,
+        root: &FrameRoot,
+        id: &str,
+        name: &str,
+    ) -> Result<String, FrameError> {
+        let new = FrameRoot::parse_name(name)?;
+        if id == new {
+            return Ok(new);
+        }
+        for ws in root.list_workspaces()? {
+            if ws.members.iter().any(|m| m.id() == new) {
+                return Err(FrameError::MemberExists(new));
+            }
+        }
+        if root.session_exists(id) {
+            root.rename_session(id, &new)?;
+        } else if root.session_exists(&new) {
+            return Err(FrameError::MemberExists(new));
+        }
+        for mut ws in root.list_workspaces()? {
+            let mut dirty = false;
+            for m in &mut ws.members {
+                if m.id() == id {
+                    if m.is_edit() {
+                        let old = root.root().join("edits").join(format!("{id}.txt"));
+                        let next = root.root().join("edits").join(format!("{new}.txt"));
+                        if old.is_file() {
+                            let _ = std::fs::rename(&old, &next);
+                        }
+                    }
+                    m.set_id(new.clone());
+                    dirty = true;
+                }
+            }
+            if dirty {
+                root.save_workspace(&ws)?;
+            }
+        }
+        if let Ok(mut layout) = root.layout(&self.layout_name) {
+            for t in layout.tiles.values_mut() {
+                t.rename_id(id, &new);
+            }
+            root.save_layout(&layout)?;
+        }
+        if self.session == id {
+            self.session = new.clone();
+        }
+        self.refresh(root)?;
+        self.adopt_tiles(root);
+        self.persist(root)?;
+        Ok(new)
     }
 
     pub fn swap_with(&mut self, root: &FrameRoot, other: &str) -> Result<bool, FrameError> {
@@ -1249,5 +1416,114 @@ mod tests {
             Some(Tile::Split { weights, .. }) => assert_eq!(weights, &vec![1, 1]),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn remove_member_drops_from_the_bench_and_keeps_the_session() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_session(&root, "audit").unwrap();
+        assert!(rail.remove_member(&root, "audit").unwrap());
+        assert!(!rail.members.iter().any(|m| m == "audit"));
+        assert!(root.session_exists("audit"));
+        assert!(!rail.remove_member(&root, "default").unwrap());
+        assert!(root.session_exists("default"));
+    }
+
+    #[test]
+    fn destroy_member_deletes_the_session_dir() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_session(&root, "audit").unwrap();
+        assert!(rail.destroy_member(&root, "audit").unwrap());
+        assert!(!root.session_exists("audit"));
+        assert!(!rail.members.iter().any(|m| m == "audit"));
+    }
+
+    #[test]
+    fn remove_clock_does_not_need_a_second_pane() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_clock(&root).unwrap();
+        assert!(rail.member_is_clock("clock"));
+        assert_eq!(rail.stage_members().len(), 1);
+        assert!(rail.remove_member(&root, "clock").unwrap());
+        assert!(!rail.members.iter().any(|m| m == "clock"));
+        assert_eq!(rail.session, "default");
+    }
+
+    #[test]
+    fn rename_member_renames_the_session_on_disk() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_session(&root, "audit").unwrap();
+        let new = rail.rename_member(&root, "audit", "review").unwrap();
+        assert_eq!(new, "review");
+        assert!(!root.session_exists("audit"));
+        assert!(root.session_exists("review"));
+        assert!(rail.members.iter().any(|m| m == "review"));
+        let tiles = rail.tiles.as_ref().unwrap();
+        assert!(tiles.leaves().iter().any(|id| *id == "review"));
+        assert!(!tiles.leaves().iter().any(|id| *id == "audit"));
+    }
+
+    #[test]
+    fn remove_space_drops_the_sash_and_keeps_the_workspace() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_tab(&root, "fleet-os").unwrap();
+        assert!(rail.remove_space(&root, "fleet-os").unwrap());
+        assert!(!rail.workspaces.iter().any(|w| w == "fleet-os"));
+        assert!(root.workspace_exists("fleet-os"));
+        assert!(!rail.remove_space(&root, "default").unwrap());
+    }
+
+    #[test]
+    fn destroy_space_deletes_the_workspace_and_keeps_occupants() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_session(&root, "audit").unwrap();
+        rail.create_tab(&root, "fleet-os").unwrap();
+        let mut fleet = root.workspace("fleet-os").unwrap();
+        fleet.add_member(MemberRef::session("audit"));
+        root.save_workspace(&fleet).unwrap();
+        assert!(rail.destroy_space(&root, "fleet-os").unwrap());
+        assert!(!root.workspace_exists("fleet-os"));
+        assert!(root.session_exists("audit"));
+        assert!(root.session_exists("default"));
+    }
+
+    #[test]
+    fn rename_tab_renames_the_front_sash() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_tab(&root, "fleet-os").unwrap();
+        let new = rail.rename_tab(&root, "bench").unwrap();
+        assert_eq!(new, "bench");
+        assert_eq!(rail.workspace, "bench");
+        assert!(root.workspace_exists("bench"));
+        assert!(!root.workspace_exists("fleet-os"));
+    }
+
+    #[test]
+    fn rename_space_renames_a_sash_that_is_not_front() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_tab(&root, "fleet-os").unwrap();
+        rail.select_workspace(&root, "default").unwrap();
+        let new = rail.rename_space(&root, "fleet-os", "bench").unwrap();
+        assert_eq!(new, "bench");
+        assert_eq!(rail.workspace, "default");
+        assert!(root.workspace_exists("bench"));
+        assert!(!root.workspace_exists("fleet-os"));
+        assert!(rail.workspaces.iter().any(|w| w == "bench"));
     }
 }

@@ -235,6 +235,18 @@ impl Tile {
             Tile::Leaf(_) => {}
         }
     }
+
+    pub fn rename_id(&mut self, old: &str, new: &str) {
+        match self {
+            Tile::Leaf(id) if id == old => *id = new.to_string(),
+            Tile::Split { kids, .. } => {
+                for kid in kids {
+                    kid.rename_id(old, new);
+                }
+            }
+            Tile::Leaf(_) => {}
+        }
+    }
 }
 
 pub const WEIGHT_MIN: u16 = 1;

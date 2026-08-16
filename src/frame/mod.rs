@@ -46,6 +46,8 @@ pub enum FrameError {
     WorkspaceExists(String),
     #[error("catalog '{0}' already exists")]
     CatalogExists(String),
+    #[error("member '{0}' already exists")]
+    MemberExists(String),
     #[error("io: {0}")]
     Io(#[from] io::Error),
     #[error("json {path}: {source}", path = .path.display())]

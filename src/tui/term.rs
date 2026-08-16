@@ -4,27 +4,29 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::serve::PtyScreen;
 
 pub fn key_bytes(key: KeyEvent) -> Option<Vec<u8>> {
-    match (key.code, key.modifiers) {
-        (KeyCode::Enter, _) => Some(b"\r".to_vec()),
-        (KeyCode::Tab, _) => Some(b"\t".to_vec()),
-        (KeyCode::Backspace, _) => Some(vec![0x7f]),
-        (KeyCode::Delete, _) => Some(b"\x1b[3~".to_vec()),
-        (KeyCode::Left, _) => Some(b"\x1b[D".to_vec()),
-        (KeyCode::Right, _) => Some(b"\x1b[C".to_vec()),
-        (KeyCode::Up, _) => Some(b"\x1b[A".to_vec()),
-        (KeyCode::Down, _) => Some(b"\x1b[B".to_vec()),
-        (KeyCode::Home, _) => Some(b"\x1b[H".to_vec()),
-        (KeyCode::End, _) => Some(b"\x1b[F".to_vec()),
-        (KeyCode::PageUp, _) => Some(b"\x1b[5~".to_vec()),
-        (KeyCode::PageDown, _) => Some(b"\x1b[6~".to_vec()),
-        (KeyCode::Esc, _) => Some(b"\x1b".to_vec()),
-        (KeyCode::Char(ch), KeyModifiers::CONTROL) => {
+    let mods = key.modifiers;
+    match key.code {
+        KeyCode::Enter => Some(b"\r".to_vec()),
+        KeyCode::Tab => Some(b"\t".to_vec()),
+        KeyCode::Backspace => Some(vec![0x7f]),
+        KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
+        KeyCode::Left => Some(b"\x1b[D".to_vec()),
+        KeyCode::Right => Some(b"\x1b[C".to_vec()),
+        KeyCode::Up => Some(b"\x1b[A".to_vec()),
+        KeyCode::Down => Some(b"\x1b[B".to_vec()),
+        KeyCode::Home => Some(b"\x1b[H".to_vec()),
+        KeyCode::End => Some(b"\x1b[F".to_vec()),
+        KeyCode::PageUp => Some(b"\x1b[5~".to_vec()),
+        KeyCode::PageDown => Some(b"\x1b[6~".to_vec()),
+        KeyCode::Esc => Some(b"\x1b".to_vec()),
+        KeyCode::Char(ch) if ch == '\u{3}' => Some(vec![0x03]),
+        KeyCode::Char(ch) if mods.contains(KeyModifiers::CONTROL) => {
             let b = ch.to_ascii_lowercase() as u8;
             if (b'a'..=b'z').contains(&b) {
                 Some(vec![b - b'a' + 1])
@@ -32,7 +34,9 @@ pub fn key_bytes(key: KeyEvent) -> Option<Vec<u8>> {
                 None
             }
         }
-        (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+        KeyCode::Char(ch)
+            if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT) =>
+        {
             let mut buf = [0u8; 4];
             Some(ch.encode_utf8(&mut buf).as_bytes().to_vec())
         }
@@ -109,14 +113,7 @@ pub fn draw(
         format!(" {title} · pty ")
     };
     let lines = screen_lines(screen);
-    let pal = super::theme::p();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_set(ratatui::symbols::border::PLAIN)
-        .title(Span::styled(title, pal.pane_title(focused)))
-        .border_style(pal.pane_border(focused))
-        .style(pal.bg());
-    let inner = block.inner(area);
+    let inner = super::pane_body(frame, area, &title, focused);
     let cursor_row = screen.map(|s| s.cursor_row as usize).unwrap_or(0);
     let scroll = cursor_scroll(lines.len(), inner.height as usize, cursor_row);
     let end = (scroll + inner.height as usize).min(lines.len());
@@ -126,15 +123,14 @@ pub fn draw(
         lines[scroll..end].to_vec()
     };
     let shown = super::select::apply_highlight(&visible, inner, sel, pane);
-    frame.render_widget(Paragraph::new(shown).block(block), area);
+    frame.render_widget(Paragraph::new(shown), inner);
     if focused {
         if let Some(s) = screen {
             if s.alive {
                 let local_row = s.cursor_row.saturating_sub(scroll as u16);
-                let x = area.x.saturating_add(1).saturating_add(s.cursor_col);
-                let y = area.y.saturating_add(1).saturating_add(local_row);
-                if x < area.x.saturating_add(area.width.saturating_sub(1))
-                    && y < area.y.saturating_add(area.height.saturating_sub(1))
+                let x = inner.x.saturating_add(s.cursor_col);
+                let y = inner.y.saturating_add(local_row);
+                if x < inner.x.saturating_add(inner.width) && y < inner.y.saturating_add(inner.height)
                 {
                     frame.set_cursor_position((x, y));
                 }
@@ -194,6 +190,13 @@ mod tests {
         assert_eq!(key_bytes(enter).as_deref(), Some(&b"\r"[..]));
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(key_bytes(ctrl_c).as_deref(), Some(&[0x03][..]));
+        let ghostty = KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(key_bytes(ghostty).as_deref(), Some(&[0x03][..]));
+        let raw = KeyEvent::new(KeyCode::Char('\u{3}'), KeyModifiers::NONE);
+        assert_eq!(key_bytes(raw).as_deref(), Some(&[0x03][..]));
         let letter = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         assert_eq!(key_bytes(letter).as_deref(), Some(&b"a"[..]));
     }

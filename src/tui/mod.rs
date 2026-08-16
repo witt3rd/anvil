@@ -2,8 +2,10 @@
 
 mod activity;
 mod clip;
+mod experience;
 mod hits;
 mod keys;
+mod menu;
 mod paste;
 mod picker;
 mod plot;
@@ -14,6 +16,7 @@ mod status;
 mod term;
 mod theme;
 mod thumb;
+mod window;
 
 use hits::{row_rect, split_edge_rect, HitKind, Hits, NavDir};
 use theme::Face;
@@ -45,7 +48,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
@@ -55,6 +58,7 @@ use crate::frame::{self, Event as LogEvent, EventBody, FrameRoot, SplitDir, Tile
 use crate::serve::{self, Client, EditBuf, EditOp, PtyScreen, Spawn};
 use crate::{default_hammer, Anvil, StrikeReply};
 
+pub use experience::Experience;
 pub use picker::{at_span, insert_path, list_files, rank, FileHit};
 
 #[derive(Debug, Clone)]
@@ -177,6 +181,7 @@ pub struct Launch {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub cwd: PathBuf,
+    pub experience: Experience,
 }
 
 struct App {
@@ -233,6 +238,8 @@ struct App {
     selection: Option<select::Selection>,
     painted: select::Painted,
     last_click: Option<(Instant, u16, u16)>,
+    menu: Option<menu::Menu>,
+    prompt_at: Option<(u16, u16)>,
     edge_drag: Option<EdgeDrag>,
     toast: Option<Toast>,
     pastes: Vec<paste::Paste>,
@@ -1067,6 +1074,10 @@ impl App {
 }
 
 pub fn run(launch: Launch) -> io::Result<()> {
+    match launch.experience {
+        Experience::Window => return window::run(&launch),
+        Experience::Smith => {}
+    }
     let (cfg_path, cfg) = match launch.config.as_deref() {
         Some(p) => Config::load_from(p),
         None => Config::load(),
@@ -1199,6 +1210,8 @@ pub fn run(launch: Launch) -> io::Result<()> {
         selection: None,
         painted: select::Painted::default(),
         last_click: None,
+        menu: None,
+        prompt_at: None,
         edge_drag: None,
         toast: None,
         pastes: Vec::new(),
@@ -1703,6 +1716,11 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> bool {
             mouse_down(app, mouse.column, mouse.row);
             true
         }
+        MouseEventKind::Down(MouseButton::Right) => {
+            hover_at(app, mouse.column, mouse.row);
+            right_click(app, mouse.column, mouse.row);
+            true
+        }
         MouseEventKind::Up(MouseButton::Left) => {
             if end_edge_drag(app) {
                 return true;
@@ -1721,6 +1739,34 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> bool {
     }
 }
 
+fn cancel_naming(app: &mut App) {
+    if let Some(rail) = app.rail.as_mut() {
+        rail.naming = None;
+    }
+    app.prompt_at = None;
+}
+
+fn right_click(app: &mut App, col: u16, row: u16) {
+    app.selection = None;
+    let _ = end_edge_drag(app);
+    if app.help || app.settings {
+        return;
+    }
+    if app.rail.as_ref().is_some_and(|r| r.naming.is_some())
+        && !matches!(app.hits.at(col, row), Some(HitKind::Prompt))
+    {
+        cancel_naming(app);
+    }
+    match app.hits.at(col, row).cloned() {
+        Some(HitKind::Menu(i)) => fire_menu_at(app, i),
+        Some(kind) => match menu::from_hit(&kind, col, row) {
+            Some(opened) => app.menu = Some(opened),
+            None => app.menu = None,
+        },
+        None => app.menu = None,
+    }
+}
+
 fn mouse_down(app: &mut App, col: u16, row: u16) {
     let now = Instant::now();
     let double = app
@@ -1728,6 +1774,16 @@ fn mouse_down(app: &mut App, col: u16, row: u16) {
         .as_ref()
         .is_some_and(|(t, c, r)| now.duration_since(*t) <= Duration::from_millis(400) && *c == col && *r == row);
     app.last_click = Some((now, col, row));
+
+    if app.menu.is_some() && !matches!(app.hits.at(col, row), Some(HitKind::Menu(_))) {
+        app.menu = None;
+    }
+    if app.rail.as_ref().is_some_and(|r| r.naming.is_some())
+        && !matches!(app.hits.at(col, row), Some(HitKind::Prompt))
+    {
+        cancel_naming(app);
+        return;
+    }
 
     if !matches!(app.hits.at(col, row), Some(HitKind::SplitEdge { .. })) {
         end_edge_drag(app);
@@ -2062,6 +2118,8 @@ fn hit_key(kind: &HitKind) -> String {
         HitKind::SashPrev => "sash-".into(),
         HitKind::SashNext => "sash+".into(),
         HitKind::Picker(i) => format!("pick:{i}"),
+        HitKind::Menu(i) => format!("menu:{i}"),
+        HitKind::Prompt => "prompt".into(),
         HitKind::SplitEdge { path, gap, .. } => match path {
             Some(p) => format!("edge:{p:?}:{gap}"),
             None => format!("edge:stage:{gap}"),
@@ -2105,6 +2163,14 @@ fn hover_at(app: &mut App, col: u16, row: u16) -> bool {
         }
         HitKind::Tab(_) | HitKind::TabAdd | HitKind::SashPrev | HitKind::SashNext => {}
         HitKind::Picker(_) => {}
+        HitKind::Menu(i) => {
+            if let Some(menu) = app.menu.as_mut() {
+                if i < menu.items.len() {
+                    menu.selected = i;
+                }
+            }
+        }
+        HitKind::Prompt => {}
         HitKind::SplitEdge { .. } => {}
     }
     true
@@ -2136,12 +2202,7 @@ fn click_at(app: &mut App, col: u16, row: u16) {
             app.click_workspace(&name);
             app.focus = Focus::Compose;
         }
-        HitKind::TabAdd => {
-            if let Some(rail) = app.rail.as_mut() {
-                rail.naming = Some(Naming::Session(String::new()));
-            }
-            app.focus = Focus::Rail;
-        }
+        HitKind::TabAdd => start_naming(app, Naming::Session(String::new())),
         HitKind::SashPrev => cycle_sash(app, -1),
         HitKind::SashNext => cycle_sash(app, 1),
         HitKind::Pane(id) => {
@@ -2155,6 +2216,8 @@ fn click_at(app: &mut App, col: u16, row: u16) {
         }
         HitKind::Compose | HitKind::PasteChip(_) => app.focus = Focus::Compose,
         HitKind::SplitEdge { .. } => {}
+        HitKind::Menu(i) => fire_menu_at(app, i),
+        HitKind::Prompt => {}
         HitKind::Picker(i) => {
             if let Some(picker) = app.picker.as_mut() {
                 picker.selected = i.min(picker.hits.len().saturating_sub(1));
@@ -2207,6 +2270,12 @@ fn wheel_at(app: &mut App, col: u16, row: u16, dir: i32) {
                 }
             }
         }
+        Some(HitKind::Menu(_)) => {
+            if let Some(menu) = app.menu.as_mut() {
+                menu.move_sel(if dir < 0 { -1 } else { 1 });
+            }
+        }
+        Some(HitKind::Prompt) => {}
         Some(HitKind::Compose)
         | Some(HitKind::PasteChip(_))
         | Some(HitKind::Catalog)
@@ -2241,6 +2310,9 @@ fn wheel_pane(app: &mut App, id: &str, dir: i32, steps: i32) {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+    if app.menu.is_some() {
+        return handle_menu_key(app, key);
+    }
     if let Some(naming) = app.rail.as_ref().and_then(|r| r.naming.clone()) {
         let buf = naming_buf(&naming);
         if app.keys.is_prefix(key) {
@@ -2382,7 +2454,20 @@ fn dispatch(app: &mut App, act: keys::Action, key: KeyEvent) -> bool {
         RenameWorkspace => start_naming(app, Naming::RenameCatalog(String::new())),
         CloseWorkspace => close_catalog(app),
         NewTab => start_naming(app, Naming::Tab(String::new())),
-        RenameTab => start_naming(app, Naming::RenameTab(String::new())),
+        RenameTab => {
+            let name = app
+                .rail
+                .as_ref()
+                .map(|r| r.workspace.clone())
+                .unwrap_or_default();
+            start_naming(
+                app,
+                Naming::RenameTab {
+                    name: name.clone(),
+                    buf: name,
+                },
+            );
+        }
         CloseTab => close_tab(app),
         NextSash => cycle_sash(app, 1),
         PrevSash => cycle_sash(app, -1),
@@ -2432,7 +2517,16 @@ fn dispatch(app: &mut App, act: keys::Action, key: KeyEvent) -> bool {
                 "copy off".into()
             };
         }
-        RenamePane => start_naming(app, Naming::RenamePane(String::new())),
+        RenamePane => {
+            let id = app.session_id();
+            start_naming(
+                app,
+                Naming::RenamePane {
+                    id: id.clone(),
+                    buf: id,
+                },
+            );
+        }
         EditScrollback => edit_scrollback(app),
         Ask => app.submit_ask(),
         Strike => app.submit_strike(),
@@ -2513,6 +2607,8 @@ fn dispatch(app: &mut App, act: keys::Action, key: KeyEvent) -> bool {
             app.resize_mode = false;
             app.copy_mode = false;
             app.picker = None;
+            app.menu = None;
+            cancel_naming(app);
             app.focus = Focus::Compose;
         }
         RailWorkspaceUp | RailWorkspaceDown => {}
@@ -2565,16 +2661,30 @@ fn naming_buf(naming: &Naming) -> String {
         | Naming::Edit(b)
         | Naming::Tab(b)
         | Naming::Catalog(b)
-        | Naming::RenameTab(b)
-        | Naming::RenameCatalog(b)
-        | Naming::RenamePane(b) => b.clone(),
+        | Naming::RenameCatalog(b) => b.clone(),
+        Naming::RenameTab { buf, .. } | Naming::RenamePane { buf, .. } => buf.clone(),
     }
 }
 
 fn start_naming(app: &mut App, naming: Naming) {
+    app.menu = None;
+    app.prompt_at = app.pointer;
     if let Some(rail) = app.rail.as_mut() {
         rail.naming = Some(naming);
         app.focus = Focus::Rail;
+    }
+}
+
+fn naming_title(naming: &Naming) -> &'static str {
+    match naming {
+        Naming::Session(_) => "new session",
+        Naming::Pty(_) => "new pty",
+        Naming::Edit(_) => "new edit",
+        Naming::Tab(_) => "new sash",
+        Naming::Catalog(_) => "new catalog",
+        Naming::RenameTab { .. } => "rename sash",
+        Naming::RenameCatalog(_) => "rename catalog",
+        Naming::RenamePane { .. } => "rename member",
     }
 }
 
@@ -2764,6 +2874,137 @@ fn swap_pane_dir(app: &mut App, dir: NavDir) {
     }
 }
 
+fn handle_menu_key(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Esc => app.menu = None,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(menu) = app.menu.as_mut() {
+                menu.move_sel(-1);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(menu) = app.menu.as_mut() {
+                menu.move_sel(1);
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(menu) = app.menu.clone() {
+                if let Some(verb) = menu.current() {
+                    fire_menu(app, menu.target, verb);
+                }
+            }
+        }
+        KeyCode::Char('r') => fire_menu_verb(app, menu::Verb::Rename),
+        KeyCode::Char('x') => fire_menu_verb(app, menu::Verb::Remove),
+        KeyCode::Char('d') => fire_menu_verb(app, menu::Verb::Destroy),
+        _ => {}
+    }
+    false
+}
+
+fn fire_menu_at(app: &mut App, i: usize) {
+    let Some(menu) = app.menu.clone() else {
+        return;
+    };
+    let Some(verb) = menu.verb_at(i) else {
+        return;
+    };
+    fire_menu(app, menu.target, verb);
+}
+
+fn fire_menu_verb(app: &mut App, verb: menu::Verb) {
+    let Some(menu) = app.menu.clone() else {
+        return;
+    };
+    fire_menu(app, menu.target, verb);
+}
+
+fn fire_menu(app: &mut App, target: menu::Target, verb: menu::Verb) {
+    app.menu = None;
+    match (target, verb) {
+        (menu::Target::Member(id), menu::Verb::Rename) => start_naming(
+            app,
+            Naming::RenamePane {
+                id: id.clone(),
+                buf: id,
+            },
+        ),
+        (menu::Target::Space(name), menu::Verb::Rename) => start_naming(
+            app,
+            Naming::RenameTab {
+                name: name.clone(),
+                buf: name,
+            },
+        ),
+        (menu::Target::Member(id), menu::Verb::Remove) => remove_member_id(app, &id),
+        (menu::Target::Space(name), menu::Verb::Remove) => remove_space_name(app, &name),
+        (menu::Target::Member(id), menu::Verb::Destroy) => destroy_member_id(app, &id),
+        (menu::Target::Space(name), menu::Verb::Destroy) => destroy_space_name(app, &name),
+    }
+}
+
+fn remove_member_id(app: &mut App, id: &str) {
+    if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+        match rail.remove_member(root, id) {
+            Ok(true) => {
+                app.load_session_cards();
+                app.expose_live();
+                app.status = format!("removed {id}");
+            }
+            Ok(false) => app.status = "last pane".into(),
+            Err(err) => app.status = err.to_string(),
+        }
+    }
+}
+
+fn destroy_member_id(app: &mut App, id: &str) {
+    if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+        match rail.destroy_member(root, id) {
+            Ok(true) => {
+                app.load_session_cards();
+                app.expose_live();
+                app.status = format!("destroyed {id}");
+            }
+            Ok(false) => app.status = "last pane".into(),
+            Err(err) => app.status = err.to_string(),
+        }
+    }
+}
+
+fn remove_space_name(app: &mut App, name: &str) {
+    if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+        match rail.remove_space(root, name) {
+            Ok(true) => {
+                app.load_session_cards();
+                app.expose_live();
+                app.status = format!(
+                    "removed sash · {}",
+                    app.rail
+                        .as_ref()
+                        .map(|r| r.workspace.as_str())
+                        .unwrap_or("")
+                );
+            }
+            Ok(false) => app.status = "last sash".into(),
+            Err(err) => app.status = err.to_string(),
+        }
+    }
+}
+
+fn destroy_space_name(app: &mut App, name: &str) {
+    if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+        match rail.destroy_space(root, name) {
+            Ok(true) => {
+                app.load_session_cards();
+                app.expose_live();
+                app.status = format!("destroyed sash {name}");
+            }
+            Ok(false) => app.status = "last sash".into(),
+            Err(err) => app.status = err.to_string(),
+        }
+    }
+}
+
 fn close_pane(app: &mut App) {
     if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
         match rail.close_pane(root) {
@@ -2931,9 +3172,15 @@ fn wrap_naming(kind: &Naming, buf: String) -> Naming {
         Naming::Edit(_) => Naming::Edit(buf),
         Naming::Tab(_) => Naming::Tab(buf),
         Naming::Catalog(_) => Naming::Catalog(buf),
-        Naming::RenameTab(_) => Naming::RenameTab(buf),
+        Naming::RenameTab { name, .. } => Naming::RenameTab {
+            name: name.clone(),
+            buf,
+        },
         Naming::RenameCatalog(_) => Naming::RenameCatalog(buf),
-        Naming::RenamePane(_) => Naming::RenamePane(buf),
+        Naming::RenamePane { id, .. } => Naming::RenamePane {
+            id: id.clone(),
+            buf,
+        },
     }
 }
 
@@ -2943,11 +3190,7 @@ fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
         return false;
     };
     match (key.code, key.modifiers) {
-        (KeyCode::Esc, _) => {
-            if let Some(rail) = app.rail.as_mut() {
-                rail.naming = None;
-            }
-        }
+        (KeyCode::Esc, _) => cancel_naming(app),
         (KeyCode::Enter, _) => {
             let name = buf.trim().to_string();
             finish_naming(app, &kind, &name);
@@ -2974,6 +3217,7 @@ fn finish_naming(app: &mut App, kind: &Naming, name: &str) {
     let Some(root) = app.frame.clone() else {
         return;
     };
+    app.prompt_at = None;
     let Some(rail) = app.rail.as_mut() else {
         return;
     };
@@ -2994,14 +3238,20 @@ fn finish_naming(app: &mut App, kind: &Naming, name: &str) {
         Naming::Catalog(_) => rail
             .create_catalog_front(&root, name)
             .map(|n| format!("catalog {n}")),
-        Naming::RenameTab(_) => rail.rename_tab(&root, name).map(|n| format!("sash {n}")),
+        Naming::RenameTab { name: old, .. } => {
+            if old.as_str() == rail.workspace {
+                rail.rename_tab(&root, name)
+            } else {
+                rail.rename_space(&root, old, name)
+            }
+            .map(|n| format!("sash {n}"))
+        }
         Naming::RenameCatalog(_) => rail
             .rename_catalog(&root, name)
             .map(|n| format!("catalog {n}")),
-        Naming::RenamePane(_) => {
-            app.status = "rename pane: close and recreate".into();
-            return;
-        }
+        Naming::RenamePane { id, .. } => rail
+            .rename_member(&root, id, name)
+            .map(|n| format!("member {n}")),
     };
     match result {
         Ok(msg) => {
@@ -3043,12 +3293,16 @@ fn draw(frame: &mut Frame, app: &mut App) {
     let mut hits = Hits::default();
     let th = theme::t();
     frame.render_widget(Block::default().style(th.style(Face::Canvas)), frame.area());
+    let naming = app.rail.as_ref().is_some_and(|r| r.naming.is_some());
+    let hint_h = u16::from(app.menu.is_some() || naming);
     let shell = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(6), Constraint::Length(1)])
+        .constraints([Constraint::Min(6), Constraint::Length(hint_h)])
         .split(frame.area());
     let work = shell[0];
-    draw_hint_bar(frame, shell[1], bottom_hints(app));
+    if hint_h > 0 {
+        draw_hint_bar(frame, shell[1], bottom_hints(app));
+    }
     let body = if app.rail.is_some() {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
@@ -3062,7 +3316,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
     let picker_h = app
         .picker
         .as_ref()
-        .map(|p| (p.hits.len() as u16 + 2).clamp(3, 10))
+        .map(|p| (p.hits.len() as u16 + 1).clamp(2, 10))
         .unwrap_or(0);
     let embed = app.rail.is_some();
     let pty_compose =
@@ -3074,7 +3328,11 @@ fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         (app.input.matches('\n').count() as u16 + 1).clamp(1, 8) + 2
     };
-    let sash_h = if app.rail.is_some() { 1 } else { 0 };
+    let sash_h = u16::from(
+        app.rail
+            .as_ref()
+            .is_some_and(|r| r.workspaces.len() > 1),
+    );
     let status_h = if embed { 0 } else { 1 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -3200,17 +3458,25 @@ fn draw(frame: &mut Frame, app: &mut App) {
 
     if let Some(picker) = &app.picker {
         let th = theme::t();
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(th.pane_border(true))
-            .title(Span::styled(
-                format!(" @{} ", picker.query),
-                th.pane_title(true),
-            ))
-            .style(th.style(Face::PickerField));
-        let inner = block.inner(picker_area);
         frame.render_widget(Clear, picker_area);
-        frame.render_widget(block, picker_area);
+        frame.render_widget(
+            Block::default().style(th.style(Face::PickerField)),
+            picker_area,
+        );
+        let title = Rect::new(picker_area.x, picker_area.y, picker_area.width, 1);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!(" @{}", picker.query),
+                th.pane_title(true),
+            )),
+            title,
+        );
+        let inner = Rect::new(
+            picker_area.x,
+            picker_area.y.saturating_add(1),
+            picker_area.width,
+            picker_area.height.saturating_sub(1),
+        );
         let view_h = inner.height as usize;
         let max = picker.hits.len().saturating_sub(view_h.max(1));
         let start = picker
@@ -3269,6 +3535,18 @@ fn draw(frame: &mut Frame, app: &mut App) {
     if app.settings {
         draw_settings(frame, app);
     }
+    if let Some(menu) = app.menu.as_ref() {
+        menu::draw(frame, menu, &mut hits);
+    }
+    if let Some(naming) = app.rail.as_ref().and_then(|r| r.naming.clone()) {
+        menu::draw_prompt(
+            frame,
+            naming_title(&naming),
+            &naming_buf(&naming),
+            app.prompt_at,
+            &mut hits,
+        );
+    }
     app.hits = hits;
 }
 
@@ -3282,10 +3560,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
     let box_area = Rect::new(x, y, w, h);
     frame.render_widget(Clear, box_area);
     frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(th.pane_border(true))
-            .style(th.style(Face::PickerField)),
+        Block::default().style(th.style(Face::PickerField)),
         box_area,
     );
     let inner = Rect::new(
@@ -3469,15 +3744,21 @@ fn draw_settings(frame: &mut Frame, app: &App) {
     let box_area = Rect::new(x, y, w, h);
     frame.render_widget(Clear, box_area);
     frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(th.pane_border(true))
-                .title(Span::styled(" settings ", th.pane_title(true)))
-                .style(th.style(Face::PickerField)),
-        ),
+        Block::default().style(th.style(Face::PickerField)),
         box_area,
     );
+    let inner = Rect::new(
+        box_area.x,
+        box_area.y,
+        box_area.width,
+        box_area.height,
+    );
+    let mut headed = vec![Line::from(Span::styled(
+        " settings",
+        th.pane_title(true),
+    ))];
+    headed.extend(lines);
+    frame.render_widget(Paragraph::new(headed), inner);
 }
 
 fn draw_edit_pane(
@@ -3513,17 +3794,14 @@ fn draw_edit_pane(
             ));
         }
     }
-    let block = pane_block(&format!("{title} · edit"), focused);
-    let inner = block.inner(area);
+    let inner = pane_body(frame, area, &format!("{title} · edit"), focused);
     let shown = select::apply_highlight(&lines, inner, app.selection.as_ref(), id);
     app.painted.record(id, inner, &lines);
-    frame.render_widget(Paragraph::new(shown).block(block), area);
+    frame.render_widget(Paragraph::new(shown), inner);
     if focused {
-        let x = area.x.saturating_add(1).saturating_add(col);
-        let y = area.y.saturating_add(1).saturating_add(row);
-        if x < area.x.saturating_add(area.width.saturating_sub(1))
-            && y < area.y.saturating_add(area.height.saturating_sub(1))
-        {
+        let x = inner.x.saturating_add(col);
+        let y = inner.y.saturating_add(row);
+        if x < inner.x.saturating_add(inner.width) && y < inner.y.saturating_add(inner.height) {
             frame.set_cursor_position((x, y));
         }
     }
@@ -3634,11 +3912,13 @@ fn draw_member_pane(
     focused: bool,
     hits: &mut Hits,
 ) {
-    let label = app
-        .rail
-        .as_ref()
-        .map(|r| r.member_label(id))
-        .unwrap_or_else(|| id.to_string());
+    let label = chrome_title(
+        app,
+        &app.rail
+            .as_ref()
+            .map(|r| r.member_label(id))
+            .unwrap_or_else(|| id.to_string()),
+    );
     if app.member_is_plot(id) {
         draw_plot_pane(frame, area, app, id, focused);
         return;
@@ -3713,23 +3993,42 @@ fn draw_member_pane(
     }
 }
 
-fn pane_block(title: &str, focused: bool) -> Block<'static> {
+fn chrome_title(app: &App, label: &str) -> String {
+    match &app.rail {
+        Some(r) if r.stage_members().len() > 1 => label.to_string(),
+        _ => String::new(),
+    }
+}
+
+pub(crate) fn pane_body(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    title: &str,
+    focused: bool,
+) -> ratatui::layout::Rect {
     let pal = theme::p();
+    frame.render_widget(Block::default().style(pal.bg()), area);
     let label = title.trim();
-    Block::default()
-        .borders(Borders::ALL)
-        .border_set(ratatui::symbols::border::PLAIN)
-        .border_style(pal.pane_border(focused))
-        .title(Span::styled(format!(" {label} "), pal.pane_title(focused)))
-        .style(pal.bg())
+    if label.is_empty() || area.height < 2 {
+        return area;
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!(" {label}"),
+            pal.pane_title(focused),
+        )),
+        ratatui::layout::Rect::new(area.x, area.y, area.width, 1),
+    );
+    ratatui::layout::Rect::new(
+        area.x,
+        area.y.saturating_add(1),
+        area.width,
+        area.height.saturating_sub(1),
+    )
 }
 
 fn draw_sashes(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, hits: &mut Hits) {
     let pal = theme::p();
-    frame.render_widget(
-        Paragraph::new(" ".repeat(area.width as usize)).style(pal.style(Face::TabBar)),
-        area,
-    );
     let Some(rail) = &app.rail else {
         return;
     };
@@ -3758,10 +4057,9 @@ fn draw_sashes(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, hits: 
     }
     if x + 3 <= area.x + area.width {
         let add = Rect::new(x, y, 3, 1);
-        frame.render_widget(Paragraph::new(" + ").style(pal.style(Face::TabAdd)), add);
+        frame.render_widget(Paragraph::new(" + ").style(pal.tab_idle()), add);
         hits.push(add, HitKind::TabAdd);
     }
-    draw_top_hints(frame, area, app, hits);
 }
 
 fn draw_scroll_pane(
@@ -3773,9 +4071,7 @@ fn draw_scroll_pane(
     id: &str,
     focused: bool,
 ) {
-    let block = pane_block(title, focused);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = pane_body(frame, area, title, focused);
     paint_scrolled(frame, inner, lines, app, id, focused, Style::default(), true);
 }
 
@@ -3826,36 +4122,21 @@ fn draw_smith_pane(
     hits: &mut Hits,
 ) {
     let pal = theme::p();
-    let block = pane_block(title, focused);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = pane_body(frame, area, title, focused);
     let compose = focused && app.focus == Focus::Compose && app.view == MainView::Smith;
     let input_h = if compose {
-        (app.input.matches('\n').count() as u16 + 3).clamp(3, 8)
+        (app.input.matches('\n').count() as u16 + 2).clamp(2, 9)
     } else {
         0
     };
-    let chip_h = u16::from(compose && app.busy);
-    let status_h = u16::from(!app.status_auto_hide || focused);
     let parts = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(2),
-            Constraint::Length(chip_h),
-            Constraint::Length(input_h),
-            Constraint::Length(status_h),
-        ])
+        .constraints([Constraint::Min(2), Constraint::Length(input_h)])
         .split(inner);
     hits.push(parts[0], HitKind::Pane(id.to_string()));
     paint_scrolled(frame, parts[0], lines, app, id, focused, pal.bg(), true);
-    if chip_h == 1 {
-        status::draw_progress(frame, parts[1], app);
-    }
     if input_h > 0 {
-        draw_compose(frame, parts[2], app, hits);
-    }
-    if status_h == 1 {
-        status::draw(frame, parts[3], app, id);
+        draw_compose(frame, parts[1], app, hits);
     }
 }
 
@@ -3864,18 +4145,27 @@ fn draw_compose(frame: &mut Frame, area: ratatui::layout::Rect, app: &mut App, h
     let th = theme::t();
     app.compose_area = Some(area);
     hits.push(area, HitKind::Compose);
-    let (text_area, origin) = if area.height >= 3 {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_set(ratatui::symbols::border::PLAIN)
-            .border_style(th.style(Face::ComposeBorder))
-            .style(pal.bg());
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        (inner, (inner.x, inner.y))
-    } else {
-        (area, (area.x, area.y))
-    };
+    frame.render_widget(Block::default().style(th.style(Face::ComposeInput)), area);
+    if area.width > 0 {
+        frame.render_widget(
+            Paragraph::new(" ").style(th.style(Face::ComposeBorder)),
+            Rect::new(area.x, area.y, 1, area.height),
+        );
+    }
+    let body = Rect::new(
+        area.x.saturating_add(1),
+        area.y,
+        area.width.saturating_sub(1),
+        area.height,
+    );
+    let foot_h = u16::from(body.height >= 2);
+    let text_area = Rect::new(
+        body.x,
+        body.y,
+        body.width,
+        body.height.saturating_sub(foot_h),
+    );
+    let origin = (text_area.x, text_area.y);
     let mut spans = vec![Span::styled("❯ ", pal.accent_text())];
     let chips = paste::chip_spans(&app.input, &app.pastes);
     let mut pos = 0usize;
@@ -3903,14 +4193,91 @@ fn draw_compose(frame: &mut Frame, area: ratatui::layout::Rect, app: &mut App, h
         ));
     }
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(pal.bg()),
+        Paragraph::new(Line::from(spans)).style(th.style(Face::ComposeInput)),
         text_area,
     );
+    if foot_h == 1 {
+        draw_compose_footer(
+            frame,
+            Rect::new(
+                body.x,
+                body.y.saturating_add(text_area.height),
+                body.width,
+                1,
+            ),
+            app,
+        );
+    }
     if app.focus == Focus::Compose && !app.focused_is_pty() && !app.focused_is_edit() {
         let (cx, cy) = cursor_in(&app.input, app.cursor);
         frame.set_cursor_position((origin.0 + 2 + cx, origin.1 + cy));
     }
 }
+
+fn on_compose(face: Face) -> Style {
+    let th = theme::t();
+    th.style(face).bg(th.bg_of(Face::ComposeInput))
+}
+
+fn draw_compose_footer(frame: &mut Frame, area: Rect, app: &App) {
+    let th = theme::t();
+    let session = app.session_id();
+    let mut left: Vec<Span> = vec![Span::styled(" ", on_compose(Face::StatusInk))];
+    if app.busy {
+        left.push(Span::styled(
+            app.activity
+                .as_ref()
+                .map(|a| a.chip())
+                .unwrap_or_else(|| app.status.clone()),
+            on_compose(Face::PlotThink),
+        ));
+        left.push(Span::styled("  ", on_compose(Face::StatusInk)));
+        left.push(Span::styled("esc", on_compose(Face::HintLabel)));
+        left.push(Span::styled(" interrupt", on_compose(Face::StatusInk)));
+    } else {
+        let mut first = true;
+        for name in &app.status_widgets {
+            if matches!(name.as_str(), "spin" | "focus") {
+                continue;
+            }
+            let Some((face, text)) = status::widget(app, name, &session) else {
+                continue;
+            };
+            if !first {
+                left.push(Span::styled("  ", on_compose(Face::StatusInk)));
+            }
+            first = false;
+            left.push(Span::styled(text, on_compose(face)));
+        }
+    }
+    let right = if app.busy {
+        String::new()
+    } else {
+        format!(
+            "{} ask  {} strike",
+            app.keys.display(keys::Action::Ask),
+            app.keys.display(keys::Action::Strike)
+        )
+    };
+    let used: u16 = left.iter().map(|s| s.content.chars().count() as u16).sum();
+    let right_w = right.chars().count() as u16;
+    let gap = area.width.saturating_sub(used.saturating_add(right_w).saturating_add(1));
+    if gap > 0 {
+        left.push(Span::styled(
+            " ".repeat(gap as usize),
+            th.style(Face::ComposeInput),
+        ));
+    }
+    if !right.is_empty() && used + 1 + right_w <= area.width {
+        left.push(Span::styled(right, on_compose(Face::StatusInk)));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(left)).style(th.style(Face::ComposeInput)),
+        area,
+    );
+}
+
+
 
 fn preview_paste_index(app: &App) -> Option<usize> {
     if let Some((col, row)) = app.pointer {
@@ -3933,7 +4300,7 @@ fn paste_preview_rect(anchor: Rect, line_widths: &[u16]) -> Rect {
     // Never more than half the composer — a full-bleed bar cannot look centered.
     let max_w = (anchor.width / 2).max(28).min(anchor.width.saturating_sub(2).max(1));
     let w = inner.saturating_add(4).min(max_w);
-    let h = (line_widths.len() as u16).saturating_add(2).max(3);
+    let h = (line_widths.len() as u16).max(1);
     let x = anchor.x.saturating_add(anchor.width.saturating_sub(w) / 2);
     let y = anchor.y.saturating_sub(h);
     Rect::new(x, y, w, h)
@@ -3964,7 +4331,7 @@ fn fit_image_cells(px_w: u32, px_h: u32, max_cols: u16, max_rows: u16) -> (u16, 
 fn image_preview_rect(anchor: Rect, px_w: u32, px_h: u32) -> Rect {
     let max_w = anchor.width.saturating_sub(4).min(88).max(36);
     let avail = anchor.y.saturating_sub(1).min(18).max(8);
-    let chrome = 3u16;
+    let chrome = 2u16;
     let max_img_rows = avail.saturating_sub(chrome).max(4);
     let (img_w, img_h) = fit_image_cells(px_w, px_h, max_w, max_img_rows);
     let w = img_w.max(24);
@@ -4035,12 +4402,7 @@ fn draw_paste_preview(frame: &mut Frame, app: &mut App) {
     }
     frame.render_widget(Clear, box_area);
     frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(th.pane_border(true))
-                .style(th.style(Face::PastePreview)),
-        ),
+        Paragraph::new(lines).style(th.style(Face::PastePreview)),
         box_area,
     );
 }
@@ -4074,17 +4436,24 @@ fn draw_image_preview(
     }
     let th = theme::t();
     let title = format!(" Image #{image_n} — {kind} · {dim} · {size} · {name} ");
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(th.pane_border(true))
-        .title(Span::styled(
-            wrap_preview_line(&title, box_area.width.saturating_sub(2)),
-            th.style(Face::PastePreviewMute),
-        ))
-        .style(th.style(Face::PastePreview));
-    let inner = block.inner(box_area);
     frame.render_widget(Clear, box_area);
-    frame.render_widget(block, box_area);
+    frame.render_widget(
+        Block::default().style(th.style(Face::PastePreview)),
+        box_area,
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            wrap_preview_line(&title, box_area.width),
+            th.style(Face::PastePreviewMute),
+        )),
+        Rect::new(box_area.x, box_area.y, box_area.width, 1),
+    );
+    let inner = Rect::new(
+        box_area.x,
+        box_area.y.saturating_add(1),
+        box_area.width,
+        box_area.height.saturating_sub(1),
+    );
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -4169,6 +4538,21 @@ fn hint_pair<'a>(key: &'a str, label: &'a str) -> Vec<Span<'a>> {
 
 fn bottom_hints(app: &App) -> Vec<(String, String)> {
     let k = &app.keys;
+    if app.menu.is_some() {
+        return vec![
+            ("j/k".into(), "move".into()),
+            ("r".into(), "rename".into()),
+            ("x".into(), "remove".into()),
+            ("d".into(), "destroy".into()),
+            ("esc".into(), "close".into()),
+        ];
+    }
+    if app.rail.as_ref().is_some_and(|r| r.naming.is_some()) {
+        return vec![
+            ("enter".into(), "ok".into()),
+            ("esc".into(), "cancel".into()),
+        ];
+    }
     if app.prefix_armed {
         return vec![
             (k.display(keys::Action::Detach), "detach".into()),
@@ -4217,48 +4601,6 @@ fn draw_hint_bar(frame: &mut Frame, area: ratatui::layout::Rect, pairs: Vec<(Str
         Paragraph::new(Line::from(spans)).style(th.style(Face::HintBar)),
         area,
     );
-}
-
-fn draw_top_hints(frame: &mut Frame, area: ratatui::layout::Rect, app: &App, hits: &mut Hits) {
-    let th = theme::t();
-    let (idx, n, catalog) = app
-        .rail
-        .as_ref()
-        .map(|r| {
-            let i = r
-                .workspaces
-                .iter()
-                .position(|w| w == &r.workspace)
-                .unwrap_or(0)
-                + 1;
-            (i, r.workspaces.len().max(1), r.catalog.clone())
-        })
-        .unwrap_or((1, 1, "smith".into()));
-    let mut pills: Vec<(String, Option<HitKind>)> = Vec::new();
-    if n > 1 {
-        pills.push((format!("{idx}/{n}"), None));
-    }
-    pills.push(("[<]".into(), Some(HitKind::SashPrev)));
-    pills.push(("[>]".into(), Some(HitKind::SashNext)));
-    pills.push((format!("[{catalog}]"), Some(HitKind::Catalog)));
-    let total: u16 = pills
-        .iter()
-        .map(|(s, _)| s.chars().count() as u16 + 1)
-        .sum::<u16>()
-        .saturating_add(1);
-    if total + 1 >= area.width {
-        return;
-    }
-    let mut x = area.x + area.width.saturating_sub(total);
-    for (label, kind) in pills {
-        let w = label.chars().count() as u16;
-        let rect = Rect::new(x, area.y, w, 1);
-        frame.render_widget(Paragraph::new(label).style(th.style(Face::HintPill)), rect);
-        if let Some(kind) = kind {
-            hits.push(rect, kind);
-        }
-        x = x.saturating_add(w).saturating_add(1);
-    }
 }
 
 fn draw_status_line(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
@@ -4347,41 +4689,6 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, hits: &m
     );
     for (i, id) in rail.members.iter().enumerate() {
         hits.push(row_rect(halves[1], i + 1), HitKind::Member(id.clone()));
-    }
-    match &rail.naming {
-        Some(Naming::Session(buf)) => members.push(Line::from(Span::styled(
-            format!(" new session: {buf}_"),
-            th.style(Face::ComposePrompt),
-        ))),
-        Some(Naming::Pty(buf)) => members.push(Line::from(Span::styled(
-            format!(" new pty: {buf}_"),
-            th.style(Face::ComposePrompt),
-        ))),
-        Some(Naming::Edit(buf)) => members.push(Line::from(Span::styled(
-            format!(" new edit: {buf}_"),
-            th.style(Face::ComposePrompt),
-        ))),
-        Some(Naming::Tab(buf)) => members.push(Line::from(Span::styled(
-            format!(" new sash: {buf}_"),
-            th.style(Face::ComposePrompt),
-        ))),
-        Some(Naming::Catalog(buf)) => members.push(Line::from(Span::styled(
-            format!(" new catalog: {buf}_"),
-            th.style(Face::ComposePrompt),
-        ))),
-        Some(Naming::RenameTab(buf)) => members.push(Line::from(Span::styled(
-            format!(" rename sash: {buf}_"),
-            th.style(Face::ComposePrompt),
-        ))),
-        Some(Naming::RenameCatalog(buf)) => members.push(Line::from(Span::styled(
-            format!(" rename catalog: {buf}_"),
-            th.style(Face::ComposePrompt),
-        ))),
-        Some(Naming::RenamePane(buf)) => members.push(Line::from(Span::styled(
-            format!(" rename pane: {buf}_"),
-            th.style(Face::ComposePrompt),
-        ))),
-        None => {}
     }
     let member_keep = rail
         .members
@@ -4608,7 +4915,7 @@ fn clip(text: &str, max: usize) -> String {
 fn step_timing_lines(n: u32, timing: &crate::prof::Timing) -> Vec<Line<'static>> {
     let th = theme::t();
     let mut lines = vec![Line::from(Span::styled(
-        format!(" ◆ Step {n}  {}", timing.compact()),
+        format!(" · Step {n}  {}", timing.compact()),
         th.style(Face::PlotMute),
     ))];
     let parts = [
@@ -4829,6 +5136,7 @@ pub fn default_launch() -> Launch {
         provider: None,
         model: None,
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        experience: Experience::Smith,
     }
 }
 

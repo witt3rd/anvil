@@ -4,7 +4,7 @@ use std::io;
 use std::path::PathBuf;
 
 use anvil::default_hammer;
-use anvil::tui::{self, Launch};
+use anvil::tui::{self, Experience, Launch};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -38,6 +38,10 @@ struct Cli {
     #[arg(long, short = 'R')]
     #[allow(dead_code)]
     remote: Option<String>,
+    /// Root experience. `smith` is the current seat. `window` is the
+    /// parallel app (window → panel → terminal).
+    #[arg(long, env = "SMITH_EXPERIENCE", default_value = "smith")]
+    experience: String,
 }
 
 fn main() -> io::Result<()> {
@@ -47,6 +51,7 @@ fn main() -> io::Result<()> {
     }
     let cli = Cli::parse();
     anvil::prof::init();
+    let experience = Experience::parse(&cli.experience).map_err(io::Error::other)?;
     tui::run(Launch {
         store: cli.store,
         root: cli.root,
@@ -60,5 +65,6 @@ fn main() -> io::Result<()> {
         cwd: cli
             .cwd
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+        experience,
     })
 }
