@@ -219,8 +219,10 @@ The next ask is a projection of the event log, not a paste of cards.
 - `smith` starts a casing on a layout; starts serve if needed.
 - Close the casing: serve, members, workspaces, catalogs, layouts,
   and hot hammers stay.
-- Remote: `smith --remote prince` or `ssh prince smith`. Sessions stay
-  on prince. One host per casing first.
+- Remote: `smith --remote prince` / `anvil --remote prince inspect`
+  is `ssh [-t] prince -- smith|anvil …`. Sessions stay on that host.
+  That host needs anvil on PATH and (for boot) `anvil serve --install`.
+  One host per casing first.
 
 ## Build order
 
@@ -243,7 +245,8 @@ The next ask is a projection of the event log, not a paste of cards.
 8. **Reboot** — first cut. `anvil serve --install` writes
    `~/.config/systemd/user/anvil.service`. Cold until a casing
    warms a session. Temporary mounts do not survive.
-9. **Remote** — SSH bridge.
+9. **Remote** — first cut. `smith --remote HOST` / `anvil --remote HOST`
+   is SSH; sessions stay on HOST. Linger on `--install`.
 10. **Mixed members** — bash / web, and promoted mounts. Textbook: Zellij.
 
 ## Open

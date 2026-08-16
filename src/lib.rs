@@ -8,6 +8,7 @@ pub mod complete;
 pub mod config;
 pub mod frame;
 pub mod oauth;
+pub mod remote;
 pub mod secret;
 pub mod serve;
 pub mod tui;

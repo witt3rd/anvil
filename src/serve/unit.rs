@@ -30,7 +30,32 @@ pub fn install() -> io::Result<PathBuf> {
     fs::write(&path, UNIT_BODY)?;
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", "--now", UNIT_NAME])?;
+    enable_linger()?;
     Ok(path)
+}
+
+pub fn enable_linger() -> io::Result<()> {
+    let user = std::env::var("USER").map_err(io::Error::other)?;
+    let status = Command::new("loginctl")
+        .args(["enable-linger", &user])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "loginctl enable-linger {user} failed"
+        )))
+    }
+}
+
+pub fn linger_on() -> bool {
+    let Ok(user) = std::env::var("USER") else {
+        return false;
+    };
+    let out = Command::new("loginctl")
+        .args(["show-user", &user, "-p", "Linger", "--value"])
+        .output();
+    matches!(out, Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "yes")
 }
 
 pub fn uninstall() -> io::Result<()> {

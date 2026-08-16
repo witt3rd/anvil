@@ -26,6 +26,11 @@ struct Cli {
     #[arg(long, global = true)]
     session: Option<String>,
 
+    /// Run this command on HOST over SSH. Sessions stay there.
+    #[arg(long, short = 'R', global = true)]
+    #[allow(dead_code)]
+    remote: Option<String>,
+
     /// Path to hammer/hammer.py
     #[arg(long, env = "ANVIL_HAMMER", global = true)]
     hammer: Option<PathBuf>,
@@ -158,6 +163,10 @@ enum CatalogCmd {
 }
 
 fn main() -> ExitCode {
+    let (remote, rest) = anvil::remote::strip_remote(std::env::args().skip(1));
+    if let Some(host) = remote {
+        return ExitCode::from(anvil::remote::exec(&host, "anvil", &rest, false) as u8);
+    }
     let cli = Cli::parse();
     let hammer = cli.hammer.clone().unwrap_or_else(default_hammer);
 
@@ -286,10 +295,11 @@ fn serve_cmd(
             Ok(path) => {
                 println!("installed\t{}", path.display());
                 println!(
-                    "unit\t{} enabled={} active={}",
+                    "unit\t{} enabled={} active={} linger={}",
                     anvil::serve::UNIT_NAME,
                     anvil::serve::unit::enabled(),
-                    anvil::serve::unit::active()
+                    anvil::serve::unit::active(),
+                    anvil::serve::unit::linger_on()
                 );
                 ExitCode::SUCCESS
             }
@@ -297,6 +307,7 @@ fn serve_cmd(
         };
     }
     if status {
+        println!("linger\t{}", anvil::serve::unit::linger_on());
         if anvil::serve::unit::enabled() {
             println!(
                 "unit\t{} enabled={} active={}",

@@ -181,7 +181,8 @@ anvil session new audit
 anvil workspace add fleet-os audit
 anvil catalog add compute-saturation fleet-os
 anvil serve --status
-anvil serve --install            # user systemd unit; cold after reboot
+anvil serve --install            # user unit + linger; cold after reboot
+smith --remote prince -p nim     # SSH; sessions stay on prince
 anvil inspect
 anvil session log audit
 anvil mount clock

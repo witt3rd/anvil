@@ -34,9 +34,17 @@ struct Cli {
     model: Option<String>,
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// Run smith on HOST over SSH. Sessions stay there. One host per casing.
+    #[arg(long, short = 'R')]
+    #[allow(dead_code)]
+    remote: Option<String>,
 }
 
 fn main() -> io::Result<()> {
+    let (remote, rest) = anvil::remote::strip_remote(std::env::args().skip(1));
+    if let Some(host) = remote {
+        std::process::exit(anvil::remote::exec(&host, "smith", &rest, true));
+    }
     let cli = Cli::parse();
     tui::run(Launch {
         store: cli.store,

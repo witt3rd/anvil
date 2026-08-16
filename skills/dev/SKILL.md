@@ -59,7 +59,9 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
 - `anvil serve` owns hammers. smith starts it if the socket is down.
   `anvil serve --status` / `--stop`. `anvil serve --install` enables
   the user systemd unit (back after login/reboot, still cold).
-  `--uninstall` removes it. Log: `~/.anvil/serve.log`. Close smith:
+  `--uninstall` removes it. `--install` also `loginctl enable-linger`
+  so the user instance (and serve) start at boot. Log: `~/.anvil/serve.log`.
+  Close smith:
   serve stays. `--store` is still in-process (no serve).
 - Event log is `sessions/<id>/events.jsonl` (seq, ts, kind). Serve
   writes it. Cards project it. Ask projects only model-visible
