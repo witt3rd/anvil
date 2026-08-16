@@ -177,6 +177,10 @@ enum PtyCmd {
         #[arg(long)]
         workspace: Option<String>,
     },
+    /// List PTY members (hot if serve is up).
+    List,
+    /// Print the live screen. Needs serve. Warms $SHELL if cold.
+    Snap { name: String },
 }
 
 #[derive(Subcommand)]
@@ -741,6 +745,66 @@ fn pty_cmd(root: Option<&std::path::Path>, cmd: &PtyCmd) -> ExitCode {
             match root.save_workspace(&ws) {
                 Ok(()) => {
                     println!("{workspace}\t{name} · pty");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => fail(err),
+            }
+        }
+        PtyCmd::List => {
+            let mut names = Vec::new();
+            match root.list_workspaces() {
+                Ok(list) => {
+                    for ws in list {
+                        for member in ws.members {
+                            if member.is_pty() && !names.iter().any(|n| n == member.id()) {
+                                names.push(member.id().to_string());
+                            }
+                        }
+                    }
+                }
+                Err(err) => return fail(err),
+            }
+            let hot = match anvil::serve::Client::connect(anvil::serve::default_sock()) {
+                Ok(mut c) => match c.inspect() {
+                    Ok(report) => report
+                        .services
+                        .into_iter()
+                        .filter(|s| s.kind == "pty" && s.state == "hot")
+                        .map(|s| s.name)
+                        .collect::<Vec<_>>(),
+                    Err(_) => Vec::new(),
+                },
+                Err(_) => Vec::new(),
+            };
+            if names.is_empty() && hot.is_empty() {
+                return ExitCode::SUCCESS;
+            }
+            for name in &hot {
+                if !names.iter().any(|n| n == name) {
+                    names.push(name.clone());
+                }
+            }
+            names.sort();
+            for name in names {
+                let state = if hot.iter().any(|h| h == &name) {
+                    "hot"
+                } else {
+                    "cold"
+                };
+                println!("{name}\tpty\t{state}");
+            }
+            ExitCode::SUCCESS
+        }
+        PtyCmd::Snap { name } => {
+            let mut c = match anvil::serve::Client::connect(anvil::serve::default_sock()) {
+                Ok(c) => c,
+                Err(_) => return fail("serve is down — start smith or `anvil serve`"),
+            };
+            match c.pty_snap(name) {
+                Ok(screen) => {
+                    for line in screen.lines {
+                        println!("{}", line.trim_end());
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(err) => fail(err),

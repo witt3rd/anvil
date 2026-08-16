@@ -251,6 +251,7 @@ The next ask is a projection of the event log, not a paste of cards.
     owns `$SHELL` (portable-pty + vt100). smith projects the screen.
     `anvil workspace add <ws> bash --pty`. Rail `p` names one. Keys
     go to the PTY when that pane is focused; Ctrl+Q closes the casing.
+    `anvil pty snap` / inspect `casing.main` text is the live screen.
     Web / promoted mounts still later. Textbook: Zellij. Not a host.
 
 ## Open

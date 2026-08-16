@@ -25,6 +25,25 @@ pub struct PtyScreen {
     pub alive: bool,
 }
 
+impl PtyScreen {
+    /// Last two non-empty rows. Inspect chrome; not the full screen.
+    pub fn preview(&self) -> Option<String> {
+        let mut rows: Vec<&str> = self
+            .lines
+            .iter()
+            .map(|line| line.trim_end())
+            .filter(|line| !line.is_empty())
+            .rev()
+            .take(2)
+            .collect();
+        if rows.is_empty() {
+            return None;
+        }
+        rows.reverse();
+        Some(rows.join(" · "))
+    }
+}
+
 pub struct PtyHost {
     map: Mutex<HashMap<String, Arc<LivePty>>>,
     pumps: Mutex<Vec<thread::JoinHandle<()>>>,
@@ -84,6 +103,15 @@ impl PtyHost {
     pub fn snap(&self, name: &str) -> io::Result<PtyScreen> {
         let live = self.ensure(name, DEFAULT_COLS, DEFAULT_ROWS)?;
         Ok(live.snap(name))
+    }
+
+    /// Screen if the shell is already up. Does not spawn.
+    pub fn peek(&self, name: &str) -> Option<PtyScreen> {
+        self.map
+            .lock()
+            .ok()
+            .and_then(|m| m.get(name).cloned())
+            .map(|live| live.snap(name))
     }
 
     pub fn shutdown(&self) {
@@ -294,6 +322,20 @@ fn screen_lines(screen: &vt100::Screen) -> (Vec<String>, u16, u16, u16, u16) {
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn preview_is_the_last_nonempty_row() {
+        let screen = PtyScreen {
+            name: "bash".into(),
+            cols: 8,
+            rows: 3,
+            cursor_col: 0,
+            cursor_row: 1,
+            lines: vec!["$ echo hi".into(), "hi".into(), "        ".into()],
+            alive: true,
+        };
+        assert_eq!(screen.preview().as_deref(), Some("$ echo hi · hi"));
+    }
 
     #[test]
     fn shutdown_joins_the_pump() {

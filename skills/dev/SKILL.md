@@ -84,7 +84,9 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
 - Mixed members: `anvil workspace add fleet-os bash --pty` (or
   `anvil pty new bash`). Serve owns `$SHELL` (portable-pty + vt100).
   Focus the pty pane: keys go to the shell; Ctrl+C is SIGINT; Ctrl+Q
-  closes the casing. Zellij/herdr/tmux are scars, not hosts.
+  closes the casing. `anvil pty snap bash` prints the live screen
+  (warms if cold). `anvil inspect` puts the last row on `casing.main`
+  when that member is front. Zellij/herdr/tmux are scars, not hosts.
 
 ## Providers
 

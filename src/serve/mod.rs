@@ -854,4 +854,39 @@ mod tests {
         let _ = handle.join();
         panic!("pty screen never showed marker:\n{last}");
     }
+
+    #[test]
+    fn inspect_puts_pty_preview_on_the_stage() {
+        let (_tmp, sock, handle) = boot();
+        let mut c = Client::connect(&sock).unwrap();
+        c.pty_open("bash", 24, 80).unwrap();
+        c.pty_write("bash", "echo anvil-pty-ok\r").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut last = None;
+        while Instant::now() < deadline {
+            let report = c.inspect().unwrap();
+            last = Some(report.clone());
+            let bash = report.services.iter().find(|s| s.name == "bash");
+            assert!(bash.is_some_and(|s| s.kind == "pty"), "{report:?}");
+            let main = report
+                .slots
+                .iter()
+                .find(|s| s.name == "casing.main")
+                .expect("main");
+            assert_eq!(main.occupant.as_deref(), Some("bash"));
+            if main
+                .text
+                .as_deref()
+                .is_some_and(|t| t.contains("anvil-pty-ok"))
+            {
+                c.shutdown().unwrap();
+                let _ = handle.join();
+                return;
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+        c.shutdown().unwrap();
+        let _ = handle.join();
+        panic!("inspect never showed pty preview: {last:?}");
+    }
 }

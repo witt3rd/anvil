@@ -122,6 +122,10 @@ impl State {
             });
         }
         let front = self.live_front();
+        let front_text = front
+            .as_deref()
+            .and_then(|name| self.ptys.peek(name))
+            .and_then(|s| s.preview());
         let status = self.mounts.seat(SLOT_STATUS);
         let slots = vec![
             Slot {
@@ -134,7 +138,7 @@ impl State {
                 name: SLOT_MAIN.into(),
                 kind: "stage".into(),
                 occupant: front.clone(),
-                text: None,
+                text: front_text,
             },
             Slot {
                 name: SLOT_STATUS.into(),

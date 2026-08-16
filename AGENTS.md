@@ -182,6 +182,7 @@ anvil session new audit
 anvil workspace add fleet-os audit
 anvil workspace add fleet-os bash --pty
 anvil pty new bash --workspace fleet-os
+anvil pty snap bash                  # live screen; warms $SHELL
 anvil catalog add compute-saturation fleet-os
 anvil serve --status
 anvil serve --install            # user unit + linger; cold after reboot
