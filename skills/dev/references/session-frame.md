@@ -237,7 +237,9 @@ The next ask is a projection of the event log, not a paste of cards.
    disposes to quiescence. Temporary, in memory.
 6. **Trajectory sash** — first cut. Alt+L in smith lists the event
    log (seq, visible, kind, timing). Not a zoomed timeline yet.
-7. **Layout geometry + many casings** — splits; more than one smith.
+7. **Layout geometry + many casings** — first cut. Sash tabs
+   (workspaces); Alt+[ ] cycle; two-member benches split; Alt+J
+   focuses the peer. Many casings already attach to one serve.
 8. **Reboot** — systemd user unit; cold until exposed.
 9. **Remote** — SSH bridge.
 10. **Mixed members** — bash / web, and promoted mounts. Textbook: Zellij.

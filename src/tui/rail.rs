@@ -164,6 +164,67 @@ impl Rail {
         self.idx = next.clamp(0, (len - 1) as isize) as usize;
     }
 
+    /// Cycle the sash (workspace) in the current catalog. Returns true if
+    /// the focused session changed.
+    pub fn cycle_sash(&mut self, root: &FrameRoot, delta: isize) -> Result<bool, FrameError> {
+        self.refresh(root)?;
+        if self.workspaces.is_empty() {
+            return Ok(false);
+        }
+        let i = self
+            .workspaces
+            .iter()
+            .position(|w| w == &self.workspace)
+            .unwrap_or(0);
+        let n = self.workspaces.len() as isize;
+        let next = (i as isize + delta).rem_euclid(n) as usize;
+        if self.workspaces[next] == self.workspace {
+            return Ok(false);
+        }
+        self.workspace = self.workspaces[next].clone();
+        self.refresh(root)?;
+        let switched = if self.members.iter().any(|m| m == &self.session) {
+            false
+        } else if let Some(first) = self.members.first().cloned() {
+            self.session = first;
+            true
+        } else {
+            false
+        };
+        self.kind = RailKind::Member;
+        self.idx = self
+            .members
+            .iter()
+            .position(|m| m == &self.session)
+            .unwrap_or(0);
+        self.persist(root)?;
+        Ok(switched)
+    }
+
+    pub fn peer_session(&self) -> Option<String> {
+        if self.members.len() < 2 {
+            return None;
+        }
+        self.members.iter().find(|m| *m != &self.session).cloned()
+    }
+
+    pub fn focus_peer(&mut self, root: &FrameRoot) -> Result<bool, FrameError> {
+        let Some(peer) = self.peer_session() else {
+            return Ok(false);
+        };
+        if peer == self.session {
+            return Ok(false);
+        }
+        self.session = peer;
+        self.idx = self
+            .members
+            .iter()
+            .position(|m| m == &self.session)
+            .unwrap_or(0);
+        self.persist(root)?;
+        Ok(true)
+    }
+
     pub fn cycle_kind(&mut self) {
         self.kind = match self.kind {
             RailKind::Catalog => RailKind::Workspace,
@@ -280,5 +341,32 @@ mod tests {
         assert!(ws.members.iter().any(|m| m.session_id() == Some("audit")));
         let layout = root.layout("default").unwrap();
         assert_eq!(layout.front_session.as_deref(), Some("audit"));
+    }
+
+    #[test]
+    fn cycle_sash_switches_workspace_and_peer_is_the_other_member() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        root.ensure_defaults().unwrap();
+        root.create_session("audit").unwrap();
+        root.create_session("research").unwrap();
+        let mut fleet = root.create_workspace("fleet-os").unwrap();
+        fleet.add_member(MemberRef::session("audit"));
+        fleet.add_member(MemberRef::session("research"));
+        root.save_workspace(&fleet).unwrap();
+        let mut cat = root.catalog("default").unwrap();
+        cat.add_workspace("fleet-os");
+        root.save_catalog(&cat).unwrap();
+        let mut rail =
+            Rail::load(&root, Some("default"), Some("default"), Some("default")).unwrap();
+        assert_eq!(rail.workspace, "default");
+        let switched = rail.cycle_sash(&root, 1).unwrap();
+        assert_eq!(rail.workspace, "fleet-os");
+        assert!(switched);
+        assert_eq!(rail.session, "audit");
+        assert_eq!(rail.peer_session().as_deref(), Some("research"));
+        assert!(rail.focus_peer(&root).unwrap());
+        assert_eq!(rail.session, "research");
+        assert_eq!(rail.peer_session().as_deref(), Some("audit"));
     }
 }

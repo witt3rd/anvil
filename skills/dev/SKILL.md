@@ -101,7 +101,10 @@ cargo build --bins
 Enter asks (model → strike). Ctrl+S raw-strikes the compose buffer as
 Python. `@` opens a fuzzy file picker (cwd, skips `.git`/`target`).
 Alt+. folds the last thinking/strike card. Wheel / PgUp / PgDn scroll.
-Tab focuses the rail. Alt+L toggles the trajectory sash (event log).
+Tab focuses the rail. Alt+[ / Alt+] cycle workspace sashes. Alt+J
+swaps the split pane when a bench has two members. Alt+L toggles
+the trajectory sash (event log). A second `smith` is another casing
+on the same serve.
 `/mount clock` and `/unmount` (Alt+M / Alt+U;
 rail `m`/`u`) mount a temporary clock on `casing.status`. Ctrl+C
 closes the casing; serve keeps the hammers.

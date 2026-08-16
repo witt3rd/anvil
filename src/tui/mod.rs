@@ -156,6 +156,8 @@ struct App {
     last_mount: Option<String>,
     view: MainView,
     log_events: Vec<LogEvent>,
+    peer_session: Option<String>,
+    peer_cards: Vec<Card>,
 }
 
 struct PickerState {
@@ -191,7 +193,23 @@ impl App {
             .iter()
             .filter_map(card_from_event)
             .collect();
+        self.load_peer();
         self.stick_bottom = true;
+    }
+
+    fn load_peer(&mut self) {
+        self.peer_cards.clear();
+        self.peer_session = self.rail.as_ref().and_then(|r| r.peer_session());
+        let Some(root) = &self.frame else {
+            return;
+        };
+        let Some(peer) = &self.peer_session else {
+            return;
+        };
+        if let Ok(events) = root.load_events(peer) {
+            let start = events.len().saturating_sub(200);
+            self.peer_cards = events[start..].iter().filter_map(card_from_event).collect();
+        }
     }
 
     fn reload_log(&mut self) {
@@ -364,6 +382,7 @@ impl App {
                     folded,
                 });
                 self.reload_log();
+                self.load_peer();
             }
             Ev::Answer(text) => {
                 if !text.is_empty() {
@@ -506,6 +525,8 @@ pub fn run(launch: Launch) -> io::Result<()> {
         last_mount: None,
         view: MainView::Smith,
         log_events: Vec::new(),
+        peer_session: None,
+        peer_cards: Vec::new(),
     };
     if app.frame.is_some() {
         app.load_session_cards();
@@ -774,6 +795,47 @@ fn event_loop(
     }
 }
 
+fn cycle_sash(app: &mut App, delta: isize) {
+    if app.busy {
+        app.status = "busy — wait to switch".into();
+        return;
+    }
+    if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+        match rail.cycle_sash(root, delta) {
+            Ok(_) => {
+                app.load_session_cards();
+                app.expose_live();
+                app.status = format!(
+                    "sash {}",
+                    app.rail
+                        .as_ref()
+                        .map(|r| r.workspace.as_str())
+                        .unwrap_or("")
+                );
+            }
+            Err(err) => app.status = err.to_string(),
+        }
+    }
+}
+
+fn swap_pane(app: &mut App) {
+    if app.busy {
+        app.status = "busy — wait to switch".into();
+        return;
+    }
+    if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+        match rail.focus_peer(root) {
+            Ok(true) => {
+                app.load_session_cards();
+                app.expose_live();
+                app.status = format!("session {}", app.session_id());
+            }
+            Ok(false) => app.status = "no peer pane".into(),
+            Err(err) => app.status = err.to_string(),
+        }
+    }
+}
+
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if let Some(Naming::Session(buf)) = app.rail.as_ref().and_then(|r| r.naming.clone()) {
         return handle_naming(app, key, buf);
@@ -835,6 +897,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 app.reload_log();
                 app.stick_bottom = true;
             }
+        }
+        (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
+        (KeyCode::Char(']'), KeyModifiers::ALT) => cycle_sash(app, 1),
+        (KeyCode::Char('j'), KeyModifiers::ALT) | (KeyCode::Char('k'), KeyModifiers::ALT) => {
+            swap_pane(app);
         }
         (KeyCode::PageUp, _) => {
             app.stick_bottom = false;
@@ -993,9 +1060,11 @@ fn draw(frame: &mut Frame, app: &App) {
         .map(|p| (p.hits.len() as u16 + 2).clamp(3, 10))
         .unwrap_or(0);
     let input_h = (app.input.matches('\n').count() as u16 + 1).clamp(1, 8) + 2;
+    let sash_h = if app.rail.is_some() { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(sash_h),
             Constraint::Min(6),
             Constraint::Length(picker_h),
             Constraint::Length(input_h),
@@ -1003,16 +1072,13 @@ fn draw(frame: &mut Frame, app: &App) {
         ])
         .split(body);
 
+    if sash_h > 0 {
+        draw_sashes(frame, app, chunks[0]);
+    }
+    let main = chunks[1];
     let lines = match app.view {
         MainView::Smith => render_cards(&app.cards),
         MainView::Trajectory => render_trajectory(&app.log_events),
-    };
-    let view_h = chunks[0].height.saturating_sub(2);
-    let max_scroll = lines.len().saturating_sub(view_h as usize) as u16;
-    let scroll = if app.stick_bottom {
-        max_scroll
-    } else {
-        app.scroll.min(max_scroll)
     };
     let title = match (app.view, &app.rail) {
         (MainView::Trajectory, Some(r)) => format!(" trajectory · {} · Alt+L ", r.session),
@@ -1020,11 +1086,23 @@ fn draw(frame: &mut Frame, app: &App) {
         (MainView::Smith, Some(r)) => format!(" smith · {} ", r.session),
         (MainView::Smith, None) => " smith ".into(),
     };
-    let transcript = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-    frame.render_widget(transcript, chunks[0]);
+    let split = app.view == MainView::Smith && app.peer_session.is_some();
+    if split {
+        let halves = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(main);
+        draw_scroll_pane(frame, halves[0], &title, &lines, app);
+        let peer = app.peer_session.as_deref().unwrap_or("peer");
+        let peer_lines = render_cards(&app.peer_cards);
+        draw_scroll_pane(frame, halves[1], &format!(" {peer} "), &peer_lines, app);
+    } else {
+        draw_scroll_pane(frame, main, &title, &lines, app);
+    }
+
+    let picker_area = chunks[2];
+    let compose_area = chunks[3];
+    let status_area = chunks[4];
 
     if let Some(picker) = &app.picker {
         let items: Vec<ListItem> = picker
@@ -1045,15 +1123,15 @@ fn draw(frame: &mut Frame, app: &App) {
                 .borders(Borders::ALL)
                 .title(format!(" @{} ", picker.query)),
         );
-        frame.render_widget(Clear, chunks[1]);
-        frame.render_widget(list, chunks[1]);
+        frame.render_widget(Clear, picker_area);
+        frame.render_widget(list, picker_area);
     }
 
     let compose = Paragraph::new(app.input.as_str())
         .block(Block::default().borders(Borders::ALL).title(" ask "));
-    frame.render_widget(compose, chunks[2]);
+    frame.render_widget(compose, compose_area);
     let (cx, cy) = cursor_in(&app.input, app.cursor);
-    frame.set_cursor_position((chunks[2].x + cx + 1, chunks[2].y + cy + 1));
+    frame.set_cursor_position((compose_area.x + cx + 1, compose_area.y + cy + 1));
 
     let spin = if app.busy {
         ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"][(app.tick as usize) % 8]
@@ -1080,8 +1158,61 @@ fn draw(frame: &mut Frame, app: &App) {
                 .map(|t| format!(" · {t}"))
                 .unwrap_or_default()
         ))),
-        chunks[3],
+        status_area,
     );
+}
+
+fn draw_sashes(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let Some(rail) = &app.rail else {
+        return;
+    };
+    let tabs: String = if rail.workspaces.is_empty() {
+        " (no sashes) ".into()
+    } else {
+        rail.workspaces
+            .iter()
+            .map(|w| {
+                if w == &rail.workspace {
+                    format!("[{w}]")
+                } else {
+                    format!(" {w} ")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {tabs}  Alt+[ ]"),
+            Style::default().fg(Color::Yellow),
+        ))),
+        area,
+    );
+}
+
+fn draw_scroll_pane(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    title: &str,
+    lines: &[Line<'static>],
+    app: &App,
+) {
+    let view_h = area.height.saturating_sub(2);
+    let max_scroll = lines.len().saturating_sub(view_h as usize) as u16;
+    let scroll = if app.stick_bottom {
+        max_scroll
+    } else {
+        app.scroll.min(max_scroll)
+    };
+    let widget = Paragraph::new(lines.to_vec())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title.to_string()),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(widget, area);
 }
 
 fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
