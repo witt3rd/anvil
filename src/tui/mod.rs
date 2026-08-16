@@ -320,8 +320,7 @@ impl App {
         }
         self.load_others();
         self.stick_focused();
-        self.refresh_ptys();
-        self.refresh_edits();
+        self.refresh_live();
     }
 
     fn other_ids(&self) -> Vec<String> {
@@ -371,57 +370,106 @@ impl App {
             .as_ref()
             .ok_or_else(|| "pty needs serve".to_string())?;
         let mut client = Client::connect(sock).map_err(|err| err.to_string())?;
+        let _ = client.set_timeout(Duration::from_millis(400));
         f(&mut client).map_err(|err| err.to_string())
     }
 
-    fn refresh_ptys(&mut self) {
+    fn needs_live_snap(&self) -> bool {
+        self.focused_is_pty()
+            || self.focused_is_edit()
+            || self
+                .other_ids()
+                .iter()
+                .any(|id| self.member_is_pty(id) || self.member_is_edit(id))
+    }
+
+    fn refresh_live(&mut self) {
+        let Some(sock) = self.sock.clone() else {
+            return;
+        };
+        let Ok(mut client) = Client::connect(&sock) else {
+            return;
+        };
+        let _ = client.set_timeout(Duration::from_millis(150));
+        self.refresh_ptys_with(&mut client);
+        self.refresh_edits_with(&mut client);
+    }
+
+    fn refresh_ptys_with(&mut self, client: &mut Client) {
         if self.focused_is_pty() {
             let name = self.session_id();
-            match self.with_pty_client(|c| c.pty_snap(&name)) {
+            match client.pty_snap(&name) {
                 Ok(screen) => self.pty_screen = Some(screen),
-                Err(err) => self.status = err,
+                Err(err) => self.status = err.to_string(),
             }
         } else {
             self.pty_screen = None;
         }
+        let ids: Vec<String> = self
+            .other_ids()
+            .into_iter()
+            .filter(|id| self.member_is_pty(id))
+            .collect();
         let mut ptys = HashMap::new();
-        for id in self.other_ids() {
-            if !self.member_is_pty(&id) {
-                continue;
-            }
-            match self.with_pty_client(|c| c.pty_snap(&id)) {
+        for id in ids {
+            match client.pty_snap(&id) {
                 Ok(screen) => {
                     ptys.insert(id, screen);
                 }
-                Err(err) => self.status = err,
+                Err(err) => self.status = err.to_string(),
             }
         }
         self.other_ptys = ptys;
     }
 
-    fn refresh_edits(&mut self) {
+    fn refresh_edits_with(&mut self, client: &mut Client) {
         if self.focused_is_edit() {
             let name = self.session_id();
-            match self.with_pty_client(|c| c.edit_snap(&name)) {
+            match client.edit_snap(&name) {
                 Ok(buf) => self.edit_buf = Some(buf),
-                Err(err) => self.status = err,
+                Err(err) => self.status = err.to_string(),
             }
         } else {
             self.edit_buf = None;
         }
+        let ids: Vec<String> = self
+            .other_ids()
+            .into_iter()
+            .filter(|id| self.member_is_edit(id))
+            .collect();
         let mut edits = HashMap::new();
-        for id in self.other_ids() {
-            if !self.member_is_edit(&id) {
-                continue;
-            }
-            match self.with_pty_client(|c| c.edit_snap(&id)) {
+        for id in ids {
+            match client.edit_snap(&id) {
                 Ok(buf) => {
                     edits.insert(id, buf);
                 }
-                Err(err) => self.status = err,
+                Err(err) => self.status = err.to_string(),
             }
         }
         self.other_edits = edits;
+    }
+
+    fn pull_status(&mut self) -> bool {
+        let Some(sock) = self.sock.clone() else {
+            return false;
+        };
+        let Ok(mut client) = Client::connect(&sock) else {
+            return false;
+        };
+        let _ = client.set_timeout(Duration::from_millis(150));
+        let Ok(report) = client.inspect() else {
+            return false;
+        };
+        let next = report
+            .slots
+            .iter()
+            .find(|s| s.name == "casing.status")
+            .and_then(|s| s.text.clone());
+        if self.slot_status == next {
+            return false;
+        }
+        self.slot_status = next;
+        true
     }
 
     fn send_edit(&mut self, op: EditOp, text: &str) {
@@ -985,80 +1033,116 @@ fn event_loop(
 ) -> io::Result<()> {
     let mut last_tick = Instant::now();
     let mut last_inspect = Instant::now();
+    let mut last_snap = Instant::now();
+    let mut dirty = true;
     loop {
         while let Ok(ev) = app.events.try_recv() {
             app.apply(ev);
+            dirty = true;
         }
-        if last_tick.elapsed() >= Duration::from_millis(120) {
+
+        let mut quit = false;
+        while event::poll(Duration::ZERO)? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if handle_key(app, key) {
+                        quit = true;
+                        break;
+                    }
+                    dirty = true;
+                }
+                Event::Mouse(mouse) if mouse_action(mouse.kind) => {
+                    handle_mouse(app, mouse);
+                    dirty = true;
+                }
+                Event::Resize(_, _) => {
+                    sync_pty_size(terminal, app);
+                    dirty = true;
+                }
+                _ => {}
+            }
+        }
+        if quit {
+            return Ok(());
+        }
+
+        if app.busy && last_tick.elapsed() >= Duration::from_millis(120) {
             app.tick = app.tick.wrapping_add(1);
             last_tick = Instant::now();
+            dirty = true;
         }
+
+        if app.needs_live_snap() && last_snap.elapsed() >= Duration::from_millis(80) {
+            sync_pty_size(terminal, app);
+            app.refresh_live();
+            last_snap = Instant::now();
+            dirty = true;
+        }
+
         if last_inspect.elapsed() >= Duration::from_millis(400) {
             last_inspect = Instant::now();
-            if let Some(sock) = &app.sock {
-                if let Ok(mut c) = Client::connect(sock) {
-                    if let Ok(report) = c.inspect() {
-                        app.slot_status = report
-                            .slots
-                            .iter()
-                            .find(|s| s.name == "casing.status")
-                            .and_then(|s| s.text.clone());
-                    }
-                }
+            if app.pull_status() {
+                dirty = true;
             }
         }
-        if app.focused_is_edit() || app.other_ids().iter().any(|id| app.member_is_edit(id)) {
-            app.refresh_edits();
-        }
-        if app.focused_is_pty() || app.other_ids().iter().any(|id| app.member_is_pty(id)) {
-            if let Ok(size) = terminal.size() {
-                let rail_w = if app.rail.is_some() { 24 } else { 0 };
-                let split = !app.other_ids().is_empty();
-                let chrome = if app.focused_is_pty() && app.focus == Focus::Compose {
-                    3
-                } else {
-                    6
-                };
-                let cols = size.width.saturating_sub(rail_w + 2).max(2);
-                let rows = if split {
-                    size.height
-                        .saturating_sub(chrome)
-                        .saturating_mul(55)
-                        .saturating_div(100)
-                        .saturating_sub(2)
-                        .max(2)
-                } else {
-                    size.height.saturating_sub(chrome + 2).max(2)
-                };
-                if app.pty_cols != cols || app.pty_rows != rows {
-                    app.pty_cols = cols;
-                    app.pty_rows = rows;
-                    if app.focused_is_pty() {
-                        let name = app.session_id();
-                        if let Ok(screen) = app.with_pty_client(|c| c.pty_resize(&name, cols, rows))
-                        {
-                            app.pty_screen = Some(screen);
-                        }
-                    }
-                } else {
-                    app.refresh_ptys();
-                }
-            }
-        }
-        terminal.draw(|frame| draw(frame, app))?;
 
-        if !event::poll(Duration::from_millis(80))? {
-            continue;
+        if dirty {
+            terminal.draw(|frame| draw(frame, app))?;
+            dirty = false;
         }
-        match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if handle_key(app, key) {
-                    return Ok(());
-                }
-            }
-            Event::Mouse(mouse) => handle_mouse(app, mouse),
-            Event::Resize(_, _) => {}
-            _ => {}
+
+        let wait = if app.busy {
+            Duration::from_millis(32)
+        } else if app.needs_live_snap() {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(80)
+        };
+        let _ = event::poll(wait);
+    }
+}
+
+fn mouse_action(kind: MouseEventKind) -> bool {
+    matches!(
+        kind,
+        MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+    )
+}
+
+fn sync_pty_size(terminal: &Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) {
+    if !app.focused_is_pty() && !app.other_ids().iter().any(|id| app.member_is_pty(id)) {
+        return;
+    }
+    let Ok(size) = terminal.size() else {
+        return;
+    };
+    let rail_w = if app.rail.is_some() { 24 } else { 0 };
+    let split = !app.other_ids().is_empty();
+    let chrome = if app.focused_is_pty() && app.focus == Focus::Compose {
+        3
+    } else {
+        6
+    };
+    let cols = size.width.saturating_sub(rail_w + 2).max(2);
+    let rows = if split {
+        size.height
+            .saturating_sub(chrome)
+            .saturating_mul(55)
+            .saturating_div(100)
+            .saturating_sub(2)
+            .max(2)
+    } else {
+        size.height.saturating_sub(chrome + 2).max(2)
+    };
+    if app.pty_cols == cols && app.pty_rows == rows {
+        return;
+    }
+    app.pty_cols = cols;
+    app.pty_rows = rows;
+    if app.focused_is_pty() {
+        let name = app.session_id();
+        if let Ok(screen) = app.with_pty_client(|c| c.pty_resize(&name, cols, rows)) {
+            app.pty_screen = Some(screen);
         }
     }
 }
@@ -2624,5 +2708,13 @@ mod slash_tests {
         assert!(s.contains("strike"), "{s}");
         assert!(s.contains("22ms"), "{s}");
         assert!(s.contains("2+2"), "{s}");
+    }
+
+    #[test]
+    fn mouse_motion_is_not_an_action() {
+        assert!(mouse_action(MouseEventKind::Down(MouseButton::Left)));
+        assert!(mouse_action(MouseEventKind::ScrollUp));
+        assert!(!mouse_action(MouseEventKind::Moved));
+        assert!(!mouse_action(MouseEventKind::Up(MouseButton::Left)));
     }
 }
