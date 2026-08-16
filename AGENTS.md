@@ -104,8 +104,9 @@ the current bruise; in-process tiles wait):
 3. **Event log + slots + inspect** — model-visible means logged;
    named seats; then mount/unmount can land.
 4. **Layout geometry, reboot, SSH** — as in that design.
-5. **Mixed members** (smith | pty | a promoted mount) — later.
-   Textbook: Zellij.
+5. **Mixed members** (smith | pty | a promoted mount) — first cut.
+   Serve owns `$SHELL` via portable-pty + vt100; smith draws it.
+   Textbook: Zellij. Not a host.
 
 **Neighbors (stay neighbors):**
 
@@ -143,7 +144,7 @@ special protocol beyond “another process.”
 | **complete** | Raw HTTP chat. Will waffle. Smoke only. |
 | **slot** | Named seat on the casing a live fiber can occupy. Not yet built. |
 | **log** | Append-only events for one member. Cards and ask project it. Not yet the source of truth. |
-| **tile** | A pane we own: smith or pty. Not yet built. |
+| **tile** | A pane we own: smith or pty. Bash is a PTY member, not a smith. |
 
 ## Layout
 
@@ -158,8 +159,8 @@ one Cargo.toml, two bins
   src/complete.rs      chat/completions smoke
   src/ask.rs           model → extract Python → strike
   src/frame/           sessions, workspaces, catalogs, layouts, transcript
-  src/serve/           unix socket daemon + client
-  src/tui/             smith casing (rail, blocks, worker, @ picker)
+  src/serve/           unix socket daemon + client + PTY host
+  src/tui/             smith casing (rail, blocks, worker, @ picker, pty pane)
   src/bin/anvil.rs     CLI
   src/bin/smith.rs     TUI binary
 hammer/hammer.py       guest
@@ -179,6 +180,8 @@ anvil models --refresh
 anvil ask -p nim 'how many files have synlinks ~/dotfiles/ (recursive)'
 anvil session new audit
 anvil workspace add fleet-os audit
+anvil workspace add fleet-os bash --pty
+anvil pty new bash --workspace fleet-os
 anvil catalog add compute-saturation fleet-os
 anvil serve --status
 anvil serve --install            # user unit + linger; cold after reboot

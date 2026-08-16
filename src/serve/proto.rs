@@ -47,6 +47,27 @@ pub enum Req {
         id: String,
         mount_id: String,
     },
+    PtyOpen {
+        id: String,
+        name: String,
+        cols: u16,
+        rows: u16,
+    },
+    PtyWrite {
+        id: String,
+        name: String,
+        data: String,
+    },
+    PtyResize {
+        id: String,
+        name: String,
+        cols: u16,
+        rows: u16,
+    },
+    PtySnap {
+        id: String,
+        name: String,
+    },
 }
 
 impl Req {
@@ -60,7 +81,11 @@ impl Req {
             | Self::Inspect { id }
             | Self::Expose { id, .. }
             | Self::Mount { id, .. }
-            | Self::Unmount { id, .. } => id,
+            | Self::Unmount { id, .. }
+            | Self::PtyOpen { id, .. }
+            | Self::PtyWrite { id, .. }
+            | Self::PtyResize { id, .. }
+            | Self::PtySnap { id, .. } => id,
         }
     }
 }
@@ -120,6 +145,16 @@ pub enum Msg {
         id: String,
         mount_id: String,
     },
+    PtyScreen {
+        id: String,
+        name: String,
+        cols: u16,
+        rows: u16,
+        cursor_col: u16,
+        cursor_row: u16,
+        lines: Vec<String>,
+        alive: bool,
+    },
 }
 
 impl Msg {
@@ -135,7 +170,8 @@ impl Msg {
             | Self::Bye { id }
             | Self::Inspect { id, .. }
             | Self::Mounted { id, .. }
-            | Self::Unmounted { id, .. } => id,
+            | Self::Unmounted { id, .. }
+            | Self::PtyScreen { id, .. } => id,
         }
     }
 }

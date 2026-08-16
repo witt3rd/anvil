@@ -124,6 +124,11 @@ enum Command {
     },
     /// Unmount a temporary fiber by id (`dyn-1`). Needs serve.
     Unmount { id: String },
+    /// Login-shell members (PTY). Serve owns the process.
+    Pty {
+        #[command(subcommand)]
+        cmd: PtyCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -149,9 +154,29 @@ enum SessionCmd {
 #[derive(Subcommand)]
 enum WorkspaceCmd {
     List,
-    New { name: String },
-    Add { workspace: String, session: String },
-    Rm { name: String },
+    New {
+        name: String,
+    },
+    Add {
+        workspace: String,
+        session: String,
+        /// Add a login-shell member instead of an anvil session.
+        #[arg(long)]
+        pty: bool,
+    },
+    Rm {
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PtyCmd {
+    /// Name a bash member and add it to a workspace. Does not create a session.
+    New {
+        name: String,
+        #[arg(long)]
+        workspace: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -186,6 +211,7 @@ fn main() -> ExitCode {
         Command::Inspect { json } => return inspect_cmd(cli.root.as_deref(), *json),
         Command::Mount { kind, slot } => return mount_cmd(kind, slot.as_deref()),
         Command::Unmount { id } => return unmount_cmd(id),
+        Command::Pty { cmd } => return pty_cmd(cli.root.as_deref(), cmd),
         _ => {}
     }
 
@@ -267,7 +293,8 @@ fn main() -> ExitCode {
         | Command::Serve { .. }
         | Command::Inspect { .. }
         | Command::Mount { .. }
-        | Command::Unmount { .. } => unreachable!("handled above"),
+        | Command::Unmount { .. }
+        | Command::Pty { .. } => unreachable!("handled above"),
     }
 }
 
@@ -549,6 +576,32 @@ fn cold_inspect(root: Option<&std::path::Path>) -> Result<anvil::serve::Report, 
             state: "pending".into(),
         });
     }
+    let mut seen_pty = Vec::new();
+    if let Ok(workspaces) = root.list_workspaces() {
+        for ws in workspaces {
+            for member in ws.members {
+                if !member.is_pty() {
+                    continue;
+                }
+                let name = member.id().to_string();
+                if seen_pty.iter().any(|n| n == &name) {
+                    continue;
+                }
+                seen_pty.push(name.clone());
+                services.push(anvil::serve::Service {
+                    name: name.clone(),
+                    kind: "pty".into(),
+                    state: "cold".into(),
+                    events: 0,
+                });
+                fibers.push(anvil::serve::Fiber {
+                    name: format!("adapter/{name}"),
+                    kind: "pty".into(),
+                    state: "pending".into(),
+                });
+            }
+        }
+    }
     let front = root.layout("default").ok().and_then(|l| l.front_session);
     Ok(anvil::serve::Report {
         root: root.root().display().to_string(),
@@ -608,7 +661,7 @@ fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode
                     let members = ws
                         .members
                         .iter()
-                        .filter_map(|m| m.session_id())
+                        .map(|m| m.label())
                         .collect::<Vec<_>>()
                         .join(",");
                     println!("{}\t{}", ws.name, members);
@@ -624,8 +677,12 @@ fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode
             }
             Err(err) => fail(err),
         },
-        WorkspaceCmd::Add { workspace, session } => {
-            if !root.session_exists(session) {
+        WorkspaceCmd::Add {
+            workspace,
+            session,
+            pty,
+        } => {
+            if !pty && !root.session_exists(session) {
                 if let Err(err) = root.create_session(session) {
                     return fail(err);
                 }
@@ -640,10 +697,19 @@ fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode
                 }
                 Err(err) => return fail(err),
             };
-            ws.add_member(MemberRef::session(session));
+            let member = if *pty {
+                MemberRef::pty(session)
+            } else {
+                MemberRef::session(session)
+            };
+            ws.add_member(member);
             match root.save_workspace(&ws) {
                 Ok(()) => {
-                    println!("{workspace}\t{session}");
+                    if *pty {
+                        println!("{workspace}\t{session} · pty");
+                    } else {
+                        println!("{workspace}\t{session}");
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(err) => fail(err),
@@ -653,6 +719,35 @@ fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => fail(err),
         },
+    }
+}
+
+fn pty_cmd(root: Option<&std::path::Path>, cmd: &PtyCmd) -> ExitCode {
+    let root = match open_root(root) {
+        Ok(r) => r,
+        Err(err) => return fail(err),
+    };
+    match cmd {
+        PtyCmd::New { name, workspace } => {
+            let workspace = workspace.as_deref().unwrap_or("default");
+            if !root.workspace_exists(workspace) {
+                if let Err(err) = root.create_workspace(workspace) {
+                    return fail(err);
+                }
+            }
+            let mut ws = match root.workspace(workspace) {
+                Ok(ws) => ws,
+                Err(err) => return fail(err),
+            };
+            ws.add_member(MemberRef::pty(name));
+            match root.save_workspace(&ws) {
+                Ok(()) => {
+                    println!("{workspace}\t{name} · pty");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => fail(err),
+            }
+        }
     }
 }
 

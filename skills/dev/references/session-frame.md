@@ -247,7 +247,11 @@ The next ask is a projection of the event log, not a paste of cards.
    warms a session. Temporary mounts do not survive.
 9. **Remote** — first cut. `smith --remote HOST` / `anvil --remote HOST`
    is SSH; sessions stay on HOST. Linger on `--install`.
-10. **Mixed members** — bash / web, and promoted mounts. Textbook: Zellij.
+10. **Mixed members** — first cut. Bash is a `MemberRef::Pty`. Serve
+    owns `$SHELL` (portable-pty + vt100). smith projects the screen.
+    `anvil workspace add <ws> bash --pty`. Rail `p` names one. Keys
+    go to the PTY when that pane is focused; Ctrl+Q closes the casing.
+    Web / promoted mounts still later. Textbook: Zellij. Not a host.
 
 ## Open
 

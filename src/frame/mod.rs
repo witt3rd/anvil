@@ -222,6 +222,18 @@ mod tests {
     }
 
     #[test]
+    fn pty_member_round_trips_and_is_not_a_session() {
+        let (_dir, root) = tmp();
+        let mut ws = root.create_workspace("fleet-os").unwrap();
+        ws.add_member(MemberRef::pty("bash"));
+        root.save_workspace(&ws).unwrap();
+        let got = root.workspace("fleet-os").unwrap();
+        assert_eq!(got.members, vec![MemberRef::pty("bash")]);
+        assert_eq!(got.members[0].label(), "bash · pty");
+        assert!(!root.session_exists("bash"));
+    }
+
+    #[test]
     fn many_to_many_membership() {
         let (_dir, root) = tmp();
         root.create_session("audit").unwrap();

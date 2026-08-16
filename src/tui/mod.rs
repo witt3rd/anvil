@@ -2,6 +2,7 @@
 
 mod picker;
 mod rail;
+mod term;
 
 use std::io;
 use std::path::PathBuf;
@@ -36,7 +37,7 @@ use ratatui::Terminal;
 use crate::ask::{self, AskSink, HttpCompleter};
 use crate::config::{Config, Provider};
 use crate::frame::{self, Event as LogEvent, EventBody, FrameRoot};
-use crate::serve::{self, Client, Spawn};
+use crate::serve::{self, Client, PtyScreen, Spawn};
 use crate::{default_hammer, Anvil, StrikeReply};
 
 pub use picker::{at_span, insert_path, list_files, rank, FileHit};
@@ -158,6 +159,10 @@ struct App {
     log_events: Vec<LogEvent>,
     peer_session: Option<String>,
     peer_cards: Vec<Card>,
+    pty_screen: Option<PtyScreen>,
+    peer_pty: Option<PtyScreen>,
+    pty_cols: u16,
+    pty_rows: u16,
 }
 
 struct PickerState {
@@ -180,6 +185,16 @@ impl App {
             .unwrap_or_else(|| "default".into())
     }
 
+    fn focused_is_pty(&self) -> bool {
+        self.rail.as_ref().is_some_and(|r| r.focused_is_pty())
+    }
+
+    fn member_is_pty(&self, id: &str) -> bool {
+        self.rail
+            .as_ref()
+            .is_some_and(|r| r.ptys.iter().any(|p| p == id))
+    }
+
     fn push_card(&mut self, card: Card) {
         // Serve appends the event log. The casing only projects.
         self.cards.push(card);
@@ -187,28 +202,77 @@ impl App {
 
     fn load_session_cards(&mut self) {
         self.cards.clear();
-        self.reload_log();
-        let start = self.log_events.len().saturating_sub(200);
-        self.cards = self.log_events[start..]
-            .iter()
-            .filter_map(card_from_event)
-            .collect();
+        self.log_events.clear();
+        if !self.focused_is_pty() {
+            self.reload_log();
+            let start = self.log_events.len().saturating_sub(200);
+            self.cards = self.log_events[start..]
+                .iter()
+                .filter_map(card_from_event)
+                .collect();
+        }
         self.load_peer();
         self.stick_bottom = true;
+        self.refresh_ptys();
     }
 
     fn load_peer(&mut self) {
         self.peer_cards.clear();
+        self.peer_pty = None;
         self.peer_session = self.rail.as_ref().and_then(|r| r.peer_session());
+        let Some(peer) = self.peer_session.clone() else {
+            return;
+        };
+        if self.member_is_pty(&peer) {
+            return;
+        }
         let Some(root) = &self.frame else {
             return;
         };
-        let Some(peer) = &self.peer_session else {
-            return;
-        };
-        if let Ok(events) = root.load_events(peer) {
+        if let Ok(events) = root.load_events(&peer) {
             let start = events.len().saturating_sub(200);
             self.peer_cards = events[start..].iter().filter_map(card_from_event).collect();
+        }
+    }
+
+    fn with_pty_client<T>(
+        &self,
+        f: impl FnOnce(&mut Client) -> io::Result<T>,
+    ) -> Result<T, String> {
+        let sock = self
+            .sock
+            .as_ref()
+            .ok_or_else(|| "pty needs serve".to_string())?;
+        let mut client = Client::connect(sock).map_err(|err| err.to_string())?;
+        f(&mut client).map_err(|err| err.to_string())
+    }
+
+    fn refresh_ptys(&mut self) {
+        if self.focused_is_pty() {
+            let name = self.session_id();
+            match self.with_pty_client(|c| c.pty_snap(&name)) {
+                Ok(screen) => self.pty_screen = Some(screen),
+                Err(err) => self.status = err,
+            }
+        } else {
+            self.pty_screen = None;
+        }
+        if let Some(peer) = self.peer_session.clone() {
+            if self.member_is_pty(&peer) {
+                match self.with_pty_client(|c| c.pty_snap(&peer)) {
+                    Ok(screen) => self.peer_pty = Some(screen),
+                    Err(err) => self.status = err,
+                }
+            }
+        }
+    }
+
+    fn send_pty(&mut self, data: &[u8]) {
+        let name = self.session_id();
+        let payload = String::from_utf8_lossy(data).into_owned();
+        match self.with_pty_client(|c| c.pty_write(&name, &payload)) {
+            Ok(screen) => self.pty_screen = Some(screen),
+            Err(err) => self.status = err,
         }
     }
 
@@ -500,7 +564,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
     let mut app = App {
         cards: vec![Card::Status {
             text: format!(
-                "smith · {session_label} · {provider_name} · {model} · {} · Tab rail  Alt+L log  /mount clock  Alt+M/U  Ctrl+S strike  Ctrl+C close",
+                "smith · {session_label} · {provider_name} · {model} · {} · Tab rail  n session  p pty  Alt+L log  /mount clock  Ctrl+S strike  Ctrl+C close  Ctrl+Q close pty",
                 cfg_path.display()
             ),
         }],
@@ -527,6 +591,10 @@ pub fn run(launch: Launch) -> io::Result<()> {
         log_events: Vec::new(),
         peer_session: None,
         peer_cards: Vec::new(),
+        pty_screen: None,
+        peer_pty: None,
+        pty_cols: 80,
+        pty_rows: 24,
     };
     if app.frame.is_some() {
         app.load_session_cards();
@@ -534,7 +602,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
         if app.cards.is_empty() {
             app.cards.push(Card::Status {
                 text: format!(
-                    "smith · {} · {provider_name} · {model} · Tab rail  n new session  Enter expose",
+                    "smith · {} · {provider_name} · {model} · Tab rail  n session  p pty  Enter expose",
                     app.session_id()
                 ),
             });
@@ -768,6 +836,46 @@ fn event_loop(
                 }
             }
         }
+        if app.focused_is_pty()
+            || app
+                .peer_session
+                .as_deref()
+                .is_some_and(|p| app.member_is_pty(p))
+        {
+            if let Ok(size) = terminal.size() {
+                let rail_w = if app.rail.is_some() { 24 } else { 0 };
+                let split = app.peer_session.is_some();
+                let chrome = if app.focused_is_pty() && app.focus == Focus::Compose {
+                    3
+                } else {
+                    6
+                };
+                let cols = size.width.saturating_sub(rail_w + 2).max(2);
+                let rows = if split {
+                    size.height
+                        .saturating_sub(chrome)
+                        .saturating_mul(55)
+                        .saturating_div(100)
+                        .saturating_sub(2)
+                        .max(2)
+                } else {
+                    size.height.saturating_sub(chrome + 2).max(2)
+                };
+                if app.pty_cols != cols || app.pty_rows != rows {
+                    app.pty_cols = cols;
+                    app.pty_rows = rows;
+                    if app.focused_is_pty() {
+                        let name = app.session_id();
+                        if let Ok(screen) = app.with_pty_client(|c| c.pty_resize(&name, cols, rows))
+                        {
+                            app.pty_screen = Some(screen);
+                        }
+                    }
+                } else {
+                    app.refresh_ptys();
+                }
+            }
+        }
         terminal.draw(|frame| draw(frame, app))?;
 
         if !event::poll(Duration::from_millis(80))? {
@@ -837,7 +945,10 @@ fn swap_pane(app: &mut App) {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
-    if let Some(Naming::Session(buf)) = app.rail.as_ref().and_then(|r| r.naming.clone()) {
+    if let Some(naming) = app.rail.as_ref().and_then(|r| r.naming.clone()) {
+        let buf = match naming {
+            Naming::Session(buf) | Naming::Pty(buf) => buf,
+        };
         return handle_naming(app, key, buf);
     }
 
@@ -875,6 +986,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
     if app.focus == Focus::Rail {
         return handle_rail_key(app, key);
+    }
+
+    if app.focused_is_pty() {
+        return handle_pty_key(app, key);
     }
 
     match (key.code, key.modifiers) {
@@ -934,6 +1049,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
+    let is_pty = matches!(
+        app.rail.as_ref().and_then(|r| r.naming.as_ref()),
+        Some(Naming::Pty(_))
+    );
     match (key.code, key.modifiers) {
         (KeyCode::Esc, _) => {
             if let Some(rail) = app.rail.as_mut() {
@@ -945,11 +1064,20 @@ fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
             if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
                 rail.naming = None;
                 if !name.is_empty() {
-                    match rail.create_session(root, &name) {
+                    let created = if is_pty {
+                        rail.create_pty(root, &name)
+                    } else {
+                        rail.create_session(root, &name)
+                    };
+                    match created {
                         Ok(()) => {
                             app.load_session_cards();
                             app.expose_live();
-                            app.status = format!("session {name}");
+                            app.status = if is_pty {
+                                format!("pty {name}")
+                            } else {
+                                format!("session {name}")
+                            };
                         }
                         Err(err) => app.status = err.to_string(),
                     }
@@ -959,17 +1087,54 @@ fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
         (KeyCode::Backspace, _) => {
             buf.pop();
             if let Some(rail) = app.rail.as_mut() {
-                rail.naming = Some(Naming::Session(buf));
+                rail.naming = Some(if is_pty {
+                    Naming::Pty(buf)
+                } else {
+                    Naming::Session(buf)
+                });
             }
         }
         (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             buf.push(ch);
             if let Some(rail) = app.rail.as_mut() {
-                rail.naming = Some(Naming::Session(buf));
+                rail.naming = Some(if is_pty {
+                    Naming::Pty(buf)
+                } else {
+                    Naming::Session(buf)
+                });
             }
         }
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
         _ => {}
+    }
+    false
+}
+
+fn handle_pty_key(app: &mut App, key: KeyEvent) -> bool {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('q'), KeyModifiers::CONTROL) => return true,
+        (KeyCode::Char('m'), KeyModifiers::ALT) => app.mount("clock", None),
+        (KeyCode::Char('u'), KeyModifiers::ALT) => app.unmount(None),
+        (KeyCode::Char('l'), KeyModifiers::ALT) => {
+            app.view = match app.view {
+                MainView::Smith => MainView::Trajectory,
+                MainView::Trajectory => MainView::Smith,
+            };
+            if app.view == MainView::Trajectory {
+                app.reload_log();
+                app.stick_bottom = true;
+            }
+        }
+        (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
+        (KeyCode::Char(']'), KeyModifiers::ALT) => cycle_sash(app, 1),
+        (KeyCode::Char('j'), KeyModifiers::ALT) | (KeyCode::Char('k'), KeyModifiers::ALT) => {
+            swap_pane(app);
+        }
+        _ => {
+            if let Some(bytes) = term::key_bytes(key) {
+                app.send_pty(&bytes);
+            }
+        }
     }
     false
 }
@@ -1018,6 +1183,11 @@ fn handle_rail_key(app: &mut App, key: KeyEvent) -> bool {
                 rail.naming = Some(Naming::Session(String::new()));
             }
         }
+        (KeyCode::Char('p'), KeyModifiers::NONE) => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.naming = Some(Naming::Pty(String::new()));
+            }
+        }
         (KeyCode::Char('m'), KeyModifiers::NONE) => app.mount("clock", None),
         (KeyCode::Char('u'), KeyModifiers::NONE) => app.unmount(None),
         (KeyCode::Enter, _) => {
@@ -1059,7 +1229,12 @@ fn draw(frame: &mut Frame, app: &App) {
         .as_ref()
         .map(|p| (p.hits.len() as u16 + 2).clamp(3, 10))
         .unwrap_or(0);
-    let input_h = (app.input.matches('\n').count() as u16 + 1).clamp(1, 8) + 2;
+    let pty_compose = app.focused_is_pty() && app.focus == Focus::Compose;
+    let input_h = if pty_compose {
+        1
+    } else {
+        (app.input.matches('\n').count() as u16 + 1).clamp(1, 8) + 2
+    };
     let sash_h = if app.rail.is_some() { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1083,19 +1258,42 @@ fn draw(frame: &mut Frame, app: &App) {
     let title = match (app.view, &app.rail) {
         (MainView::Trajectory, Some(r)) => format!(" trajectory · {} · Alt+L ", r.session),
         (MainView::Trajectory, None) => " trajectory · Alt+L ".into(),
-        (MainView::Smith, Some(r)) => format!(" smith · {} ", r.session),
+        (MainView::Smith, Some(r)) => format!(" smith · {} ", r.member_label(&r.session)),
         (MainView::Smith, None) => " smith ".into(),
     };
     let split = app.view == MainView::Smith && app.peer_session.is_some();
+    let focused_pty = app.view == MainView::Smith && app.focused_is_pty();
     if split {
         let halves = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .split(main);
-        draw_scroll_pane(frame, halves[0], &title, &lines, app);
+        if focused_pty {
+            term::draw(
+                frame,
+                halves[0],
+                &app.session_id(),
+                app.pty_screen.as_ref(),
+                app.focus == Focus::Compose,
+            );
+        } else {
+            draw_scroll_pane(frame, halves[0], &title, &lines, app);
+        }
         let peer = app.peer_session.as_deref().unwrap_or("peer");
-        let peer_lines = render_cards(&app.peer_cards);
-        draw_scroll_pane(frame, halves[1], &format!(" {peer} "), &peer_lines, app);
+        if app.member_is_pty(peer) {
+            term::draw(frame, halves[1], peer, app.peer_pty.as_ref(), false);
+        } else {
+            let peer_lines = render_cards(&app.peer_cards);
+            draw_scroll_pane(frame, halves[1], &format!(" {peer} "), &peer_lines, app);
+        }
+    } else if focused_pty {
+        term::draw(
+            frame,
+            main,
+            &app.session_id(),
+            app.pty_screen.as_ref(),
+            app.focus == Focus::Compose,
+        );
     } else {
         draw_scroll_pane(frame, main, &title, &lines, app);
     }
@@ -1127,20 +1325,25 @@ fn draw(frame: &mut Frame, app: &App) {
         frame.render_widget(list, picker_area);
     }
 
-    let compose = Paragraph::new(app.input.as_str())
-        .block(Block::default().borders(Borders::ALL).title(" ask "));
-    frame.render_widget(compose, compose_area);
-    let (cx, cy) = cursor_in(&app.input, app.cursor);
-    frame.set_cursor_position((compose_area.x + cx + 1, compose_area.y + cy + 1));
+    if pty_compose {
+        frame.render_widget(Paragraph::new(term::hint()), compose_area);
+    } else {
+        let compose = Paragraph::new(app.input.as_str())
+            .block(Block::default().borders(Borders::ALL).title(" ask "));
+        frame.render_widget(compose, compose_area);
+        let (cx, cy) = cursor_in(&app.input, app.cursor);
+        frame.set_cursor_position((compose_area.x + cx + 1, compose_area.y + cy + 1));
+    }
 
     let spin = if app.busy {
         ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"][(app.tick as usize) % 8]
     } else {
         "·"
     };
-    let focus = match app.focus {
-        Focus::Rail => "rail",
-        Focus::Compose => "ask",
+    let focus = match (app.focus, app.focused_is_pty()) {
+        (Focus::Rail, _) => "rail",
+        (Focus::Compose, true) => "pty",
+        (Focus::Compose, false) => "ask",
     };
     frame.render_widget(
         Paragraph::new(Line::from(format!(
@@ -1229,6 +1432,7 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         rail.kind == RailKind::Catalog,
         rail.idx,
         focused,
+        |s| s.to_string(),
     );
     push_rail_section(
         &mut lines,
@@ -1238,6 +1442,7 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         rail.kind == RailKind::Workspace,
         rail.idx,
         focused,
+        |s| s.to_string(),
     );
     push_rail_section(
         &mut lines,
@@ -1247,13 +1452,24 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         rail.kind == RailKind::Member,
         rail.idx,
         focused,
+        |id| rail.member_label(id),
     );
-    if let Some(Naming::Session(buf)) = &rail.naming {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!(" new session: {buf}_"),
-            Style::default().fg(Color::Cyan),
-        )));
+    match &rail.naming {
+        Some(Naming::Session(buf)) => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(" new session: {buf}_"),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        Some(Naming::Pty(buf)) => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(" new pty: {buf}_"),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        None => {}
     }
     let title = if focused { " rail " } else { " rail · Tab " };
     frame.render_widget(
@@ -1272,6 +1488,7 @@ fn push_rail_section(
     active: bool,
     idx: usize,
     focused: bool,
+    display: impl Fn(&str) -> String,
 ) {
     let style = if active {
         Style::default()
@@ -1291,7 +1508,7 @@ fn push_rail_section(
     for (i, name) in items.iter().enumerate() {
         let mark = if name == current { "●" } else { " " };
         let cursor = active && focused && i == idx;
-        let body = format!(" {mark} {name}");
+        let body = format!(" {mark} {}", display(name));
         let row = if cursor {
             Style::default().add_modifier(Modifier::REVERSED)
         } else if name == current {

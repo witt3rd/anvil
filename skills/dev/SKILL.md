@@ -75,9 +75,13 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
   `$ANVIL_ROOT` (default `~/.anvil`). Destroying a workspace or catalog
   does not destroy its occupants.
 - smith without `--store` is a casing: Tab focuses the rail, `n` names
-  a session in the current workspace, Enter exposes a member. Transcript
-  is `sessions/<id>/transcript.jsonl`. `--store` is the old single-pane
-  escape hatch.
+  a session in the current workspace, `p` names a PTY member, Enter
+  exposes a member. Transcript is `sessions/<id>/transcript.jsonl`.
+  `--store` is the old single-pane escape hatch.
+- Mixed members: `anvil workspace add fleet-os bash --pty` (or
+  `anvil pty new bash`). Serve owns `$SHELL` (portable-pty + vt100).
+  Focus the pty pane: keys go to the shell; Ctrl+C is SIGINT; Ctrl+Q
+  closes the casing. Zellij/herdr/tmux are scars, not hosts.
 
 ## Providers
 
@@ -111,7 +115,9 @@ the trajectory sash (event log). A second `smith` is another casing
 on the same serve.
 `/mount clock` and `/unmount` (Alt+M / Alt+U;
 rail `m`/`u`) mount a temporary clock on `casing.status`. Ctrl+C
-closes the casing; serve keeps the hammers.
+closes the casing; serve keeps the hammers. Rail `p` names a PTY
+member. When that pane is focused, keys go to `$SHELL` and Ctrl+Q
+closes the casing (Ctrl+C is SIGINT).
 The ask worker talks to serve so the spinner keeps moving.
 
 ## Ask

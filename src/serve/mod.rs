@@ -4,10 +4,12 @@ mod client;
 mod inspect;
 mod mount;
 mod proto;
+mod pty;
 pub mod unit;
 
 pub use client::Client;
 pub use inspect::{Fiber, Report, Service, Slot};
+pub use pty::PtyScreen;
 pub use unit::{UNIT_BODY, UNIT_NAME};
 
 use std::collections::HashMap;
@@ -81,6 +83,7 @@ pub(crate) struct State {
     pub(crate) sock: PathBuf,
     last_active: Mutex<Option<String>>,
     pub(crate) mounts: Arc<mount::Mounts>,
+    pub(crate) ptys: pty::PtyHost,
 }
 
 impl State {
@@ -100,6 +103,7 @@ impl State {
             sock: opts.sock.clone(),
             last_active: Mutex::new(None),
             mounts: Arc::new(mount::Mounts::default()),
+            ptys: pty::PtyHost::default(),
         })
     }
 
@@ -353,6 +357,61 @@ fn dispatch(req: &Req, state: &State, writer: &mut UnixStream) -> io::Result<()>
             prompt,
             provider.as_deref(),
             model.as_deref(),
+        ),
+        Req::PtyOpen {
+            id,
+            name,
+            cols,
+            rows,
+        } => {
+            state.touch(name);
+            pty_reply(writer, id, state.ptys.open(name, *cols, *rows))
+        }
+        Req::PtyWrite { id, name, data } => {
+            state.touch(name);
+            pty_reply(writer, id, state.ptys.write(name, data.as_bytes()))
+        }
+        Req::PtyResize {
+            id,
+            name,
+            cols,
+            rows,
+        } => {
+            state.touch(name);
+            pty_reply(writer, id, state.ptys.resize(name, *cols, *rows))
+        }
+        Req::PtySnap { id, name } => {
+            state.touch(name);
+            pty_reply(writer, id, state.ptys.snap(name))
+        }
+    }
+}
+
+fn pty_reply(
+    writer: &mut UnixStream,
+    id: &str,
+    result: io::Result<pty::PtyScreen>,
+) -> io::Result<()> {
+    match result {
+        Ok(screen) => write_msg(
+            writer,
+            &Msg::PtyScreen {
+                id: id.into(),
+                name: screen.name,
+                cols: screen.cols,
+                rows: screen.rows,
+                cursor_col: screen.cursor_col,
+                cursor_row: screen.cursor_row,
+                lines: screen.lines,
+                alive: screen.alive,
+            },
+        ),
+        Err(err) => write_msg(
+            writer,
+            &Msg::Error {
+                id: id.into(),
+                text: err.to_string(),
+            },
         ),
     }
 }
@@ -765,5 +824,30 @@ mod tests {
         assert_eq!(c.strike("b", "n").unwrap().value, serde_json::json!(2));
         c.shutdown().unwrap();
         let _ = handle.join();
+    }
+
+    #[test]
+    fn pty_echoes_a_marker() {
+        let (_tmp, sock, handle) = boot();
+        let mut c = Client::connect(&sock).unwrap();
+        let opened = c.pty_open("bash", 24, 80).unwrap();
+        assert_eq!(opened.name, "bash");
+        assert!(opened.alive, "{opened:?}");
+        c.pty_write("bash", "echo anvil-pty-ok\r").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut last = String::new();
+        while Instant::now() < deadline {
+            let screen = c.pty_snap("bash").unwrap();
+            last = screen.lines.join("\n");
+            if last.contains("anvil-pty-ok") {
+                c.shutdown().unwrap();
+                let _ = handle.join();
+                return;
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+        c.shutdown().unwrap();
+        let _ = handle.join();
+        panic!("pty screen never showed marker:\n{last}");
     }
 }

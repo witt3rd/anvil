@@ -8,6 +8,7 @@ use super::{FrameError, FrameRoot};
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MemberRef {
     Session { id: String },
+    Pty { id: String },
 }
 
 impl MemberRef {
@@ -15,9 +16,31 @@ impl MemberRef {
         Self::Session { id: id.into() }
     }
 
+    pub fn pty(id: impl Into<String>) -> Self {
+        Self::Pty { id: id.into() }
+    }
+
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Session { id } | Self::Pty { id } => id,
+        }
+    }
+
+    pub fn is_pty(&self) -> bool {
+        matches!(self, Self::Pty { .. })
+    }
+
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Self::Session { id } => Some(id),
+            Self::Pty { .. } => None,
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::Session { id } => id.clone(),
+            Self::Pty { id } => format!("{id} · pty"),
         }
     }
 }

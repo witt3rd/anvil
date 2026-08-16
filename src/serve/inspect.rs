@@ -79,6 +79,48 @@ impl State {
             });
         }
         fibers.extend(self.mounts.fibers());
+        let mut seen_pty = Vec::new();
+        for ws in self.root.list_workspaces().unwrap_or_default() {
+            for member in ws.members {
+                if !member.is_pty() {
+                    continue;
+                }
+                let name = member.id().to_string();
+                if seen_pty.iter().any(|n| n == &name) {
+                    continue;
+                }
+                seen_pty.push(name.clone());
+                let hot = self.ptys.is_hot(&name);
+                services.push(Service {
+                    name: name.clone(),
+                    kind: "pty".into(),
+                    state: if hot { "hot".into() } else { "cold".into() },
+                    events: 0,
+                });
+                fibers.push(Fiber {
+                    name: format!("adapter/{name}"),
+                    kind: "pty".into(),
+                    state: if hot { "active" } else { "pending" }.into(),
+                });
+            }
+        }
+        for name in self.ptys.names() {
+            if seen_pty.iter().any(|n| n == &name) {
+                continue;
+            }
+            let hot = self.ptys.is_hot(&name);
+            services.push(Service {
+                name: name.clone(),
+                kind: "pty".into(),
+                state: if hot { "hot".into() } else { "cold".into() },
+                events: 0,
+            });
+            fibers.push(Fiber {
+                name: format!("adapter/{name}"),
+                kind: "pty".into(),
+                state: if hot { "active" } else { "pending" }.into(),
+            });
+        }
         let front = self.live_front();
         let status = self.mounts.seat(SLOT_STATUS);
         let slots = vec![

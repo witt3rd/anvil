@@ -7,6 +7,7 @@ use crate::ask::AskSink;
 use crate::StrikeReply;
 
 use super::proto::{Msg, Req};
+use super::pty::PtyScreen;
 use super::Report;
 
 #[derive(Debug)]
@@ -110,7 +111,8 @@ impl Client {
                 | Msg::Bye { .. }
                 | Msg::Inspect { .. }
                 | Msg::Mounted { .. }
-                | Msg::Unmounted { .. } => {}
+                | Msg::Unmounted { .. }
+                | Msg::PtyScreen { .. } => {}
             }
         }
     }
@@ -150,6 +152,72 @@ impl Client {
         })?;
         match self.recv_for(&id)? {
             Msg::Unmounted { .. } => Ok(()),
+            Msg::Error { text, .. } => Err(io::Error::other(text)),
+            other => Err(io::Error::other(format!("unexpected {other:?}"))),
+        }
+    }
+
+    pub fn pty_open(&mut self, name: &str, cols: u16, rows: u16) -> io::Result<PtyScreen> {
+        let id = self.next();
+        self.send(&Req::PtyOpen {
+            id: id.clone(),
+            name: name.into(),
+            cols,
+            rows,
+        })?;
+        self.recv_pty(&id)
+    }
+
+    pub fn pty_write(&mut self, name: &str, data: &str) -> io::Result<PtyScreen> {
+        let id = self.next();
+        self.send(&Req::PtyWrite {
+            id: id.clone(),
+            name: name.into(),
+            data: data.into(),
+        })?;
+        self.recv_pty(&id)
+    }
+
+    pub fn pty_resize(&mut self, name: &str, cols: u16, rows: u16) -> io::Result<PtyScreen> {
+        let id = self.next();
+        self.send(&Req::PtyResize {
+            id: id.clone(),
+            name: name.into(),
+            cols,
+            rows,
+        })?;
+        self.recv_pty(&id)
+    }
+
+    pub fn pty_snap(&mut self, name: &str) -> io::Result<PtyScreen> {
+        let id = self.next();
+        self.send(&Req::PtySnap {
+            id: id.clone(),
+            name: name.into(),
+        })?;
+        self.recv_pty(&id)
+    }
+
+    fn recv_pty(&mut self, id: &str) -> io::Result<PtyScreen> {
+        match self.recv_for(id)? {
+            Msg::PtyScreen {
+                name,
+                cols,
+                rows,
+                cursor_col,
+                cursor_row,
+                lines,
+                alive,
+                ..
+            } => Ok(PtyScreen {
+                name,
+                cols,
+                rows,
+                cursor_col,
+                cursor_row,
+                lines,
+                alive,
+            }),
             Msg::Error { text, .. } => Err(io::Error::other(text)),
             other => Err(io::Error::other(format!("unexpected {other:?}"))),
         }

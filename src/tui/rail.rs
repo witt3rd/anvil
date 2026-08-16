@@ -11,6 +11,7 @@ pub enum Focus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Naming {
     Session(String),
+    Pty(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +29,7 @@ pub struct Rail {
     pub catalogs: Vec<String>,
     pub workspaces: Vec<String>,
     pub members: Vec<String>,
+    pub ptys: Vec<String>,
     pub kind: RailKind,
     pub idx: usize,
     pub naming: Option<Naming>,
@@ -73,17 +75,19 @@ impl Rail {
             root.save_workspace(&ws)?;
         }
         let ws = root.workspace(&workspace)?;
-        let members: Vec<String> = ws
+        let members: Vec<String> = ws.members.iter().map(|m| m.id().to_string()).collect();
+        let ptys: Vec<String> = ws
             .members
             .iter()
-            .filter_map(|m| m.session_id().map(str::to_string))
+            .filter(|m| m.is_pty())
+            .map(|m| m.id().to_string())
             .collect();
         let session = session
             .map(str::to_string)
             .or(layout.front_session.clone())
             .or_else(|| members.first().cloned())
             .unwrap_or_else(|| "default".into());
-        if !root.session_exists(&session) {
+        if !ptys.iter().any(|p| p == &session) && !root.session_exists(&session) {
             root.create_session(&session)?;
         }
         if !members.iter().any(|m| m == &session) {
@@ -98,6 +102,7 @@ impl Rail {
             catalogs: root.list_catalogs()?.into_iter().map(|c| c.name).collect(),
             workspaces,
             members,
+            ptys,
             kind: RailKind::Member,
             idx: 0,
             naming: None,
@@ -120,14 +125,16 @@ impl Rail {
             self.workspaces.clear();
         }
         if root.workspace_exists(&self.workspace) {
-            self.members = root
-                .workspace(&self.workspace)?
-                .members
+            let ms = root.workspace(&self.workspace)?.members;
+            self.members = ms.iter().map(|m| m.id().to_string()).collect();
+            self.ptys = ms
                 .iter()
-                .filter_map(|m| m.session_id().map(str::to_string))
+                .filter(|m| m.is_pty())
+                .map(|m| m.id().to_string())
                 .collect();
         } else {
             self.members.clear();
+            self.ptys.clear();
         }
         self.clamp();
         Ok(())
@@ -223,6 +230,38 @@ impl Rail {
             .unwrap_or(0);
         self.persist(root)?;
         Ok(true)
+    }
+
+    pub fn focused_is_pty(&self) -> bool {
+        self.ptys.iter().any(|p| p == &self.session)
+    }
+
+    pub fn member_label(&self, id: &str) -> String {
+        if self.ptys.iter().any(|p| p == id) {
+            format!("{id} · pty")
+        } else {
+            id.to_string()
+        }
+    }
+
+    pub fn create_pty(&mut self, root: &FrameRoot, name: &str) -> Result<(), FrameError> {
+        let name = FrameRoot::parse_name(name)?;
+        if !root.workspace_exists(&self.workspace) {
+            root.create_workspace(&self.workspace)?;
+        }
+        let mut ws = root.workspace(&self.workspace)?;
+        ws.add_member(MemberRef::pty(&name));
+        root.save_workspace(&ws)?;
+        self.session = name;
+        self.kind = RailKind::Member;
+        self.refresh(root)?;
+        self.idx = self
+            .members
+            .iter()
+            .position(|m| m == &self.session)
+            .unwrap_or(0);
+        self.persist(root)?;
+        Ok(())
     }
 
     pub fn cycle_kind(&mut self) {
@@ -368,5 +407,20 @@ mod tests {
         assert!(rail.focus_peer(&root).unwrap());
         assert_eq!(rail.session, "research");
         assert_eq!(rail.peer_session().as_deref(), Some("audit"));
+    }
+
+    #[test]
+    fn create_pty_joins_workspace_without_a_session() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_pty(&root, "bash").unwrap();
+        assert_eq!(rail.session, "bash");
+        assert!(rail.focused_is_pty());
+        assert!(!root.session_exists("bash"));
+        let ws = root.workspace("default").unwrap();
+        assert!(ws.members.iter().any(|m| m == &MemberRef::pty("bash")));
+        let layout = root.layout("default").unwrap();
+        assert_eq!(layout.front_session.as_deref(), Some("bash"));
     }
 }
