@@ -11,7 +11,7 @@ pub mod unit;
 pub use client::Client;
 pub use edit::{EditBuf, EditOp};
 pub use inspect::{Fiber, Report, Service, Slot};
-pub use pty::{PtyRun, PtyScreen};
+pub use pty::{PtyHost, PtyRun, PtyScreen};
 pub use unit::{UNIT_BODY, UNIT_NAME};
 
 use std::collections::HashMap;

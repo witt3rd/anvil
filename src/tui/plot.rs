@@ -5,7 +5,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph};
+use ratatui::widgets::{Axis, Chart, Dataset, GraphType, Paragraph};
 use ratatui::Frame;
 
 use super::activity::Activity;
@@ -35,10 +35,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, id: &str, focused: boo
             overlay_live(&mut trace, act, app.prof.last_model.as_ref());
         }
     }
-    let title = format!("{id} · stats {of}");
-    let block = super::pane_block(&title, focused);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let many = app
+        .rail
+        .as_ref()
+        .is_some_and(|r| r.stage_members().len() > 1);
+    let title = if many {
+        format!("{id} · stats {of}")
+    } else {
+        String::new()
+    };
+    let inner = super::pane_body(frame, area, &title, focused);
     if inner.width < 8 || inner.height < 3 {
         return;
     }
@@ -52,7 +58,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, id: &str, focused: boo
     } else {
         0
     };
-    let life_h = if inner.height >= 5 { 3 } else { 2 };
+    let life_h = if inner.height >= 5 { 2 } else { 1 };
     let parts = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -194,12 +200,7 @@ fn phase_face(phase: Phase) -> Face {
 
 fn draw_lifecycle(frame: &mut Frame, area: Rect, rows: &[TraceRow]) {
     let th = theme::p();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(th.style(Face::PlotMute))
-        .title(Span::styled(" lifecycle ", th.style(Face::PlotMute)));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = headed(frame, area, "lifecycle");
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -311,19 +312,29 @@ fn draw_metrics(frame: &mut Frame, area: Rect, trace: &Trace, fold: &Fold) {
     draw_velocity(frame, cols[2], trace, fold);
 }
 
-fn boxed<'a>(title: &'a str) -> Block<'a> {
+fn headed(frame: &mut Frame, area: Rect, title: &str) -> Rect {
     let th = theme::p();
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(th.style(Face::PlotMute))
-        .title(Span::styled(format!(" {title} "), th.style(Face::PlotMute)))
+    if area.height == 0 {
+        return area;
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!(" {title}"),
+            th.style(Face::PlotMute),
+        )),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    Rect::new(
+        area.x,
+        area.y.saturating_add(1),
+        area.width,
+        area.height.saturating_sub(1),
+    )
 }
 
 fn draw_callouts(frame: &mut Frame, area: Rect, trace: &Trace) {
     let th = theme::p();
-    let block = boxed("live");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = headed(frame, area, "live");
     let p95 = stats::percentile(&trace.ttfts, 95.0);
     let ttft = match (trace.last_ttft(), p95) {
         (Some(n), Some(p)) if trace.ttfts.len() > 1 => {
@@ -350,9 +361,7 @@ fn draw_callouts(frame: &mut Frame, area: Rect, trace: &Trace) {
 
 fn draw_health(frame: &mut Frame, area: Rect, trace: &Trace, fold: &Fold) {
     let th = theme::p();
-    let block = boxed("cache · context");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = headed(frame, area, "cache · context");
     let hit = fold.usage.cache_hit().or_else(|| {
         trace
             .last_of(Phase::Prefill)
@@ -411,9 +420,7 @@ fn fill_bar(frac: f64, width: usize) -> String {
 
 fn draw_velocity(frame: &mut Frame, area: Rect, trace: &Trace, fold: &Fold) {
     let th = theme::p();
-    let block = boxed("tok/s");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = headed(frame, area, "tok/s");
     if inner.height == 0 {
         return;
     }
@@ -483,9 +490,7 @@ fn draw_table(
     rows: &[TraceRow],
     focused: bool,
 ) {
-    let block = boxed("trace");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = headed(frame, area, "trace");
     if inner.height == 0 {
         return;
     }

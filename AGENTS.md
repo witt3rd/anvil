@@ -7,21 +7,32 @@ seat.
 
 ## Goal
 
-You launch **smith**. You talk to smith. Bruises happen in smith.
+Two seats, one binary.
 
-Fixed tool menus (`read_file`, `bash`, `edit`, …) dump every result into
-the context window. Compaction then deletes. smith inverts that: the
-model does not pick from a menu. It writes Python. anvil **strikes** it
-on the hammer. Intermediate data stays as variables. Only what the
-guest **prints** or **returns** comes back into the transcript.
+**Focus now** is the small seat: `smith --experience window`. A
+**window** (fiber on the tty) holds **panels** in **slots**. A panel is
+text, a **terminal** (injects a shell **service** on serve), or
+**rows** (more slots — a list of any panels). `prefix+q` unmounts the
+window; serve keeps the terminal. Grow by hanging another panel when a
+day in this seat requires it. Do not invent column layouts, tabs, or
+chrome rails until a bruise earns them. Ontology: `docs/kernel.md`.
 
-The LLM does not *use tools*. It *decides what to strike*. smith is the
-person at the block. anvil is the block. The hammer hits.
+The older seat (`smith` with no flag) is the full TUI: rail, tiles,
+ask/strike, stats. It stays. We are not growing it first. We are
+living in the window and demand-paging back toward an agent mux
+(other people's agents as services; our ask/strike stays in the
+pocket until we need it).
 
-We grow by **radical dogfooding** (live in smith for hours; a papercut
-is felt, then fixed) and **demand paging** (fault in a capability the
-first time a day in smith trips over its absence, then compact). We do
-not build a platform in advance of a bruise.
+Fixed tool menus dump every result into the context window. Compaction
+then deletes. When we do talk to a model, it does not pick from a
+menu. It writes Python. anvil **strikes** it on the hammer.
+Intermediate data stays as variables. Only what the guest **prints**
+or **returns** comes back.
+
+The LLM does not *use tools*. It *decides what to strike*.
+
+We grow by **radical dogfooding** and **demand paging**. We do not
+build a platform in advance of a bruise.
 
 The operator is the most demanding user (Raymond: scratch your own
 itch). Taste is the spec, not a committee (auteur). The menu is
@@ -88,26 +99,24 @@ dependency, no.
                     └───────────────────────────────────┘
 ```
 
-**Now:** named sessions / workspaces / catalogs on disk. `anvil serve`
-owns hammers and `$SHELL` PTYs on a unix socket; smith attaches. Close
-the casing, work stays. First casing after reboot warms the front
-bench. Event log is the source of truth; slots + inspect + mount
-clock; ask sees sibling terminals. Scar: Cordis + DeepSeek Harness.
-Not a host.
+**Now:** `smith --experience window` is the growth seat (window →
+panel → terminal; a list is a panel of row-slots). Serve owns the
+terminal service; detach does not kill the shell. The default `smith`
+seat still launches the older TUI. `anvil serve` owns hammers and
+shells on a unix socket. Scar: Cordis (service persists, fiber
+occupies, slot is a seat). Not a host.
 
-**When use bruises us, in this order** (session frame first — that is
-the current bruise; in-process tiles wait):
+**When use bruises us, in this order:**
 
-1. **Named sessions on disk** — persist store + log per session.
-   `skills/dev/references/session-frame.md`.
-2. **`anvil serve` + smith attach** — daemon owns hammers; smith
-   detaches; work continues.
-3. **Event log + slots + inspect** — model-visible means logged;
-   named seats; then mount/unmount can land.
-4. **Layout geometry, reboot, SSH** — as in that design.
-5. **Mixed members** (smith | pty | a promoted mount) — first cut.
-   Serve owns `$SHELL` via portable-pty + vt100; smith draws it.
-   Textbook: Zellij. Not a host.
+1. **Window kernel** — `docs/kernel.md`. Hang panels. Rows only.
+   Restore the tty on unmount. Do not smuggle rail geometry.
+2. **Services as a list of panels** — inspect feeds row-slots; a row
+   can later be any panel, not only text.
+3. **Ask/strike as a service a panel injects** — already built
+   (`src/ask.rs`, hammer); not hung on the window yet.
+4. **Other agents as services** — same injection as a terminal.
+5. The older TUI (`src/tui/mod.rs`, `src/frame/`) is a working seat,
+   not the place to add the next noun.
 
 **Neighbors (stay neighbors):**
 
@@ -118,34 +127,37 @@ the current bruise; in-process tiles wait):
 | jcode | Anti-exemplar for providers (keep: named profiles, `grok login`). |
 | Prime | Keep: generic `!` → shell. Drop: IPython kernel, bare-word env lookup. |
 | Omarchy | DHH's daily Linux. Precedent for omakase: one chef, one machine, no committee desktop. |
-| cordis / DSH (`~/src/ext/cordis`, `~/src/ext/deepseek-harness`) | Scar: member = service, pane/adapter = fiber; inspect/mount/total unmount; model-visible ⟺ logged. Never `exec` or depend. |
+| cordis / DSH (`~/src/ext/cordis`, `~/src/ext/deepseek-harness`) | Scar: service persists, fiber occupies a slot; inspect / mount / total unmount. Never `exec` or depend. |
 
 Subagents are more smiths, each with their own anvil and hammer. No
 special protocol beyond “another process.”
 
 ## Concepts
 
+Kernel (`docs/kernel.md`). Use these words on the window seat:
+
 | Word | What it is |
 |---|---|
-| **smith** | Who you talk to when the member is an anvil session: that pane. Binary `smith` launches a casing. |
-| **anvil** | The harness under smith. Does not move. Binary: `anvil` (CLI, serve, strike). |
-| **hammer** | Stock CPython guest. Hits the work. Dies. We hang another. |
-| **strike** | One `eval`. A blow, not a process. The only tool. |
-| **store** | On-disk persist for one session (`~/.anvil/sessions/<id>/namespace.pkl`). Not a workspace. |
-| **session** | Conceptual. Anvil-specific: one coherent agentic process. A kind of member. |
-| **member** | Conceptual. A machine process: a session, a bash, a web client, … |
-| **workspace** | Conceptual. A collection of members. Everyday: the **bench**. Destroying it does not destroy members. |
-| **catalog** | Conceptual. A collection of workspaces. A named intent. Destroying it does not destroy workspaces. |
-| **pane** | UI. Exposes a member. Destroying it does not destroy the member. |
-| **sash** | UI. Tabs or a list. Destroying it destroys its panes. A pane lives in one sash. |
-| **window** | UI. A column of the casing. Destroying it destroys its sashes. No conceptual twin. |
-| **layout** | UI, on disk. A saved arrangement of a catalog. |
-| **casing** | UI, live. What `smith` launches. Destroys its windows. Many casings can load one layout. |
-| **ask** | Model writes Python; extract; strike; print stdout. Not `complete`. |
-| **complete** | Raw HTTP chat. Will waffle. Smoke only. |
-| **slot** | Named seat on the casing a live fiber can occupy (`casing.status`, …). |
-| **log** | Append-only events for one member. Cards and ask project it. |
-| **tile** | A pane we own: smith or pty. Bash is a PTY member, not a smith. |
+| **window** | App frame. Fiber on the tty. `prefix+q` unmounts it. |
+| **panel** | Bounded content. Occupies one slot. Text, terminal, or rows. |
+| **slot** | Named seat a fiber occupies. Does not store a service. |
+| **service** | Persists on serve. A terminal is one. Destroying a viewer does not destroy it. |
+| **fiber** | Occupies a slot; dispose reverts its effects. Window and panel are fibers. |
+| **terminal** | What you sit in. A service. PTY is the adapter, not a UX word. |
+| **rows** | A panel whose slots are stacked. A list of any panels. |
+| **serve** | The context. Owns services. Unix socket. |
+| **inspect** | Live services, fibers, slots. |
+| **mount / unmount** | Put a fiber on a slot / dispose it completely. |
+| **smith** | The binary you launch. `--experience window` is the growth seat. |
+| **anvil** | The harness. Binary: `anvil` (CLI, serve, strike). |
+| **hammer** | Stock CPython guest. Dies. We hang another. |
+| **strike** | One `eval` of model-written Python. The only tool. |
+| **ask** | Model writes Python; extract; strike. Not hung on the window yet. |
+
+The older TUI still uses a larger vocabulary in `src/frame/` and
+`src/tui/mod.rs`. Do not add new work there unless the window seat
+cannot take the bruise. Do not invent column splits or a “list
+control” — a list is a panel of row-slots.
 
 ## Layout
 
@@ -161,14 +173,17 @@ one Cargo.toml, two bins
   src/ask.rs           model → extract Python → strike
   src/frame/           sessions, workspaces, catalogs, layouts, transcript
   src/serve/           unix socket daemon + client + PTY host
-  src/tui/             smith casing (rail, blocks, worker, @ picker, pty pane)
+  src/tui/window.rs    growth seat: window / panel / rows / terminal
+  src/tui/experience.rs  smith | window launch switch
+  src/tui/             older full TUI (rail, ask, tiles) — keep, do not grow first
   src/tui/theme.rs     named faces + ink packs (mocha, terminal)
-  src/tui/keys.rs      herdr-style prefix keymap (every action named)
+  src/tui/keys.rs      prefix keymap (every action named)
   src/prof.rs          ns ring + Timing (prefill, TTFT, decode, tok/s, strike)
   src/bin/anvil.rs     CLI
-  src/bin/smith.rs     TUI binary
+  src/bin/smith.rs     TUI binary (`--experience window`)
 hammer/hammer.py       guest
 config.example.yaml    shape for ~/.config/anvil/config.yaml
+docs/kernel.md         standalone ontology for the window seat
 skills/dev/SKILL.md    how to run and test
 ```
 
@@ -203,7 +218,8 @@ anvil prof                       # live ring: prefill/TTFT/tok/s/strike/frame
 anvil session log audit
 anvil mount clock
 anvil unmount dyn-1
-smith -p nim                     # casing + rail; starts serve
+smith --experience window        # growth seat; starts serve; prefix+q detaches
+smith -p nim                     # older full TUI
 smith -s audit -p nim
 ```
 
@@ -265,8 +281,8 @@ House rules (`git` skill). This file only names what is true *here*.
 ## Caretaker
 
 Leave the repo cleaner than you found it. This file is the charter.
-If a change does not make **smith** better to sit with, it is the wrong
-change.
-`skills/dev/SKILL.md` is how-to. A bruise from daily use that we decide
-to keep goes here (if it is a rule) or in the skill (if it is a
-procedure).
+If a change does not make the **window** better to sit with, it is
+the wrong change. `docs/kernel.md` is the ontology. `skills/dev/SKILL.md`
+is how-to. A bruise we keep goes here (rule) or in the skill
+(procedure). Unmount must restore the tty (`Restore` in
+`src/tui/window.rs`).

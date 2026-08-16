@@ -119,6 +119,39 @@ impl FrameRoot {
         fs::remove_dir_all(&sess.dir)?;
         Ok(())
     }
+
+    pub fn rename_session(&self, old: &str, new: &str) -> Result<String, FrameError> {
+        let old = Self::parse_name(old)?;
+        let new = Self::parse_name(new)?;
+        if old == new {
+            return Ok(new);
+        }
+        if self.session_exists(&new) {
+            return Err(FrameError::SessionExists(new));
+        }
+        let sess = self.session(&old)?;
+        let dest = self.root.join("sessions").join(&new);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(&sess.dir, &dest)?;
+        let mut meta = sess.meta;
+        meta.id = new.clone();
+        self.write_json(&dest.join("meta.json"), &meta)?;
+        for mut ws in self.list_workspaces()? {
+            let mut dirty = false;
+            for m in &mut ws.members {
+                if m.session_id() == Some(old.as_str()) {
+                    m.set_id(new.clone());
+                    dirty = true;
+                }
+            }
+            if dirty {
+                self.save_workspace(&ws)?;
+            }
+        }
+        Ok(new)
+    }
 }
 
 fn now_secs() -> u64 {

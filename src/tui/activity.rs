@@ -218,7 +218,7 @@ impl Activity {
                     .find(|s| s.kind == StepKind::Tool)
                     .map(|s| s.title.as_str())
                     .unwrap_or("strike");
-                format!("◆ Tool · {last} · {wait}")
+                format!("→ Tool · {last} · {wait}")
             }
             "decode" => format!("⋮ Decode · {wait}{tok}"),
             "think" | "thinking" => format!("⋮ Think · {wait}{tok}"),
@@ -300,8 +300,9 @@ pub fn step_line(step: &Step, verbose: bool) -> Vec<Line<'static>> {
     let face = step.kind.face(step.ok);
     let mark = match step.kind {
         StepKind::Prefill => "·",
-        StepKind::Think | StepKind::Decode => "◆",
-        StepKind::Tool => "◆",
+        StepKind::Think => "+",
+        StepKind::Decode => "·",
+        StepKind::Tool => "→",
     };
     let mut extra = Vec::new();
     if step.kind == StepKind::Tool {
