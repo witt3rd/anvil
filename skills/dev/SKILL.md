@@ -57,8 +57,10 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
 - Unpicklable names are dropped on persist and listed in `stderr` once.
 - A strike that is only statements has `value: null`. Prints still show.
 - `anvil serve` owns hammers. smith starts it if the socket is down.
-  `anvil serve --status` / `--stop`. Log: `~/.anvil/serve.log`.
-  Close smith: serve stays. `--store` is still in-process (no serve).
+  `anvil serve --status` / `--stop`. `anvil serve --install` enables
+  the user systemd unit (back after login/reboot, still cold).
+  `--uninstall` removes it. Log: `~/.anvil/serve.log`. Close smith:
+  serve stays. `--store` is still in-process (no serve).
 - Event log is `sessions/<id>/events.jsonl` (seq, ts, kind). Serve
   writes it. Cards project it. Ask projects only model-visible
   events (user/ask/strike/answer). Thinking, fiber, status stay out.

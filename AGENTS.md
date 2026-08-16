@@ -181,6 +181,7 @@ anvil session new audit
 anvil workspace add fleet-os audit
 anvil catalog add compute-saturation fleet-os
 anvil serve --status
+anvil serve --install            # user systemd unit; cold after reboot
 anvil inspect
 anvil session log audit
 anvil mount clock

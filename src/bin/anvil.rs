@@ -54,6 +54,12 @@ enum Command {
         /// Print whether serve is up.
         #[arg(long)]
         status: bool,
+        /// Install and enable the user systemd unit (cold after reboot).
+        #[arg(long)]
+        install: bool,
+        /// Disable and remove the user systemd unit.
+        #[arg(long)]
+        uninstall: bool,
     },
     /// List named providers from config.yaml. Never prints secrets.
     Providers,
@@ -159,8 +165,14 @@ fn main() -> ExitCode {
         Command::Session { cmd } => return session_cmd(cli.root.as_deref(), cmd),
         Command::Workspace { cmd } => return workspace_cmd(cli.root.as_deref(), cmd),
         Command::Catalog { cmd } => return catalog_cmd(cli.root.as_deref(), cmd),
-        Command::Serve { sock, stop, status } => {
-            return serve_cmd(&cli, sock.clone(), *stop, *status);
+        Command::Serve {
+            sock,
+            stop,
+            status,
+            install,
+            uninstall,
+        } => {
+            return serve_cmd(&cli, sock.clone(), *stop, *status, *install, *uninstall);
         }
         Command::Inspect { json } => return inspect_cmd(cli.root.as_deref(), *json),
         Command::Mount { kind, slot } => return mount_cmd(kind, slot.as_deref()),
@@ -250,9 +262,49 @@ fn main() -> ExitCode {
     }
 }
 
-fn serve_cmd(cli: &Cli, sock: Option<PathBuf>, stop: bool, status: bool) -> ExitCode {
+fn serve_cmd(
+    cli: &Cli,
+    sock: Option<PathBuf>,
+    stop: bool,
+    status: bool,
+    install: bool,
+    uninstall: bool,
+) -> ExitCode {
     let sock = sock.unwrap_or_else(anvil::serve::default_sock);
+    if uninstall {
+        return match anvil::serve::unit::uninstall() {
+            Ok(()) => {
+                println!("uninstalled\t{}", anvil::serve::UNIT_NAME);
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        };
+    }
+    if install {
+        let _ = anvil::serve::stop(&sock);
+        return match anvil::serve::unit::install() {
+            Ok(path) => {
+                println!("installed\t{}", path.display());
+                println!(
+                    "unit\t{} enabled={} active={}",
+                    anvil::serve::UNIT_NAME,
+                    anvil::serve::unit::enabled(),
+                    anvil::serve::unit::active()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        };
+    }
     if status {
+        if anvil::serve::unit::enabled() {
+            println!(
+                "unit\t{} enabled={} active={}",
+                anvil::serve::UNIT_NAME,
+                true,
+                anvil::serve::unit::active()
+            );
+        }
         return match anvil::serve::status(&sock) {
             Ok(true) => {
                 println!("up\t{}", sock.display());
@@ -266,6 +318,11 @@ fn serve_cmd(cli: &Cli, sock: Option<PathBuf>, stop: bool, status: bool) -> Exit
         };
     }
     if stop {
+        if anvil::serve::unit::enabled() {
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "stop", anvil::serve::UNIT_NAME])
+                .status();
+        }
         return match anvil::serve::stop(&sock) {
             Ok(()) => {
                 println!("stopped\t{}", sock.display());

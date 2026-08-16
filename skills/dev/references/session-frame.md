@@ -240,7 +240,9 @@ The next ask is a projection of the event log, not a paste of cards.
 7. **Layout geometry + many casings** — first cut. Sash tabs
    (workspaces); Alt+[ ] cycle; two-member benches split; Alt+J
    focuses the peer. Many casings already attach to one serve.
-8. **Reboot** — systemd user unit; cold until exposed.
+8. **Reboot** — first cut. `anvil serve --install` writes
+   `~/.config/systemd/user/anvil.service`. Cold until a casing
+   warms a session. Temporary mounts do not survive.
 9. **Remote** — SSH bridge.
 10. **Mixed members** — bash / web, and promoted mounts. Textbook: Zellij.
 

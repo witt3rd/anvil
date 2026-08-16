@@ -4,9 +4,11 @@ mod client;
 mod inspect;
 mod mount;
 mod proto;
+pub mod unit;
 
 pub use client::Client;
 pub use inspect::{Fiber, Report, Service, Slot};
+pub use unit::{UNIT_BODY, UNIT_NAME};
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
