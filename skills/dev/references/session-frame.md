@@ -230,7 +230,8 @@ The next ask is a projection of the event log, not a paste of cards.
    casing. No systemd unit yet (reboot is later).
 3. **Workspace + catalog** — done as persist + CLI + rail.
 4. **Event log** — first cut. `events.jsonl` is the source. Serve
-   appends. Cards project. Legacy `transcript.jsonl` migrates.
+   appends. Cards project. Ask projects model-visible events only.
+   Legacy `transcript.jsonl` migrates.
 5. **Slots + inspect + mount** — first cut. `anvil inspect`;
    `anvil mount clock` occupies `casing.status`; `anvil unmount dyn-1`
    disposes to quiescence. Temporary, in memory.

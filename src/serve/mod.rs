@@ -484,7 +484,8 @@ fn run_ask(
         id: id.into(),
         session: session.into(),
     };
-    match ask::ask_with(&mut llm, &mut anvil, prompt, &mut sink) {
+    let log = state.root.load_events(session).unwrap_or_default();
+    match ask::ask_with_log(&mut llm, &mut anvil, prompt, &log, &mut sink) {
         Ok(result) => {
             let _ = state.root.append_event(
                 session,

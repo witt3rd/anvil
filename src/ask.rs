@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::complete::{self, CompleteError};
 use crate::config::Provider;
+use crate::frame::{Event, EventBody};
 use crate::{Anvil, AnvilError, StrikeReply};
 
 pub const SYSTEM: &str = "\
@@ -20,6 +21,8 @@ Rules:
 ";
 
 const MAX_TURNS: usize = 3;
+/// Visible events that may enter a model request. Older ones are dropped.
+const LOG_WINDOW: usize = 32;
 
 #[derive(Debug, Error)]
 pub enum AskError {
@@ -73,16 +76,19 @@ pub fn ask_with(
     prompt: &str,
     sink: &mut impl AskSink,
 ) -> Result<AskResult, AskError> {
-    let mut messages = vec![
-        Message {
-            role: "system".into(),
-            content: SYSTEM.into(),
-        },
-        Message {
-            role: "user".into(),
-            content: prompt.into(),
-        },
-    ];
+    ask_with_log(completer, anvil, prompt, &[], sink)
+}
+
+/// Like `ask_with`, but the next request is projected from the event log.
+/// Only model-visible events enter the prompt.
+pub fn ask_with_log(
+    completer: &mut impl Completer,
+    anvil: &mut Anvil,
+    prompt: &str,
+    log: &[Event],
+    sink: &mut impl AskSink,
+) -> Result<AskResult, AskError> {
+    let mut messages = messages_from_log(log, prompt);
 
     for turn in 1..=MAX_TURNS {
         sink.on_status("thinking");
@@ -121,6 +127,65 @@ pub fn ask_with(
     }
     sink.on_status("idle");
     Err(AskError::NoCode(MAX_TURNS))
+}
+
+pub fn messages_from_log(events: &[Event], prompt: &str) -> Vec<Message> {
+    let mut messages = vec![Message {
+        role: "system".into(),
+        content: SYSTEM.into(),
+    }];
+    let visible: Vec<&EventBody> = events
+        .iter()
+        .map(|e| &e.body)
+        .filter(|b| b.model_visible())
+        .collect();
+    let start = visible.len().saturating_sub(LOG_WINDOW);
+    for body in &visible[start..] {
+        match body {
+            EventBody::User { text } | EventBody::Ask { prompt: text, .. } => {
+                messages.push(Message {
+                    role: "user".into(),
+                    content: text.clone(),
+                });
+            }
+            EventBody::Strike {
+                code, error, ok, ..
+            } => {
+                messages.push(Message {
+                    role: "assistant".into(),
+                    content: code.clone(),
+                });
+                if !ok {
+                    messages.push(Message {
+                        role: "user".into(),
+                        content: format!(
+                            "That Python failed:\n{}\nWrite fixed Python only. Print the answer.",
+                            error.as_deref().unwrap_or("unknown error")
+                        ),
+                    });
+                }
+            }
+            EventBody::Answer { text } => {
+                if !text.trim().is_empty() {
+                    messages.push(Message {
+                        role: "user".into(),
+                        content: text.clone(),
+                    });
+                }
+            }
+            EventBody::Thinking { .. } | EventBody::Status { .. } | EventBody::Fiber { .. } => {}
+        }
+    }
+    let already = messages
+        .last()
+        .is_some_and(|m| m.role == "user" && m.content == prompt);
+    if !already {
+        messages.push(Message {
+            role: "user".into(),
+            content: prompt.into(),
+        });
+    }
+    messages
 }
 
 pub fn extract_python(draft: &str) -> Option<String> {
@@ -361,6 +426,106 @@ mod tests {
         fn on_strike(&mut self, code: &str, _reply: &StrikeReply) {
             self.strikes.push(code.into());
         }
+    }
+
+    #[test]
+    fn log_projection_skips_invisible_and_does_not_duplicate_prompt() {
+        use crate::frame::Event;
+        let events = vec![
+            Event {
+                seq: 0,
+                ts: 1,
+                body: EventBody::Fiber {
+                    state: "hot".into(),
+                },
+            },
+            Event {
+                seq: 1,
+                ts: 2,
+                body: EventBody::Ask {
+                    prompt: "what is x".into(),
+                    provider: None,
+                    model: None,
+                },
+            },
+            Event {
+                seq: 2,
+                ts: 3,
+                body: EventBody::Thinking { text: "hmm".into() },
+            },
+            Event {
+                seq: 3,
+                ts: 4,
+                body: EventBody::Strike {
+                    code: "print(x)".into(),
+                    stdout: "1\n".into(),
+                    stderr: String::new(),
+                    error: None,
+                    ok: true,
+                    ms: Some(2),
+                },
+            },
+            Event {
+                seq: 4,
+                ts: 5,
+                body: EventBody::Answer { text: "1".into() },
+            },
+            Event {
+                seq: 5,
+                ts: 6,
+                body: EventBody::Ask {
+                    prompt: "double it".into(),
+                    provider: None,
+                    model: None,
+                },
+            },
+        ];
+        let msgs = messages_from_log(&events, "double it");
+        assert_eq!(msgs[0].role, "system");
+        let roles: Vec<_> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["system", "user", "assistant", "user", "user"]);
+        assert_eq!(msgs[1].content, "what is x");
+        assert_eq!(msgs[2].content, "print(x)");
+        assert_eq!(msgs[3].content, "1");
+        assert_eq!(msgs[4].content, "double it");
+        assert!(!msgs.iter().any(|m| m.content.contains("hmm")));
+        assert!(!msgs.iter().any(|m| m.content.contains("hot")));
+        assert_eq!(msgs.iter().filter(|m| m.content == "double it").count(), 1);
+    }
+
+    #[test]
+    fn ask_from_log_passes_prior_to_completer() {
+        struct Capture {
+            seen: Vec<Vec<String>>,
+            next: VecDeque<String>,
+        }
+        impl Completer for Capture {
+            fn complete(&mut self, messages: &[Message]) -> Result<String, AskError> {
+                self.seen
+                    .push(messages.iter().map(|m| m.content.clone()).collect());
+                self.next
+                    .pop_front()
+                    .ok_or_else(|| AskError::Other("empty".into()))
+            }
+        }
+        let store = tempfile::TempDir::new().unwrap();
+        let mut anvil = harness(store.path());
+        let events = [crate::frame::Event {
+            seq: 0,
+            ts: 1,
+            body: EventBody::Ask {
+                prompt: "prior".into(),
+                provider: None,
+                model: None,
+            },
+        }];
+        let mut llm = Capture {
+            seen: vec![],
+            next: VecDeque::from([String::from("print(2)")]),
+        };
+        ask_with_log(&mut llm, &mut anvil, "next", &events, &mut ()).unwrap();
+        assert!(llm.seen[0].iter().any(|c| c == "prior"));
+        assert!(llm.seen[0].iter().any(|c| c == "next"));
     }
 
     #[test]

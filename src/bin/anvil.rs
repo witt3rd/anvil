@@ -818,7 +818,11 @@ fn ask_cmd(
         provider: prov.clone(),
         model,
     };
-    match ask::ask(&mut llm, &mut anvil, &prompt) {
+    let log = open_root(cli.root.as_deref())
+        .ok()
+        .and_then(|r| r.load_events(&session_name(cli)).ok())
+        .unwrap_or_default();
+    match ask::ask_with_log(&mut llm, &mut anvil, &prompt, &log, &mut ()) {
         Ok(result) => {
             eprintln!("# strike {} turn(s)", result.turns);
             println!("{}", result.answer);

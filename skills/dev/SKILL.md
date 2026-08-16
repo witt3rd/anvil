@@ -60,7 +60,8 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
   `anvil serve --status` / `--stop`. Log: `~/.anvil/serve.log`.
   Close smith: serve stays. `--store` is still in-process (no serve).
 - Event log is `sessions/<id>/events.jsonl` (seq, ts, kind). Serve
-  writes it. Cards project it. `anvil session log NAME`.
+  writes it. Cards project it. Ask projects only model-visible
+  events (user/ask/strike/answer). Thinking, fiber, status stay out.
 - `anvil inspect` reports services, fibers, slots. Live if serve is
   up; otherwise cold from disk. Stage slots follow the last exposed
   or struck session. `anvil mount clock` occupies `casing.status`
