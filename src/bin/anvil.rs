@@ -356,11 +356,9 @@ fn serve_cmd(
         };
     }
     if stop {
-        if anvil::serve::unit::enabled() {
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "stop", anvil::serve::UNIT_NAME])
-                .status();
-        }
+        // Socket only. Do not call `systemctl stop` from here: the unit's
+        // ExecStop is this same command, and that pair deadlocks until
+        // TimeoutStopSec. systemd sees the main PID exit after Shutdown.
         return match anvil::serve::stop(&sock) {
             Ok(()) => {
                 println!("stopped\t{}", sock.display());

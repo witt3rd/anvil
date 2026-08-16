@@ -29,6 +29,14 @@ impl Client {
         })
     }
 
+    pub fn set_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.writer.set_read_timeout(Some(timeout))?;
+        self.writer.set_write_timeout(Some(timeout))?;
+        let reader = self.reader.get_mut();
+        reader.set_read_timeout(Some(timeout))?;
+        reader.set_write_timeout(Some(timeout))
+    }
+
     pub fn ping(&mut self) -> io::Result<()> {
         let id = self.next();
         self.send(&Req::Ping { id: id.clone() })?;

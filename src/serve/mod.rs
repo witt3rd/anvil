@@ -186,6 +186,7 @@ fn listen(sock: PathBuf, state: State) -> io::Result<()> {
             }
         }
     }
+    state.ptys.shutdown();
     let _ = fs::remove_file(&sock);
     let _ = fs::remove_file(pid_path(&sock));
     Ok(())
@@ -613,7 +614,10 @@ pub fn connect_or_spawn(spawn: &Spawn) -> io::Result<Client> {
 
 pub fn stop(sock: &Path) -> io::Result<()> {
     match Client::connect(sock) {
-        Ok(mut c) => c.shutdown(),
+        Ok(mut c) => {
+            let _ = c.set_timeout(Duration::from_secs(2));
+            c.shutdown()
+        }
         Err(err)
             if err.kind() == io::ErrorKind::ConnectionRefused
                 || err.kind() == io::ErrorKind::NotFound =>

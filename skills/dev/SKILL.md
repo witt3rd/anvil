@@ -63,6 +63,9 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
   so the user instance (and serve) start at boot. Log: `~/.anvil/serve.log`.
   Close smith:
   serve stays. `--store` is still in-process (no serve).
+  `anvil serve --stop` only sends Shutdown on the socket. It must not
+  call `systemctl stop`: the unit's ExecStop is this same command, and
+  that pair waits until TimeoutStopSec.
 - Event log is `sessions/<id>/events.jsonl` (seq, ts, kind). Serve
   writes it. Cards project it. Ask projects only model-visible
   events (user/ask/strike/answer). Thinking, fiber, status stay out.

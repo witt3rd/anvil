@@ -101,5 +101,6 @@ mod tests {
         assert!(UNIT_BODY.contains("ExecStop=%h/.local/bin/anvil serve --stop"));
         assert!(UNIT_BODY.contains("WantedBy=default.target"));
         assert!(UNIT_BODY.contains("Restart=on-failure"));
+        assert!(UNIT_BODY.contains("TimeoutStopSec=8s"));
     }
 }

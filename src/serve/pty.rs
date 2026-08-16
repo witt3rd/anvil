@@ -5,6 +5,7 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ pub struct PtyScreen {
 
 pub struct PtyHost {
     map: Mutex<HashMap<String, Arc<LivePty>>>,
+    pumps: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 struct LivePty {
@@ -40,6 +42,7 @@ impl Default for PtyHost {
     fn default() -> Self {
         Self {
             map: Mutex::new(HashMap::new()),
+            pumps: Mutex::new(Vec::new()),
         }
     }
 }
@@ -83,6 +86,25 @@ impl PtyHost {
         Ok(live.snap(name))
     }
 
+    pub fn shutdown(&self) {
+        let lives: Vec<Arc<LivePty>> = self
+            .map
+            .lock()
+            .map(|mut m| m.drain().map(|(_, live)| live).collect())
+            .unwrap_or_default();
+        for live in &lives {
+            live.terminate();
+        }
+        let pumps: Vec<thread::JoinHandle<()>> = self
+            .pumps
+            .lock()
+            .map(|mut p| p.drain(..).collect())
+            .unwrap_or_default();
+        for pump in pumps {
+            let _ = pump.join();
+        }
+    }
+
     fn ensure(&self, name: &str, cols: u16, rows: u16) -> io::Result<Arc<LivePty>> {
         let mut map = self.map.lock().map_err(|_| io::Error::other("ptys"))?;
         if let Some(live) = map.get(name) {
@@ -92,13 +114,17 @@ impl PtyHost {
                 return Ok(live.clone());
             }
         }
-        let live = spawn(name, cols, rows)?;
+        let (live, pump) = spawn(name, cols, rows)?;
         map.insert(name.to_string(), live.clone());
+        drop(map);
+        if let Ok(mut pumps) = self.pumps.lock() {
+            pumps.push(pump);
+        }
         Ok(live)
     }
 }
 
-fn spawn(name: &str, cols: u16, rows: u16) -> io::Result<Arc<LivePty>> {
+fn spawn(name: &str, cols: u16, rows: u16) -> io::Result<(Arc<LivePty>, thread::JoinHandle<()>)> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -131,7 +157,7 @@ fn spawn(name: &str, cols: u16, rows: u16) -> io::Result<Arc<LivePty>> {
         alive: AtomicBool::new(true),
     });
     let pump = live.clone();
-    thread::Builder::new()
+    let handle = thread::Builder::new()
         .name(format!("anvil-pty-{name}"))
         .spawn(move || {
             let mut buf = [0u8; 4096];
@@ -148,7 +174,7 @@ fn spawn(name: &str, cols: u16, rows: u16) -> io::Result<Arc<LivePty>> {
             }
             pump.alive.store(false, Ordering::Relaxed);
         })?;
-    Ok(live)
+    Ok((live, handle))
 }
 
 impl LivePty {
@@ -163,6 +189,15 @@ impl LivePty {
             }
         }
         !self.alive()
+    }
+
+    fn terminate(&self) {
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+        }
+        if let Ok(mut writer) = self.writer.lock() {
+            let _ = writer.flush();
+        }
     }
 
     fn write(&self, data: &[u8]) -> io::Result<()> {
@@ -213,9 +248,14 @@ impl LivePty {
 
 impl Drop for LivePty {
     fn drop(&mut self) {
+        self.terminate();
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+            for _ in 0..20 {
+                if child.try_wait().ok().flatten().is_some() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
         }
     }
 }
@@ -248,4 +288,25 @@ fn screen_lines(screen: &vt100::Screen) -> (Vec<String>, u16, u16, u16, u16) {
         lines.push(line);
     }
     (lines, cols, rows, cursor_col, cursor_row)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn shutdown_joins_the_pump() {
+        let host = PtyHost::default();
+        let opened = host.open("bash", 24, 80).unwrap();
+        assert!(opened.alive, "{opened:?}");
+        let start = Instant::now();
+        host.shutdown();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "pty shutdown hung: {:?}",
+            start.elapsed()
+        );
+        assert!(!host.is_hot("bash"));
+    }
 }

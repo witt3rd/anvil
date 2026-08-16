@@ -10,6 +10,7 @@ ExecStart=%h/.local/bin/anvil serve
 ExecStop=%h/.local/bin/anvil serve --stop
 Restart=on-failure
 RestartSec=2s
+TimeoutStopSec=8s
 
 [Install]
 WantedBy=default.target
