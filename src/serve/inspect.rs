@@ -43,6 +43,8 @@ pub struct Report {
     pub slots: Vec<Slot>,
     pub workspaces: Vec<String>,
     pub catalogs: Vec<String>,
+    #[serde(default)]
+    pub prof: crate::prof::Snap,
 }
 
 impl State {
@@ -205,6 +207,7 @@ impl State {
                 .into_iter()
                 .map(|c| c.name)
                 .collect(),
+            prof: crate::prof::snapshot(),
         }
     }
 }

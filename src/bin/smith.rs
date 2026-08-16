@@ -46,6 +46,7 @@ fn main() -> io::Result<()> {
         std::process::exit(anvil::remote::exec(&host, "smith", &rest, true));
     }
     let cli = Cli::parse();
+    anvil::prof::init();
     tui::run(Launch {
         store: cli.store,
         root: cli.root,

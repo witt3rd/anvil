@@ -6,9 +6,10 @@ use std::collections::VecDeque;
 
 use thiserror::Error;
 
-use crate::complete::{self, CompleteError};
+use crate::complete::{self, CompleteError, CompleteStats};
 use crate::config::Provider;
 use crate::frame::{Event, EventBody};
+use crate::prof::{self, Timing};
 use crate::{Anvil, AnvilError, StrikeReply};
 
 pub const SYSTEM: &str = "\
@@ -49,16 +50,29 @@ pub struct AskResult {
     pub code: String,
     pub turns: usize,
     pub reply: StrikeReply,
+    pub timing: Timing,
 }
 
 pub trait Completer {
     fn complete(&mut self, messages: &[Message]) -> Result<String, AskError>;
+    fn complete_timed(&mut self, messages: &[Message]) -> Result<CompleteStats, AskError> {
+        let t0 = std::time::Instant::now();
+        let text = self.complete(messages)?;
+        Ok(CompleteStats {
+            text,
+            reasoning: String::new(),
+            timing: Timing::wall(t0.elapsed()),
+        })
+    }
 }
 
 pub trait AskSink {
     fn on_status(&mut self, _status: &str) {}
     fn on_draft(&mut self, _text: &str) {}
     fn on_strike(&mut self, _code: &str, _reply: &StrikeReply) {}
+    fn on_strike_timed(&mut self, code: &str, reply: &StrikeReply, _timing: &Timing) {
+        self.on_strike(code, reply);
+    }
 }
 
 impl AskSink for () {}
@@ -90,16 +104,20 @@ pub fn ask_with_log(
     sink: &mut impl AskSink,
 ) -> Result<AskResult, AskError> {
     let mut messages = messages_from_log(log, prompt);
+    let ask_t0 = std::time::Instant::now();
+    let mut timing = Timing::default();
+    let _ask = prof::span("model.ask", "model");
 
     for turn in 1..=MAX_TURNS {
         sink.on_status("thinking");
-        let draft = completer.complete(&messages)?;
-        sink.on_draft(&draft);
+        let stats = completer.complete_timed(&messages)?;
+        timing.merge_model(&stats.timing);
+        sink.on_draft(&stats.text);
         messages.push(Message {
             role: "assistant".into(),
-            content: draft.clone(),
+            content: stats.text.clone(),
         });
-        let Some(code) = extract_python(&draft) else {
+        let Some(code) = extract_python(&stats.text) else {
             messages.push(Message {
                 role: "user".into(),
                 content: "That was not Python. Reply with Python only. Print the answer. No markdown, no bash, no explanation.".into(),
@@ -107,15 +125,24 @@ pub fn ask_with_log(
             continue;
         };
         sink.on_status("striking");
+        let strike_t0 = std::time::Instant::now();
         let reply = anvil.strike(&code)?;
-        sink.on_strike(&code, &reply);
+        let strike_ns = prof::ns(strike_t0.elapsed());
+        timing.add_strike(strike_ns);
+        let mut strike_t = Timing::wall(strike_t0.elapsed());
+        strike_t.strike_ns = Some(strike_ns);
+        sink.on_strike_timed(&code, &reply, &strike_t);
         if reply.ok {
             sink.on_status("idle");
+            timing.wall_ns = prof::ns(ask_t0.elapsed());
+            timing.recompute_tok_s();
+            prof::note_model(timing.clone());
             return Ok(AskResult {
                 answer: answer_from(&reply),
                 code,
                 turns: turn,
                 reply,
+                timing,
             });
         }
         messages.push(Message {
@@ -166,7 +193,7 @@ pub fn messages_from_log(events: &[Event], prompt: &str) -> Vec<Message> {
                     });
                 }
             }
-            EventBody::Answer { text } => {
+            EventBody::Answer { text, .. } => {
                 if !text.trim().is_empty() {
                     messages.push(Message {
                         role: "user".into(),
@@ -318,11 +345,15 @@ pub struct HttpCompleter {
 
 impl Completer for HttpCompleter {
     fn complete(&mut self, messages: &[Message]) -> Result<String, AskError> {
+        Ok(self.complete_timed(messages)?.text)
+    }
+
+    fn complete_timed(&mut self, messages: &[Message]) -> Result<CompleteStats, AskError> {
         let pairs: Vec<(&str, &str)> = messages
             .iter()
             .map(|m| (m.role.as_str(), m.content.as_str()))
             .collect();
-        Ok(complete::complete_messages(
+        Ok(complete::complete_messages_timed(
             &self.provider,
             &self.model,
             &pairs,
@@ -453,6 +484,7 @@ mod tests {
                     prompt: "what is x".into(),
                     provider: None,
                     model: None,
+                    timing: None,
                 },
             },
             Event {
@@ -470,12 +502,16 @@ mod tests {
                     error: None,
                     ok: true,
                     ms: Some(2),
+                    timing: None,
                 },
             },
             Event {
                 seq: 4,
                 ts: 5,
-                body: EventBody::Answer { text: "1".into() },
+                body: EventBody::Answer {
+                    text: "1".into(),
+                    timing: None,
+                },
             },
             Event {
                 seq: 5,
@@ -484,6 +520,7 @@ mod tests {
                     prompt: "double it".into(),
                     provider: None,
                     model: None,
+                    timing: None,
                 },
             },
         ];
@@ -541,6 +578,7 @@ mod tests {
                 prompt: "prior".into(),
                 provider: None,
                 model: None,
+                timing: None,
             },
         }];
         let mut llm = Capture {

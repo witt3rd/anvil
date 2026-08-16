@@ -384,6 +384,7 @@ impl App {
     }
 
     fn refresh_live(&mut self) {
+        let _g = crate::prof::span("tui.snap", "tui");
         let Some(sock) = self.sock.clone() else {
             return;
         };
@@ -1042,24 +1043,30 @@ fn event_loop(
         }
 
         let mut quit = false;
-        while event::poll(Duration::ZERO)? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if handle_key(app, key) {
-                        quit = true;
-                        break;
+        if event::poll(Duration::ZERO)? {
+            let _input = crate::prof::span("tui.input", "tui");
+            loop {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        if handle_key(app, key) {
+                            quit = true;
+                            break;
+                        }
+                        dirty = true;
                     }
-                    dirty = true;
+                    Event::Mouse(mouse) if mouse_action(mouse.kind) => {
+                        handle_mouse(app, mouse);
+                        dirty = true;
+                    }
+                    Event::Resize(_, _) => {
+                        sync_pty_size(terminal, app);
+                        dirty = true;
+                    }
+                    _ => {}
                 }
-                Event::Mouse(mouse) if mouse_action(mouse.kind) => {
-                    handle_mouse(app, mouse);
-                    dirty = true;
+                if quit || !event::poll(Duration::ZERO)? {
+                    break;
                 }
-                Event::Resize(_, _) => {
-                    sync_pty_size(terminal, app);
-                    dirty = true;
-                }
-                _ => {}
             }
         }
         if quit {
@@ -1087,7 +1094,11 @@ fn event_loop(
         }
 
         if dirty {
-            terminal.draw(|frame| draw(frame, app))?;
+            {
+                let _g = crate::prof::span("tui.draw", "tui");
+                crate::prof::counter("tui.frame", 1);
+                terminal.draw(|frame| draw(frame, app))?;
+            }
             dirty = false;
         }
 
@@ -2207,8 +2218,12 @@ fn draw_status_line(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         (Focus::Compose, false, false) => "ask",
     };
     let clock = app.slot_status.as_deref().unwrap_or("");
+    let model_t = crate::prof::last_model()
+        .filter(|t| !t.is_empty())
+        .map(|t| t.compact())
+        .unwrap_or_default();
     let text = format!(
-        " {spin} {} · {} · {} · {}{} ",
+        " {spin} {} · {} · {} · {}{}{} ",
         app.status,
         if app.view == MainView::Trajectory {
             "log"
@@ -2221,6 +2236,11 @@ fn draw_status_line(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             String::new()
         } else {
             format!(" · {clock}")
+        },
+        if model_t.is_empty() {
+            String::new()
+        } else {
+            format!(" · {model_t}")
         }
     );
     frame.render_widget(Paragraph::new(Span::styled(text, pal.dim())), area);
@@ -2390,7 +2410,7 @@ fn card_from_event(event: &LogEvent) -> Option<Card> {
             ok: *ok,
             folded: true,
         }),
-        EventBody::Answer { text } => Some(Card::Answer { text: text.clone() }),
+        EventBody::Answer { text, .. } => Some(Card::Answer { text: text.clone() }),
         EventBody::Status { text } => Some(Card::Status { text: text.clone() }),
         EventBody::Fiber { state } => Some(Card::Status {
             text: format!("fiber {state}"),
@@ -2423,14 +2443,39 @@ fn trajectory_line(event: &LogEvent, width: u16) -> Line<'static> {
     let vis = if event.body.model_visible() { "v" } else { " " };
     let (kind, detail) = match &event.body {
         EventBody::User { text } => ("user", clip(text, 60)),
-        EventBody::Ask { prompt, .. } => ("ask", clip(prompt, 60)),
+        EventBody::Ask { prompt, timing, .. } => {
+            let extra = timing
+                .as_ref()
+                .filter(|t| !t.is_empty())
+                .map(|t| format!(" {}", t.compact()))
+                .unwrap_or_default();
+            ("ask", format!("{}{extra}", clip(prompt, 40)))
+        }
         EventBody::Thinking { text } => ("think", clip(text, 60)),
-        EventBody::Strike { code, ok, ms, .. } => {
+        EventBody::Strike {
+            code,
+            ok,
+            ms,
+            timing,
+            ..
+        } => {
             let mark = if *ok { "ok" } else { "fail" };
-            let time = ms.map(|n| format!(" {n}ms")).unwrap_or_default();
+            let time = timing
+                .as_ref()
+                .filter(|t| !t.is_empty())
+                .map(|t| format!(" {}", t.compact()))
+                .or_else(|| ms.map(|n| format!(" {n}ms")))
+                .unwrap_or_default();
             ("strike", format!("{mark}{time} {}", clip(code, 40)))
         }
-        EventBody::Answer { text } => ("answer", clip(text, 60)),
+        EventBody::Answer { text, timing } => {
+            let extra = timing
+                .as_ref()
+                .filter(|t| !t.is_empty())
+                .map(|t| format!(" {}", t.compact()))
+                .unwrap_or_default();
+            ("answer", format!("{}{extra}", clip(text, 40)))
+        }
         EventBody::Status { text } => ("status", clip(text, 60)),
         EventBody::Fiber { state } => ("fiber", state.clone()),
         EventBody::See { member, .. } => ("see", member.clone()),
@@ -2697,6 +2742,7 @@ mod slash_tests {
                 error: None,
                 ok: true,
                 ms: Some(22),
+                timing: None,
             },
         };
         let s: String = trajectory_line(&ev, 80)

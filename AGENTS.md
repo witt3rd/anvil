@@ -163,6 +163,7 @@ one Cargo.toml, two bins
   src/serve/           unix socket daemon + client + PTY host
   src/tui/             smith casing (rail, blocks, worker, @ picker, pty pane)
   src/tui/theme.rs     named faces + ink packs (mocha, terminal)
+  src/prof.rs          ns ring + Timing (prefill, TTFT, decode, tok/s, strike)
   src/bin/anvil.rs     CLI
   src/bin/smith.rs     TUI binary
 hammer/hammer.py       guest
@@ -197,6 +198,7 @@ anvil serve --status
 anvil serve --install            # user unit + linger; cold after reboot
 smith --remote prince -p nim     # SSH; sessions stay on prince
 anvil inspect
+anvil prof                       # live ring: prefill/TTFT/tok/s/strike/frame
 anvil session log audit
 anvil mount clock
 anvil unmount dyn-1

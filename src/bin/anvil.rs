@@ -116,6 +116,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Dump the live prof ring (serve if up; else this process).
+    Prof {
+        #[arg(long)]
+        json: bool,
+        /// Last N samples (default 24).
+        #[arg(long, default_value_t = 24)]
+        last: usize,
+    },
     /// Mount a temporary fiber (in memory). First toy: `clock`. Needs serve.
     Mount {
         kind: String,
@@ -233,6 +241,7 @@ fn main() -> ExitCode {
         return ExitCode::from(anvil::remote::exec(&host, "anvil", &rest, false) as u8);
     }
     let cli = Cli::parse();
+    anvil::prof::init();
     let hammer = cli.hammer.clone().unwrap_or_else(default_hammer);
 
     match &cli.cmd {
@@ -249,6 +258,7 @@ fn main() -> ExitCode {
             return serve_cmd(&cli, sock.clone(), *stop, *status, *install, *uninstall);
         }
         Command::Inspect { json } => return inspect_cmd(cli.root.as_deref(), *json),
+        Command::Prof { json, last } => return prof_cmd(*json, *last),
         Command::Mount { kind, slot } => return mount_cmd(kind, slot.as_deref()),
         Command::Unmount { id } => return unmount_cmd(id),
         Command::Pty { cmd } => return pty_cmd(cli.root.as_deref(), cmd),
@@ -336,7 +346,8 @@ fn main() -> ExitCode {
         | Command::Mount { .. }
         | Command::Unmount { .. }
         | Command::Pty { .. }
-        | Command::Edit { .. } => unreachable!("handled above"),
+        | Command::Edit { .. }
+        | Command::Prof { .. } => unreachable!("handled above"),
     }
 }
 
@@ -571,7 +582,65 @@ fn inspect_cmd(root: Option<&std::path::Path>, json: bool) -> ExitCode {
     if !report.catalogs.is_empty() {
         println!("catalogs\t{}", report.catalogs.join(","));
     }
+    print_prof(&report.prof, 12);
     ExitCode::SUCCESS
+}
+
+fn prof_cmd(json: bool, last: usize) -> ExitCode {
+    let snap = match anvil::serve::Client::connect(anvil::serve::default_sock()) {
+        Ok(mut c) => match c.inspect() {
+            Ok(r) => r.prof,
+            Err(_) => anvil::prof::snapshot(),
+        },
+        Err(_) => anvil::prof::snapshot(),
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&snap).unwrap());
+        return ExitCode::SUCCESS;
+    }
+    print_prof(&snap, last);
+    ExitCode::SUCCESS
+}
+
+fn print_prof(snap: &anvil::prof::Snap, last: usize) {
+    if let Some(t) = &snap.last_model {
+        let compact = t.compact();
+        if !compact.is_empty() {
+            println!("model\t{compact}");
+        }
+    }
+    if !snap.counters.is_empty() {
+        println!("counters");
+        for (k, v) in &snap.counters {
+            println!("  {k}\t{v}");
+        }
+    }
+    let samples = if snap.samples.len() > last {
+        &snap.samples[snap.samples.len() - last..]
+    } else {
+        &snap.samples[..]
+    };
+    if samples.is_empty() {
+        println!("prof\t(empty — serve up? last ask?)");
+        return;
+    }
+    println!("prof");
+    for s in samples {
+        let extra = s.extra.as_deref().unwrap_or("");
+        let toks = s.tokens.map(|n| format!("\t{n} tok")).unwrap_or_default();
+        println!(
+            "  {}\t{}\t{}{}{}",
+            s.group,
+            s.name,
+            anvil::prof::fmt_ns(s.dur_ns),
+            toks,
+            if extra.is_empty() {
+                String::new()
+            } else {
+                format!("\t{extra}")
+            }
+        );
+    }
 }
 
 fn mount_cmd(kind: &str, slot: Option<&str>) -> ExitCode {
@@ -695,6 +764,7 @@ fn cold_inspect(root: Option<&std::path::Path>) -> Result<anvil::serve::Report, 
             .into_iter()
             .map(|c| c.name)
             .collect(),
+        prof: anvil::prof::snapshot(),
     })
 }
 
@@ -1168,9 +1238,13 @@ fn complete_cmd(
     if prompt.trim().is_empty() {
         return fail("complete needs a prompt");
     }
-    match complete::complete(prov, &model, &prompt) {
-        Ok(text) => {
-            println!("{text}");
+    match complete::complete_messages_timed(prov, &model, &[("user", prompt.as_str())]) {
+        Ok(stats) => {
+            let t = stats.timing.compact();
+            if !t.is_empty() {
+                eprintln!("# {t}");
+            }
+            println!("{}", stats.text);
             ExitCode::SUCCESS
         }
         Err(err) => fail(err),
@@ -1225,7 +1299,12 @@ fn ask_cmd(
         .unwrap_or_default();
     match ask::ask_with_log(&mut llm, &mut anvil, &prompt, &log, &mut ()) {
         Ok(result) => {
-            eprintln!("# strike {} turn(s)", result.turns);
+            let t = result.timing.compact();
+            if t.is_empty() {
+                eprintln!("# strike {} turn(s)", result.turns);
+            } else {
+                eprintln!("# {} turn(s)  {t}", result.turns);
+            }
             println!("{}", result.answer);
             ExitCode::SUCCESS
         }

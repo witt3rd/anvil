@@ -163,9 +163,11 @@ leaks.
 (and serve lifecycle). Cards, the next ask, a trajectory sash, and
 telemetry are *projections*. **Model-visible means logged** — if the
 model saw it, the log can reconstruct it. Do not dump the transcript
-into the next ask; derive. Timing (strike wall, TTFT, queue wait,
-respawn) is data on that stream. Zoom/diagnose is a workspace member
-that injects the same session, not a debug flag.
+into the next ask; derive. Timing (prefill, TTFT, decode, reasoning,
+tok/s, strike wall, respawn) is data on that stream (`Timing` on
+Ask/Strike/Answer) and on the live ring (`src/prof.rs`, `anvil inspect`
+/ `anvil prof`). Zoom/diagnose is a workspace member that injects the
+same session, not a debug flag.
 
 Self-mod without a log is a trick you cannot debug. A log without
 slots is a file you `less`.
@@ -268,3 +270,6 @@ The next ask is a projection of the event log, not a paste of cards.
   face in `src/tui/theme.rs` (`message.user.field`, `hint.key`, …).
   Add the face before the widget. Packs fill inks; `theme:` in
   config overrides.
+- Prof is first-class. New serve op / fiber / model phase gets a
+  `prof::span` (and a `Timing` field if it is logged). `ANVIL_TRACE=1`
+  for the tracing subscriber.

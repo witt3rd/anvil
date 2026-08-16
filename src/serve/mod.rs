@@ -71,6 +71,7 @@ fn pid_path(sock: &Path) -> PathBuf {
 }
 
 pub fn run(opts: ServeOpts) -> io::Result<()> {
+    crate::prof::init();
     let sock = opts.sock.clone();
     let state = State::open(&opts)?;
     listen(sock, state)
@@ -247,6 +248,31 @@ fn handle_conn(stream: UnixStream, state: &State) -> io::Result<()> {
 }
 
 fn dispatch(req: &Req, state: &State, writer: &mut UnixStream) -> io::Result<()> {
+    let name = match req {
+        Req::Ping { .. } => "serve.ping",
+        Req::Shutdown { .. } => "serve.shutdown",
+        Req::Expose { .. } => "serve.expose",
+        Req::Mount { .. } => "serve.mount",
+        Req::Unmount { .. } => "serve.unmount",
+        Req::Inspect { .. } => "serve.inspect",
+        Req::Strike { .. } => "serve.strike",
+        Req::Ask { .. } => "serve.ask",
+        Req::Reset { .. } => "serve.reset",
+        Req::Warm { .. } => "serve.warm",
+        Req::PtyOpen { .. } => "serve.pty_open",
+        Req::PtySnap { .. } => "serve.pty_snap",
+        Req::PtyWrite { .. } => "serve.pty_write",
+        Req::PtyResize { .. } => "serve.pty_resize",
+        Req::EditSnap { .. } | Req::Edit { .. } => "serve.edit",
+    };
+    let group = if name.starts_with("serve.mount") || name == "serve.unmount" {
+        "fiber"
+    } else {
+        "serve"
+    };
+    let _g = crate::prof::span(name, group);
+    crate::prof::counter("serve.req", 1);
+    crate::prof::counter(name, 1);
     match req {
         Req::Ping { id } => write_msg(writer, &Msg::Pong { id: id.clone() }),
         Req::Shutdown { .. } => Ok(()),
@@ -304,7 +330,10 @@ fn dispatch(req: &Req, state: &State, writer: &mut UnixStream) -> io::Result<()>
             let start = Instant::now();
             match with_session(state, session, |anvil| anvil.strike(code)) {
                 Ok(reply) => {
-                    let ms = start.elapsed().as_millis() as u64;
+                    let wall = start.elapsed();
+                    let ms = wall.as_millis() as u64;
+                    let mut timing = crate::prof::Timing::wall(wall);
+                    timing.strike_ns = Some(timing.wall_ns);
                     let _ = state.root.append_event(
                         session,
                         EventBody::Strike {
@@ -314,6 +343,7 @@ fn dispatch(req: &Req, state: &State, writer: &mut UnixStream) -> io::Result<()>
                             error: reply.error.clone(),
                             ok: reply.ok,
                             ms: Some(ms),
+                            timing: Some(timing),
                         },
                     );
                     write_msg(
@@ -552,6 +582,16 @@ impl AskSink for WireSink<'_> {
         );
     }
     fn on_strike(&mut self, code: &str, reply: &StrikeReply) {
+        self.log_strike(code, reply, None);
+    }
+    fn on_strike_timed(&mut self, code: &str, reply: &StrikeReply, timing: &crate::prof::Timing) {
+        self.log_strike(code, reply, Some(timing.clone()));
+    }
+}
+
+impl WireSink<'_> {
+    fn log_strike(&mut self, code: &str, reply: &StrikeReply, timing: Option<crate::prof::Timing>) {
+        let ms = timing.as_ref().map(|t| t.wall_ns / 1_000_000);
         let _ = self.root.append_event(
             &self.session,
             EventBody::Strike {
@@ -560,7 +600,8 @@ impl AskSink for WireSink<'_> {
                 stderr: reply.stderr.clone(),
                 error: reply.error.clone(),
                 ok: reply.ok,
-                ms: None,
+                ms,
+                timing,
             },
         );
         let _ = write_msg(
@@ -628,6 +669,7 @@ fn run_ask(
             prompt: prompt.into(),
             provider: provider.map(str::to_string),
             model: Some(model),
+            timing: None,
         },
     );
     let slot = state.slot(session)?;
@@ -645,6 +687,7 @@ fn run_ask(
                 session,
                 EventBody::Answer {
                     text: result.answer.clone(),
+                    timing: Some(result.timing.clone()),
                 },
             );
             write_msg(

@@ -7,6 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::prof::Timing;
+
 use super::transcript::TranscriptLine;
 use super::{FrameError, FrameRoot};
 
@@ -30,6 +32,8 @@ pub enum EventBody {
         provider: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timing: Option<Timing>,
     },
     Thinking {
         text: String,
@@ -42,9 +46,13 @@ pub enum EventBody {
         ok: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timing: Option<Timing>,
     },
     Answer {
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timing: Option<Timing>,
     },
     Status {
         text: String,
@@ -186,8 +194,9 @@ fn body_from_transcript(line: TranscriptLine) -> EventBody {
             error,
             ok,
             ms: None,
+            timing: None,
         },
-        TranscriptLine::Answer { text } => EventBody::Answer { text },
+        TranscriptLine::Answer { text } => EventBody::Answer { text, timing: None },
         TranscriptLine::Status { text } => EventBody::Status { text },
     }
 }
@@ -222,6 +231,7 @@ mod tests {
                     error: None,
                     ok: true,
                     ms: Some(3),
+                    timing: None,
                 },
             )
             .unwrap();

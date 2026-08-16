@@ -35,6 +35,8 @@ respawns if it exits; the store is the namespace.
 ```bash
 cargo test
 python3 hammer/hammer.py --self-test         # guest only, no rust
+anvil prof                                   # last spans (serve if up)
+ANVIL_TRACE=1 smith -p nim                   # tracing spans on stderr
 ```
 
 `persist_across_respawn` in `src/lib.rs` is the load-bearing test: strike
