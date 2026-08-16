@@ -199,6 +199,7 @@ struct PickerState {
 #[derive(Debug, Clone, Copy)]
 struct PaneView {
     scroll: u16,
+    max: u16,
     stick: bool,
 }
 
@@ -206,8 +207,30 @@ impl Default for PaneView {
     fn default() -> Self {
         Self {
             scroll: 0,
+            max: 0,
             stick: true,
         }
+    }
+}
+
+/// Unstick from the *visible* bottom (`max`), not from offset 0.
+/// Reaching `max` sticks again so follow-mode and manual scroll agree.
+fn apply_scroll(view: &mut PaneView, delta: i32) {
+    if view.stick {
+        view.scroll = view.max;
+        view.stick = false;
+    }
+    let next = if delta < 0 {
+        view.scroll.saturating_sub(delta.unsigned_abs() as u16)
+    } else {
+        view.scroll.saturating_add(delta as u16)
+    };
+    if next >= view.max {
+        view.scroll = view.max;
+        view.stick = true;
+    } else {
+        view.scroll = next;
+        view.stick = false;
     }
 }
 
@@ -243,11 +266,28 @@ impl App {
 
     fn bump_scroll(&mut self, id: &str, delta: i32) {
         let view = self.views.entry(id.to_string()).or_default();
-        if delta < 0 {
-            view.stick = false;
-            view.scroll = view.scroll.saturating_sub(delta.unsigned_abs() as u16);
-        } else {
-            view.scroll = view.scroll.saturating_add(delta as u16);
+        let from = view.scroll;
+        let from_stick = view.stick;
+        apply_scroll(view, delta);
+        crate::prof::record(crate::prof::Sample {
+            name: "tui.scroll".into(),
+            group: "tui".into(),
+            t0_ns: crate::prof::now_ns(),
+            dur_ns: 0,
+            tokens: None,
+            extra: Some(format!(
+                "{id} d={delta} {from}->{} max={} stick {from_stick}->{}",
+                view.scroll, view.max, view.stick
+            )),
+        });
+    }
+
+    fn remember_scroll(&mut self, id: &str, max: u16) {
+        let view = self.views.entry(id.to_string()).or_default();
+        view.max = max;
+        if view.stick || view.scroll > max {
+            view.scroll = max;
+            view.stick = true;
         }
     }
 
@@ -1422,14 +1462,17 @@ fn click_at(app: &mut App, col: u16, row: u16) {
 }
 
 fn wheel_at(app: &mut App, col: u16, row: u16, dir: i32) {
-    let kind = app.hits.at_scroll(col, row).cloned().or_else(|| {
-        app.pointer
-            .and_then(|(c, r)| app.hits.at_scroll(c, r).cloned())
-    });
+    // Hover position is the truth. Some terminals report 0,0 or the
+    // last click on the wheel event itself — do not clobber pointer.
+    let (c, r) = app.pointer.unwrap_or((col, row));
+    let kind = app
+        .hits
+        .at_scroll(c, r)
+        .cloned()
+        .or_else(|| app.hits.at_scroll(col, row).cloned());
     if let Some(HitKind::Pane(id)) = &kind {
         app.scroll_under = Some(id.clone());
     }
-    app.pointer = Some((col, row));
     let steps = 3 * dir;
     match kind {
         Some(HitKind::Pane(id)) => wheel_pane(app, &id, dir, steps),
@@ -1459,7 +1502,6 @@ fn wheel_at(app: &mut App, col: u16, row: u16, dir: i32) {
 }
 
 fn wheel_pane(app: &mut App, id: &str, dir: i32, steps: i32) {
-    let _ = app.hover_member(id, Focus::Compose);
     if id.ends_with("::log") {
         app.bump_scroll(id, steps);
         return;
@@ -2085,7 +2127,7 @@ fn draw_edit_pane(
 fn draw_member_pane(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
-    app: &App,
+    app: &mut App,
     id: &str,
     focused: bool,
     hits: &mut Hits,
@@ -2210,12 +2252,13 @@ fn draw_scroll_pane(
     area: ratatui::layout::Rect,
     title: &str,
     lines: &[Line<'static>],
-    app: &App,
+    app: &mut App,
     id: &str,
     focused: bool,
 ) {
     let view_h = area.height.saturating_sub(2);
     let max_scroll = lines.len().saturating_sub(view_h as usize) as u16;
+    app.remember_scroll(id, max_scroll);
     let view = app.pane_view(id);
     let scroll = if view.stick {
         max_scroll
@@ -2232,7 +2275,7 @@ fn draw_scroll_pane(
 fn draw_session_seat(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
-    app: &App,
+    app: &mut App,
     title: &str,
     lines: &[Line<'static>],
     id: &str,
@@ -2256,6 +2299,7 @@ fn draw_session_seat(
         .split(inner);
     let view_h = parts[0].height;
     let max_scroll = lines.len().saturating_sub(view_h as usize) as u16;
+    app.remember_scroll(id, max_scroll);
     let view = app.pane_view(id);
     let scroll = if view.stick {
         max_scroll
@@ -2962,5 +3006,22 @@ mod slash_tests {
         assert!(mouse_action(MouseEventKind::ScrollUp));
         assert!(!mouse_action(MouseEventKind::Moved));
         assert!(!mouse_action(MouseEventKind::Up(MouseButton::Left)));
+    }
+
+    #[test]
+    fn unstick_from_bottom_not_from_zero() {
+        let mut view = PaneView {
+            scroll: 0,
+            max: 40,
+            stick: true,
+        };
+        apply_scroll(&mut view, -3);
+        assert!(!view.stick);
+        assert_eq!(view.scroll, 37);
+        apply_scroll(&mut view, 10);
+        assert!(view.stick);
+        assert_eq!(view.scroll, 40);
+        apply_scroll(&mut view, -1);
+        assert_eq!(view.scroll, 39);
     }
 }
