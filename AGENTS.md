@@ -88,20 +88,26 @@ dependency, no.
                     └───────────────────────────────────┘
 ```
 
-**Now:** one smith, in-process anvil, one hammer, named HTTP providers,
-`ask` = complete → extract Python → strike. Daily binaries are release
-builds of `feat/providers` on `PATH`.
+**Now:** named sessions / workspaces / catalogs on disk. `anvil serve`
+owns hammers and `$SHELL` PTYs on a unix socket; smith attaches. Close
+the casing, work stays. First casing after reboot warms the front
+bench. Event log is the source of truth; slots + inspect + mount
+clock; ask sees sibling terminals. Scar: Cordis + DeepSeek Harness.
+Not a host.
 
-**When use bruises us, in this order:**
+**When use bruises us, in this order** (session frame first — that is
+the current bruise; in-process tiles wait):
 
-1. In-process **tiles** — two smiths, or smith | pty (a real shell).
-   Textbook: `~/src/ext/zellij` (screen, terminal pane, pty bus). Not a
-   cargo dep.
-2. **`anvil serve`** — hammer outlives the TUI; smith attaches on a
-   unix socket.
-3. **SSH attach** — `ssh host smith` / `ssh host anvil attach`. Recipe:
-   herdr `src/remote/attach.rs` (stdio + socket). Not zellij's web
-   remote. Not herdr as a host.
+1. **Named sessions on disk** — persist store + log per session.
+   `skills/dev/references/session-frame.md`.
+2. **`anvil serve` + smith attach** — daemon owns hammers; smith
+   detaches; work continues.
+3. **Event log + slots + inspect** — model-visible means logged;
+   named seats; then mount/unmount can land.
+4. **Layout geometry, reboot, SSH** — as in that design.
+5. **Mixed members** (smith | pty | a promoted mount) — first cut.
+   Serve owns `$SHELL` via portable-pty + vt100; smith draws it.
+   Textbook: Zellij. Not a host.
 
 **Neighbors (stay neighbors):**
 
@@ -112,6 +118,7 @@ builds of `feat/providers` on `PATH`.
 | jcode | Anti-exemplar for providers (keep: named profiles, `grok login`). |
 | Prime | Keep: generic `!` → shell. Drop: IPython kernel, bare-word env lookup. |
 | Omarchy | DHH's daily Linux. Precedent for omakase: one chef, one machine, no committee desktop. |
+| cordis / DSH (`~/src/ext/cordis`, `~/src/ext/deepseek-harness`) | Scar: member = service, pane/adapter = fiber; inspect/mount/total unmount; model-visible ⟺ logged. Never `exec` or depend. |
 
 Subagents are more smiths, each with their own anvil and hammer. No
 special protocol beyond “another process.”
@@ -120,14 +127,25 @@ special protocol beyond “another process.”
 
 | Word | What it is |
 |---|---|
-| **smith** | Who you talk to. The daily seat. TUI + the ask loop you see. Binary: `smith`. |
+| **smith** | Who you talk to when the member is an anvil session: that pane. Binary `smith` launches a casing. |
 | **anvil** | The harness under smith. Does not move. Binary: `anvil` (CLI, serve, strike). |
 | **hammer** | Stock CPython guest. Hits the work. Dies. We hang another. |
 | **strike** | One `eval`. A blow, not a process. The only tool. |
-| **store** | On-disk workspace (`~/.anvil/default/namespace.pkl`). Not “the bench.” |
+| **store** | On-disk persist for one session (`~/.anvil/sessions/<id>/namespace.pkl`). Not a workspace. |
+| **session** | Conceptual. Anvil-specific: one coherent agentic process. A kind of member. |
+| **member** | Conceptual. A machine process: a session, a bash, a web client, … |
+| **workspace** | Conceptual. A collection of members. Everyday: the **bench**. Destroying it does not destroy members. |
+| **catalog** | Conceptual. A collection of workspaces. A named intent. Destroying it does not destroy workspaces. |
+| **pane** | UI. Exposes a member. Destroying it does not destroy the member. |
+| **sash** | UI. Tabs or a list. Destroying it destroys its panes. A pane lives in one sash. |
+| **window** | UI. A column of the casing. Destroying it destroys its sashes. No conceptual twin. |
+| **layout** | UI, on disk. A saved arrangement of a catalog. |
+| **casing** | UI, live. What `smith` launches. Destroys its windows. Many casings can load one layout. |
 | **ask** | Model writes Python; extract; strike; print stdout. Not `complete`. |
 | **complete** | Raw HTTP chat. Will waffle. Smoke only. |
-| **tile** | A pane we own: smith or pty. Not yet built. |
+| **slot** | Named seat on the casing a live fiber can occupy (`casing.status`, …). |
+| **log** | Append-only events for one member. Cards and ask project it. |
+| **tile** | A pane we own: smith or pty. Bash is a PTY member, not a smith. |
 
 ## Layout
 
@@ -141,7 +159,12 @@ one Cargo.toml, two bins
   src/catalog.rs       /models + cache
   src/complete.rs      chat/completions smoke
   src/ask.rs           model → extract Python → strike
-  src/tui/             smith TUI (blocks, worker, @ picker)
+  src/frame/           sessions, workspaces, catalogs, layouts, transcript
+  src/serve/           unix socket daemon + client + PTY host
+  src/tui/             smith casing (rail, blocks, worker, @ picker, pty pane)
+  src/tui/theme.rs     named faces + ink packs (mocha, terminal)
+  src/tui/keys.rs      herdr-style prefix keymap (every action named)
+  src/prof.rs          ns ring + Timing (prefill, TTFT, decode, tok/s, strike)
   src/bin/anvil.rs     CLI
   src/bin/smith.rs     TUI binary
 hammer/hammer.py       guest
@@ -159,11 +182,37 @@ anvil providers
 anvil login grok
 anvil models --refresh
 anvil ask -p nim 'how many files have synlinks ~/dotfiles/ (recursive)'
-smith -p nim                     # daily seat
+anvil session new                    # mints a short unused word
+anvil session new audit
+anvil workspace add fleet-os audit
+anvil workspace add fleet-os bash --pty
+anvil workspace add fleet-os clock --clock
+anvil workspace add fleet-os audit --log
+anvil workspace add fleet-os notes --edit
+anvil edit write notes hello
+anvil edit snap notes
+anvil pty new bash --workspace fleet-os
+anvil pty snap bash                  # live screen; warms $SHELL
+anvil pty write bash echo anvil-pty-ok
+anvil catalog add compute-saturation fleet-os
+anvil serve --status
+anvil serve --install            # user unit + linger; cold after reboot
+smith --remote prince -p nim     # SSH; sessions stay on prince
+anvil inspect
+anvil prof                       # live ring: prefill/TTFT/tok/s/strike/frame
+anvil session log audit
+anvil mount clock
+anvil unmount dyn-1
+smith -p nim                     # casing + rail; starts serve
+smith -s audit -p nim
 ```
 
-`ANVIL_STORE` default `$HOME/.anvil/default`. `ANVIL_HAMMER` overrides
-the guest. `ANVIL_CONFIG` default `~/.config/anvil/config.yaml`.
+`ANVIL_ROOT` default `$HOME/.anvil`. Sessions live in
+`~/.anvil/sessions/<id>/` (legacy pickle at `~/.anvil/default` is
+session `default`). Serve listens on `$XDG_RUNTIME_DIR/anvil.sock`
+(`ANVIL_SOCK`). `ANVIL_STORE` is a raw store, no rail, no serve.
+`ANVIL_HAMMER` overrides the guest. `ANVIL_CONFIG` default
+`~/.config/anvil/config.yaml`.
 
 PATH: `~/.local/bin/{smith,anvil}` are the same wrapper (`scripts/launch`).
 It execs `target/release/<name>` from **stable** (primary clone) or **dev**

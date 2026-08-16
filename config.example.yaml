@@ -26,3 +26,52 @@ providers:
     auth:
       type: oauth
       vendor: grok
+
+# Theme: pack fills the inks; faces are dotted names for every painted
+# surface (`message.user.field`, `hint.key`, `tab.active`). Override an
+# ink or a face without touching the TUI. Full list: Face::as_str in
+# src/tui/theme.rs. Restart smith to pick up a change; serve can stay.
+theme:
+  pack: mocha          # mocha | terminal
+  # ink:
+  #   accent: "#cba6f7"
+  # face:
+  #   hint.key: { fg: accent, bold: true }
+  #   message.user.field: { bg: raised }
+  #   message.agent.field: { bg: canvas }
+
+# Keys: herdr default map. Action names match herdr (`next_tab`,
+# `split_vertical`, `focus_pane_left`). smith-only verbs sit on free
+# chords (strike is ctrl+s / prefix+enter, not prefix+s). prefix+? is
+# the live map. prefix+shift+r reloads. Restart smith for a binary change.
+# keys:
+#   prefix: ctrl+b
+#   detach: prefix+q
+#   new_tab: [prefix+c, ctrl+alt+c]
+#   next_tab: [prefix+n, ctrl+alt+]]
+#   previous_tab: [prefix+p, ctrl+alt+[]
+#   switch_tab: prefix+1..9
+#   split_vertical: [prefix+v, ctrl+alt+d]
+#   split_horizontal: [prefix+minus, ctrl+alt+shift+d]
+#   focus_pane_left: [prefix+h, ctrl+alt+h]
+#   close_pane: prefix+x
+#   zoom: [prefix+z, ctrl+alt+z]
+#   resize_mode: prefix+r
+#   copy_mode: prefix+[
+#   workspace_picker: prefix+w
+#   goto: prefix+g
+#   settings: prefix+s
+#   strike: [ctrl+s, prefix+enter]
+#   clear_compose: ctrl+u   # double-esc always clears; this is the extra bind
+#
+# Mouse: herdr copy-on-select. Drag-select copies and toasts
+# "copied to clipboard". Set false to keep the highlight; Ctrl+C copies.
+# Status: per smith pane (each session has its own cwd/git/model/context).
+# `clock` still reads the casing.status mount and only paints on the
+# focused pane. status_auto_hide: true hides the strip on unfocused
+# smith panes.
+# ui:
+#   copy_on_select: true
+#   status_auto_hide: false
+#   context_window: 128000
+#   status: [account, cwd, git, model, context, clock]

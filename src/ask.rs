@@ -6,13 +6,16 @@ use std::collections::VecDeque;
 
 use thiserror::Error;
 
-use crate::complete::{self, CompleteError};
+use crate::complete::{self, CompleteError, CompleteStats};
 use crate::config::Provider;
+use crate::frame::{Event, EventBody};
+use crate::prof::{self, Timing};
 use crate::{Anvil, AnvilError, StrikeReply};
 
 pub const SYSTEM: &str = "\
 You are the smith. You write Python for a persistent CPython guest (the hammer).
 The harness will exec your code. Print the answer.
+You may be shown views of sibling terminals as 'terminal NAME:'.
 Rules:
 - Reply with Python only. No prose, no markdown, no bash.
 - Use pathlib / os / subprocess as needed. The machine is real.
@@ -20,6 +23,8 @@ Rules:
 ";
 
 const MAX_TURNS: usize = 3;
+/// Visible events that may enter a model request. Older ones are dropped.
+const LOG_WINDOW: usize = 32;
 
 #[derive(Debug, Error)]
 pub enum AskError {
@@ -45,16 +50,36 @@ pub struct AskResult {
     pub code: String,
     pub turns: usize,
     pub reply: StrikeReply,
+    pub timing: Timing,
 }
 
 pub trait Completer {
     fn complete(&mut self, messages: &[Message]) -> Result<String, AskError>;
+    fn complete_timed(
+        &mut self,
+        messages: &[Message],
+        _sink: &mut dyn AskSink,
+    ) -> Result<CompleteStats, AskError> {
+        let t0 = std::time::Instant::now();
+        let text = self.complete(messages)?;
+        Ok(CompleteStats {
+            text,
+            reasoning: String::new(),
+            timing: Timing::wall(t0.elapsed()),
+        })
+    }
 }
 
 pub trait AskSink {
     fn on_status(&mut self, _status: &str) {}
+    fn on_delta(&mut self, _kind: &str, _text: &str) {}
     fn on_draft(&mut self, _text: &str) {}
+    fn on_reason(&mut self, _text: &str) {}
     fn on_strike(&mut self, _code: &str, _reply: &StrikeReply) {}
+    fn on_strike_timed(&mut self, code: &str, reply: &StrikeReply, _timing: &Timing) {
+        self.on_strike(code, reply);
+    }
+    fn on_step(&mut self, _n: u32, _timing: &Timing) {}
 }
 
 impl AskSink for () {}
@@ -73,26 +98,37 @@ pub fn ask_with(
     prompt: &str,
     sink: &mut impl AskSink,
 ) -> Result<AskResult, AskError> {
-    let mut messages = vec![
-        Message {
-            role: "system".into(),
-            content: SYSTEM.into(),
-        },
-        Message {
-            role: "user".into(),
-            content: prompt.into(),
-        },
-    ];
+    ask_with_log(completer, anvil, prompt, &[], sink)
+}
+
+/// Like `ask_with`, but the next request is projected from the event log.
+/// Only model-visible events enter the prompt.
+pub fn ask_with_log(
+    completer: &mut impl Completer,
+    anvil: &mut Anvil,
+    prompt: &str,
+    log: &[Event],
+    sink: &mut impl AskSink,
+) -> Result<AskResult, AskError> {
+    let mut messages = messages_from_log(log, prompt);
+    let ask_t0 = std::time::Instant::now();
+    let mut timing = Timing::default();
+    let _ask = prof::span("model.ask", "model");
 
     for turn in 1..=MAX_TURNS {
-        sink.on_status("thinking");
-        let draft = completer.complete(&messages)?;
-        sink.on_draft(&draft);
+        sink.on_status("waiting");
+        let stats = completer.complete_timed(&messages, sink)?;
+        timing.merge_model(&stats.timing);
+        sink.on_step(turn as u32, &stats.timing);
+        if !stats.reasoning.is_empty() {
+            sink.on_reason(&stats.reasoning);
+        }
+        sink.on_draft(&stats.text);
         messages.push(Message {
             role: "assistant".into(),
-            content: draft.clone(),
+            content: stats.text.clone(),
         });
-        let Some(code) = extract_python(&draft) else {
+        let Some(code) = extract_python(&stats.text) else {
             messages.push(Message {
                 role: "user".into(),
                 content: "That was not Python. Reply with Python only. Print the answer. No markdown, no bash, no explanation.".into(),
@@ -100,15 +136,24 @@ pub fn ask_with(
             continue;
         };
         sink.on_status("striking");
+        let strike_t0 = std::time::Instant::now();
         let reply = anvil.strike(&code)?;
-        sink.on_strike(&code, &reply);
+        let strike_ns = prof::ns(strike_t0.elapsed());
+        timing.add_strike(strike_ns);
+        let mut strike_t = Timing::wall(strike_t0.elapsed());
+        strike_t.strike_ns = Some(strike_ns);
+        sink.on_strike_timed(&code, &reply, &strike_t);
         if reply.ok {
             sink.on_status("idle");
+            timing.wall_ns = prof::ns(ask_t0.elapsed());
+            timing.recompute_tok_s();
+            prof::note_model(timing.clone());
             return Ok(AskResult {
                 answer: answer_from(&reply),
                 code,
                 turns: turn,
                 reply,
+                timing,
             });
         }
         messages.push(Message {
@@ -121,6 +166,74 @@ pub fn ask_with(
     }
     sink.on_status("idle");
     Err(AskError::NoCode(MAX_TURNS))
+}
+
+pub fn messages_from_log(events: &[Event], prompt: &str) -> Vec<Message> {
+    let mut messages = vec![Message {
+        role: "system".into(),
+        content: SYSTEM.into(),
+    }];
+    let visible: Vec<&EventBody> = events
+        .iter()
+        .map(|e| &e.body)
+        .filter(|b| b.model_visible())
+        .collect();
+    let start = visible.len().saturating_sub(LOG_WINDOW);
+    for body in &visible[start..] {
+        match body {
+            EventBody::User { text } | EventBody::Ask { prompt: text, .. } => {
+                messages.push(Message {
+                    role: "user".into(),
+                    content: text.clone(),
+                });
+            }
+            EventBody::Strike {
+                code, error, ok, ..
+            } => {
+                messages.push(Message {
+                    role: "assistant".into(),
+                    content: code.clone(),
+                });
+                if !ok {
+                    messages.push(Message {
+                        role: "user".into(),
+                        content: format!(
+                            "That Python failed:\n{}\nWrite fixed Python only. Print the answer.",
+                            error.as_deref().unwrap_or("unknown error")
+                        ),
+                    });
+                }
+            }
+            EventBody::Answer { text, .. } => {
+                if !text.trim().is_empty() {
+                    messages.push(Message {
+                        role: "user".into(),
+                        content: text.clone(),
+                    });
+                }
+            }
+            EventBody::See { member, text } => {
+                messages.push(Message {
+                    role: "user".into(),
+                    content: format!("terminal {member}:\n{text}"),
+                });
+            }
+            EventBody::Thinking { .. }
+            | EventBody::Status { .. }
+            | EventBody::Fiber { .. }
+            | EventBody::Step { .. } => {}
+        }
+    }
+    let already = messages
+        .last()
+        .is_some_and(|m| m.role == "user" && m.content == prompt);
+    if !already {
+        messages.push(Message {
+            role: "user".into(),
+            content: prompt.into(),
+        });
+    }
+    messages
 }
 
 pub fn extract_python(draft: &str) -> Option<String> {
@@ -246,14 +359,23 @@ pub struct HttpCompleter {
 
 impl Completer for HttpCompleter {
     fn complete(&mut self, messages: &[Message]) -> Result<String, AskError> {
+        Ok(self.complete_timed(messages, &mut ())?.text)
+    }
+
+    fn complete_timed(
+        &mut self,
+        messages: &[Message],
+        sink: &mut dyn AskSink,
+    ) -> Result<CompleteStats, AskError> {
         let pairs: Vec<(&str, &str)> = messages
             .iter()
             .map(|m| (m.role.as_str(), m.content.as_str()))
             .collect();
-        Ok(complete::complete_messages(
+        Ok(complete::complete_messages_timed_with(
             &self.provider,
             &self.model,
             &pairs,
+            |kind, text| sink.on_delta(kind, text),
         )?)
     }
 }
@@ -361,6 +483,133 @@ mod tests {
         fn on_strike(&mut self, code: &str, _reply: &StrikeReply) {
             self.strikes.push(code.into());
         }
+    }
+
+    #[test]
+    fn log_projection_skips_invisible_and_does_not_duplicate_prompt() {
+        use crate::frame::Event;
+        let events = vec![
+            Event {
+                seq: 0,
+                ts: 1,
+                body: EventBody::Fiber {
+                    state: "hot".into(),
+                },
+            },
+            Event {
+                seq: 1,
+                ts: 2,
+                body: EventBody::Ask {
+                    prompt: "what is x".into(),
+                    provider: None,
+                    model: None,
+                    timing: None,
+                },
+            },
+            Event {
+                seq: 2,
+                ts: 3,
+                body: EventBody::Thinking {
+                    text: "hmm".into(),
+                    phase: None,
+                },
+            },
+            Event {
+                seq: 3,
+                ts: 4,
+                body: EventBody::Strike {
+                    code: "print(x)".into(),
+                    stdout: "1\n".into(),
+                    stderr: String::new(),
+                    error: None,
+                    ok: true,
+                    ms: Some(2),
+                    timing: None,
+                },
+            },
+            Event {
+                seq: 4,
+                ts: 5,
+                body: EventBody::Answer {
+                    text: "1".into(),
+                    timing: None,
+                },
+            },
+            Event {
+                seq: 5,
+                ts: 6,
+                body: EventBody::Ask {
+                    prompt: "double it".into(),
+                    provider: None,
+                    model: None,
+                    timing: None,
+                },
+            },
+        ];
+        let msgs = messages_from_log(&events, "double it");
+        assert_eq!(msgs[0].role, "system");
+        let roles: Vec<_> = msgs.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["system", "user", "assistant", "user", "user"]);
+        assert_eq!(msgs[1].content, "what is x");
+        assert_eq!(msgs[2].content, "print(x)");
+        assert_eq!(msgs[3].content, "1");
+        assert_eq!(msgs[4].content, "double it");
+        assert!(!msgs.iter().any(|m| m.content.contains("hmm")));
+        assert!(!msgs.iter().any(|m| m.content.contains("hot")));
+        assert_eq!(msgs.iter().filter(|m| m.content == "double it").count(), 1);
+    }
+
+    #[test]
+    fn see_is_visible_and_enters_the_prompt() {
+        use crate::frame::Event;
+        let events = vec![Event {
+            seq: 0,
+            ts: 1,
+            body: EventBody::See {
+                member: "bash".into(),
+                text: "anvil-pty-ok".into(),
+            },
+        }];
+        assert!(events[0].body.model_visible());
+        let msgs = messages_from_log(&events, "what is on the terminal");
+        assert!(msgs.iter().any(|m| m.content.contains("terminal bash")));
+        assert!(msgs.iter().any(|m| m.content.contains("anvil-pty-ok")));
+    }
+
+    #[test]
+    fn ask_from_log_passes_prior_to_completer() {
+        struct Capture {
+            seen: Vec<Vec<String>>,
+            next: VecDeque<String>,
+        }
+        impl Completer for Capture {
+            fn complete(&mut self, messages: &[Message]) -> Result<String, AskError> {
+                self.seen
+                    .push(messages.iter().map(|m| m.content.clone()).collect());
+                self.next
+                    .pop_front()
+                    .ok_or_else(|| AskError::Other("empty".into()))
+            }
+        }
+        let store = tempfile::TempDir::new().unwrap();
+        let mut anvil = harness(store.path());
+        let events = [crate::frame::Event {
+            seq: 0,
+            ts: 1,
+            body: EventBody::Ask {
+                prompt: "prior".into(),
+                provider: None,
+                model: None,
+                timing: None,
+            },
+        }];
+        let mut llm = Capture {
+            seen: vec![],
+            next: VecDeque::from([String::from("print(2)")]),
+        };
+        ask_with_log(&mut llm, &mut anvil, "next", &events, &mut ()).unwrap();
+        assert!(llm.seen[0].iter().any(|c| c == "prior"));
+        assert!(llm.seen[0].iter().any(|c| c == "next"));
     }
 
     #[test]

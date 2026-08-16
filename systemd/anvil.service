@@ -1,0 +1,16 @@
+[Unit]
+Description=anvil serve — hammers outlive the casing
+After=default.target
+# Socket is $XDG_RUNTIME_DIR/anvil.sock (user session). Cold until a
+# casing or CLI warms a session. Temporary mounts do not survive.
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/anvil serve
+ExecStop=%h/.local/bin/anvil serve --stop
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=8s
+
+[Install]
+WantedBy=default.target

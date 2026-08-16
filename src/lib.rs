@@ -6,8 +6,13 @@ pub mod ask;
 pub mod catalog;
 pub mod complete;
 pub mod config;
+pub mod frame;
 pub mod oauth;
+pub mod prof;
+pub mod stats;
+pub mod remote;
 pub mod secret;
+pub mod serve;
 pub mod tui;
 
 pub use protocol::{Op, StrikeReply, StrikeRequest};
@@ -80,6 +85,8 @@ impl Anvil {
     }
 
     pub fn strike(&mut self, code: &str) -> Result<StrikeReply, AnvilError> {
+        let _g = crate::prof::span("hammer.strike", "hammer");
+        crate::prof::counter("hammer.strike", 1);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
         self.request(StrikeRequest::strike(id, code))
     }
@@ -100,6 +107,8 @@ impl Anvil {
             Ok(reply) => Ok(reply),
             Err(err) => {
                 // One retry on a dead guest: hang another hammer, replay.
+                let _g = crate::prof::span("hammer.respawn", "hammer");
+                crate::prof::counter("hammer.respawn", 1);
                 self.reap();
                 self.ensure_hammer()?;
                 self.write_read(&req).map_err(|_| err)
@@ -128,6 +137,8 @@ impl Anvil {
             return Ok(());
         }
         self.reap();
+        let _g = crate::prof::span("hammer.spawn", "hammer");
+        crate::prof::counter("hammer.spawn", 1);
         let mut child = Command::new("python3")
             .arg(&self.hammer_path)
             .env("ANVIL_STORE", &self.store)
@@ -199,10 +210,10 @@ pub fn default_store() -> PathBuf {
     if let Ok(dir) = std::env::var("ANVIL_STORE") {
         return PathBuf::from(dir);
     }
-    dirs_home()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".anvil")
-        .join("default")
+    match frame::FrameRoot::open(frame::default_root()) {
+        Ok(root) => root.session_dir("default"),
+        Err(_) => frame::default_root().join("default"),
+    }
 }
 
 pub fn default_hammer() -> PathBuf {
