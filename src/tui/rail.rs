@@ -1,6 +1,8 @@
 //! Left rail: catalogs, workspaces, members. Chrome of the layout, not a member.
 
-use crate::frame::{FrameError, FrameRoot, MemberRef};
+use std::collections::HashSet;
+
+use crate::frame::{apply_gap, clamp_weight, FrameError, FrameRoot, MemberRef, SplitDir, Tile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -13,6 +15,11 @@ pub enum Naming {
     Session(String),
     Pty(String),
     Edit(String),
+    Tab(String),
+    Catalog(String),
+    RenameTab(String),
+    RenameCatalog(String),
+    RenamePane(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +41,9 @@ pub struct Rail {
     pub clocks: Vec<String>,
     pub logs: Vec<(String, String)>,
     pub edits: Vec<String>,
+    pub plots: Vec<(String, String)>,
     pub weights: Vec<u16>,
+    pub tiles: Option<Tile>,
     pub kind: RailKind,
     pub idx: usize,
     pub naming: Option<Naming>,
@@ -104,6 +113,11 @@ impl Rail {
             .filter(|m| m.is_edit())
             .map(|m| m.id().to_string())
             .collect();
+        let plots: Vec<(String, String)> = ws
+            .members
+            .iter()
+            .filter_map(|m| m.plot_of().map(|of| (m.id().to_string(), of.to_string())))
+            .collect();
         let session = session
             .map(str::to_string)
             .or(layout.front_session.clone())
@@ -112,7 +126,8 @@ impl Rail {
         let named = ptys.iter().any(|p| p == &session)
             || clocks.iter().any(|c| c == &session)
             || logs.iter().any(|(id, _)| id == &session)
-            || edits.iter().any(|e| e == &session);
+            || edits.iter().any(|e| e == &session)
+            || plots.iter().any(|(id, _)| id == &session);
         if !named && !root.session_exists(&session) {
             root.create_session(&session)?;
         }
@@ -123,7 +138,7 @@ impl Rail {
         }
         let mut rail = Self {
             catalog,
-            workspace,
+            workspace: workspace.clone(),
             session,
             catalogs: root.list_catalogs()?.into_iter().map(|c| c.name).collect(),
             workspaces,
@@ -132,13 +147,16 @@ impl Rail {
             clocks,
             logs,
             edits,
+            plots,
             weights: layout.weights.clone(),
+            tiles: layout.tiles.get(&workspace).cloned(),
             kind: RailKind::Member,
             idx: 0,
             naming: None,
             layout_name: layout.name,
         };
         rail.refresh(root)?;
+        rail.ensure_tiles();
         rail.idx = rail
             .members
             .iter()
@@ -176,17 +194,23 @@ impl Rail {
                 .filter(|m| m.is_edit())
                 .map(|m| m.id().to_string())
                 .collect();
+            self.plots = ms
+                .iter()
+                .filter_map(|m| m.plot_of().map(|of| (m.id().to_string(), of.to_string())))
+                .collect();
         } else {
             self.members.clear();
             self.ptys.clear();
             self.clocks.clear();
             self.logs.clear();
             self.edits.clear();
+            self.plots.clear();
         }
         self.clamp();
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn reclamp(&mut self) {
         self.clamp();
     }
@@ -218,6 +242,46 @@ impl Rail {
         self.idx = next.clamp(0, (len - 1) as isize) as usize;
     }
 
+    /// Jump onto `kind`. Already-on-kind keeps the highlight so the
+    /// user can keep walking; entering snaps to the live selection.
+    pub fn enter_kind(&mut self, kind: RailKind) {
+        if self.kind == kind {
+            return;
+        }
+        self.kind = kind;
+        self.idx = match kind {
+            RailKind::Catalog => self
+                .catalogs
+                .iter()
+                .position(|c| c == &self.catalog)
+                .unwrap_or(0),
+            RailKind::Workspace => self
+                .workspaces
+                .iter()
+                .position(|w| w == &self.workspace)
+                .unwrap_or(0),
+            RailKind::Member => self
+                .members
+                .iter()
+                .position(|m| m == &self.session)
+                .unwrap_or(0),
+        };
+    }
+
+    /// Walk members. Returns the highlighted id; caller peeks or selects.
+    pub fn step_member(&mut self, delta: isize) -> Option<String> {
+        self.enter_kind(RailKind::Member);
+        self.move_idx(delta);
+        self.current_list().get(self.idx).cloned()
+    }
+
+    /// Walk workspaces. Highlight only — does not switch the sash.
+    pub fn step_workspace(&mut self, delta: isize) -> Option<String> {
+        self.enter_kind(RailKind::Workspace);
+        self.move_idx(delta);
+        self.current_list().get(self.idx).cloned()
+    }
+
     /// Cycle the sash (workspace) in the current catalog. Returns true if
     /// the focused session changed.
     pub fn cycle_sash(&mut self, root: &FrameRoot, delta: isize) -> Result<bool, FrameError> {
@@ -237,6 +301,7 @@ impl Rail {
         }
         self.workspace = self.workspaces[next].clone();
         self.refresh(root)?;
+        self.adopt_tiles(root);
         let switched = if self.members.iter().any(|m| m == &self.session) {
             false
         } else if let Some(first) = self.members.first().cloned() {
@@ -269,6 +334,7 @@ impl Rail {
         }
         self.workspace = name.to_string();
         self.refresh(root)?;
+        self.adopt_tiles(root);
         let switched = if self.members.iter().any(|m| m == &self.session) {
             false
         } else if let Some(first) = self.members.first().cloned() {
@@ -371,6 +437,8 @@ impl Rail {
             format!("{id} · clock")
         } else if let Some((_, of)) = self.logs.iter().find(|(lid, _)| lid == id) {
             format!("{id} · log {of}")
+        } else if let Some((_, of)) = self.plots.iter().find(|(pid, _)| pid == id) {
+            format!("{id} · stats {of}")
         } else {
             id.to_string()
         }
@@ -391,6 +459,17 @@ impl Rail {
             .map(|(_, of)| of.as_str())
     }
 
+    pub fn member_is_plot(&self, id: &str) -> bool {
+        self.plots.iter().any(|(pid, _)| pid == id)
+    }
+
+    pub fn plot_of(&self, id: &str) -> Option<&str> {
+        self.plots
+            .iter()
+            .find(|(pid, _)| pid == id)
+            .map(|(_, of)| of.as_str())
+    }
+
     pub fn stage_members(&self) -> Vec<String> {
         self.members
             .iter()
@@ -400,28 +479,93 @@ impl Rail {
     }
 
     pub fn bump_weight(&mut self, root: &FrameRoot, delta: i16) -> Result<(), FrameError> {
-        let stage = self.stage_members();
-        if self.weights.len() != stage.len() {
-            self.weights = vec![1; stage.len().max(1)];
-        }
-        if let Some(i) = stage.iter().position(|m| m == &self.session) {
-            let next = (self.weights[i] as i16 + delta).clamp(1, 20) as u16;
-            self.weights[i] = next;
+        self.ensure_tiles();
+        if let Some(t) = self.tiles.as_mut() {
+            t.bump_weight(&self.session, delta);
+        } else {
+            let stage = self.stage_members();
+            if self.weights.len() != stage.len() {
+                self.weights = vec![1; stage.len().max(1)];
+            }
+            if let Some(i) = stage.iter().position(|m| m == &self.session) {
+                self.weights[i] = clamp_weight(self.weights[i], delta);
+            }
         }
         self.persist(root)
     }
 
-    pub fn create_pty(&mut self, root: &FrameRoot, name: &str) -> Result<(), FrameError> {
-        let name = FrameRoot::parse_name(name)?;
+    fn ensure_tiles(&mut self) {
+        let stage = self.stage_members();
+        match self.tiles.as_mut() {
+            None => self.tiles = Tile::from_stage(&stage, &self.weights),
+            Some(t) => {
+                let keep: HashSet<String> = stage.iter().cloned().collect();
+                if !t.prune(&keep) {
+                    self.tiles = Tile::from_stage(&stage, &self.weights);
+                } else {
+                    t.sync_stage(&stage);
+                }
+            }
+        }
+    }
+
+    fn insert_tile(&mut self, focus: &str, new_id: &str, dir: SplitDir) {
+        if self.tiles.is_none() {
+            let prior: Vec<String> = self
+                .stage_members()
+                .into_iter()
+                .filter(|id| id != new_id)
+                .collect();
+            self.tiles = Tile::from_stage(&prior, &self.weights);
+        }
+        let stage = self.stage_members();
+        if let Some(t) = self.tiles.as_mut() {
+            if !t.split(focus, new_id, dir) {
+                t.sync_stage(&stage);
+            }
+        }
+    }
+
+    /// Herdr split: mint a PTY and bisect the focused pane.
+    pub fn split_pane(&mut self, root: &FrameRoot, dir: SplitDir) -> Result<String, FrameError> {
+        let focus = self.session.clone();
+        let name = root.mint_name()?;
         if !root.workspace_exists(&self.workspace) {
             root.create_workspace(&self.workspace)?;
         }
         let mut ws = root.workspace(&self.workspace)?;
         ws.add_member(MemberRef::pty(&name));
         root.save_workspace(&ws)?;
+        self.refresh(root)?;
+        self.insert_tile(&focus, &name, dir);
+        self.session = name.clone();
+        self.kind = RailKind::Member;
+        self.idx = self
+            .members
+            .iter()
+            .position(|m| m == &self.session)
+            .unwrap_or(0);
+        self.persist(root)?;
+        Ok(name)
+    }
+
+    pub fn create_pty(&mut self, root: &FrameRoot, name: &str) -> Result<(), FrameError> {
+        let focus = self.session.clone();
+        let name = if name.trim().is_empty() {
+            root.mint_name()?
+        } else {
+            FrameRoot::parse_name(name)?
+        };
+        if !root.workspace_exists(&self.workspace) {
+            root.create_workspace(&self.workspace)?;
+        }
+        let mut ws = root.workspace(&self.workspace)?;
+        ws.add_member(MemberRef::pty(&name));
+        root.save_workspace(&ws)?;
+        self.refresh(root)?;
+        self.insert_tile(&focus, &name, SplitDir::Col);
         self.session = name;
         self.kind = RailKind::Member;
-        self.refresh(root)?;
         self.idx = self
             .members
             .iter()
@@ -432,6 +576,7 @@ impl Rail {
     }
 
     pub fn create_edit(&mut self, root: &FrameRoot, name: &str) -> Result<(), FrameError> {
+        let focus = self.session.clone();
         let name = if name.trim().is_empty() {
             root.mint_name()?
         } else {
@@ -443,9 +588,10 @@ impl Rail {
         let mut ws = root.workspace(&self.workspace)?;
         ws.add_member(MemberRef::edit(&name));
         root.save_workspace(&ws)?;
+        self.refresh(root)?;
+        self.insert_tile(&focus, &name, SplitDir::Col);
         self.session = name;
         self.kind = RailKind::Member;
-        self.refresh(root)?;
         self.idx = self
             .members
             .iter()
@@ -533,9 +679,11 @@ impl Rail {
                 root.save_catalog(&cat)?;
             }
         }
+        let focus = self.session.clone();
+        self.refresh(root)?;
+        self.insert_tile(&focus, &name, SplitDir::Col);
         self.session = name;
         self.kind = RailKind::Member;
-        self.refresh(root)?;
         self.idx = self
             .members
             .iter()
@@ -545,7 +693,8 @@ impl Rail {
         Ok(())
     }
 
-    pub fn persist(&self, root: &FrameRoot) -> Result<(), FrameError> {
+    pub fn persist(&mut self, root: &FrameRoot) -> Result<(), FrameError> {
+        self.ensure_tiles();
         let mut layout = if root.layout_exists(&self.layout_name) {
             root.layout(&self.layout_name)?
         } else {
@@ -555,7 +704,243 @@ impl Rail {
         layout.front_workspace = Some(self.workspace.clone());
         layout.front_session = Some(self.session.clone());
         layout.weights = self.weights.clone();
+        if let Some(t) = &self.tiles {
+            layout.tiles.insert(self.workspace.clone(), t.clone());
+        } else {
+            layout.tiles.remove(&self.workspace);
+        }
         root.save_layout(&layout)
+    }
+
+    pub fn seed_split_weights(&mut self, path: Option<&[usize]>, sizes: &[u16]) {
+        match path {
+            None => {
+                self.weights = sizes.iter().map(|s| (*s).max(1)).collect();
+            }
+            Some(path) => {
+                self.ensure_tiles();
+                if let Some(t) = self.tiles.as_mut() {
+                    if let Some(node) = t.at_mut(path) {
+                        node.seed_weights(sizes);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn apply_split_gap(
+        &mut self,
+        path: Option<&[usize]>,
+        gap: usize,
+        px_a: u16,
+        px_b: u16,
+        delta: i32,
+    ) {
+        match path {
+            None => {
+                apply_gap(&mut self.weights, gap, px_a, px_b, delta, 3);
+            }
+            Some(path) => {
+                if let Some(t) = self.tiles.as_mut() {
+                    if let Some(node) = t.at_mut(path) {
+                        node.set_gap(gap, px_a, px_b, delta);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn equalize_split(&mut self, path: Option<&[usize]>) {
+        match path {
+            None => {
+                for w in &mut self.weights {
+                    *w = 1;
+                }
+            }
+            Some(path) => {
+                if let Some(t) = self.tiles.as_mut() {
+                    if let Some(node) = t.at_mut(path) {
+                        node.equalize();
+                    }
+                }
+            }
+        }
+    }
+
+    fn adopt_tiles(&mut self, root: &FrameRoot) {
+        self.tiles = root
+            .layout(&self.layout_name)
+            .ok()
+            .and_then(|l| l.tiles.get(&self.workspace).cloned());
+        self.ensure_tiles();
+    }
+
+    pub fn create_tab(&mut self, root: &FrameRoot, name: &str) -> Result<String, FrameError> {
+        let name = if name.trim().is_empty() {
+            root.mint_name()?
+        } else {
+            FrameRoot::parse_name(name)?
+        };
+        if !root.workspace_exists(&name) {
+            let mut ws = root.create_workspace(&name)?;
+            if root.session_exists("default") {
+                ws.add_member(MemberRef::session("default"));
+                root.save_workspace(&ws)?;
+            }
+        }
+        if root.catalog_exists(&self.catalog) {
+            let mut cat = root.catalog(&self.catalog)?;
+            cat.add_workspace(&name);
+            root.save_catalog(&cat)?;
+        }
+        self.select_workspace(root, &name)?;
+        Ok(name)
+    }
+
+    pub fn close_tab(&mut self, root: &FrameRoot) -> Result<bool, FrameError> {
+        if self.workspaces.len() < 2 {
+            return Ok(false);
+        }
+        let gone = self.workspace.clone();
+        if root.catalog_exists(&self.catalog) {
+            let mut cat = root.catalog(&self.catalog)?;
+            cat.remove_workspace(&gone);
+            root.save_catalog(&cat)?;
+        }
+        self.refresh(root)?;
+        if let Some(next) = self.workspaces.first().cloned() {
+            self.select_workspace(root, &next)?;
+        }
+        Ok(true)
+    }
+
+    pub fn switch_tab(&mut self, root: &FrameRoot, n: u8) -> Result<bool, FrameError> {
+        self.refresh(root)?;
+        let idx = n.saturating_sub(1) as usize;
+        let Some(name) = self.workspaces.get(idx).cloned() else {
+            return Ok(false);
+        };
+        self.select_workspace(root, &name)
+    }
+
+    pub fn create_catalog_front(
+        &mut self,
+        root: &FrameRoot,
+        name: &str,
+    ) -> Result<String, FrameError> {
+        let name = if name.trim().is_empty() {
+            root.mint_name()?
+        } else {
+            FrameRoot::parse_name(name)?
+        };
+        if !root.catalog_exists(&name) {
+            let mut cat = root.create_catalog(&name)?;
+            cat.add_workspace(&self.workspace);
+            root.save_catalog(&cat)?;
+        }
+        self.catalog = name.clone();
+        self.refresh(root)?;
+        self.persist(root)?;
+        Ok(name)
+    }
+
+    pub fn close_catalog(&mut self, root: &FrameRoot) -> Result<bool, FrameError> {
+        if self.catalogs.len() < 2 {
+            return Ok(false);
+        }
+        let gone = self.catalog.clone();
+        let next = self
+            .catalogs
+            .iter()
+            .find(|c| *c != &gone)
+            .cloned()
+            .unwrap_or_else(|| "default".into());
+        self.catalog = next;
+        self.refresh(root)?;
+        if let Some(first) = self.workspaces.first().cloned() {
+            self.select_workspace(root, &first)?;
+        } else {
+            self.persist(root)?;
+        }
+        let _ = root.delete_catalog(&gone);
+        Ok(true)
+    }
+
+    pub fn rename_tab(&mut self, root: &FrameRoot, name: &str) -> Result<String, FrameError> {
+        let new = root.rename_workspace(&self.workspace, name)?;
+        self.workspace = new.clone();
+        self.refresh(root)?;
+        self.adopt_tiles(root);
+        self.persist(root)?;
+        Ok(new)
+    }
+
+    pub fn rename_catalog(&mut self, root: &FrameRoot, name: &str) -> Result<String, FrameError> {
+        let new = root.rename_catalog(&self.catalog, name)?;
+        self.catalog = new.clone();
+        self.refresh(root)?;
+        self.persist(root)?;
+        Ok(new)
+    }
+
+    pub fn close_pane(&mut self, root: &FrameRoot) -> Result<bool, FrameError> {
+        let stage = self.stage_members();
+        if stage.len() < 2 {
+            return Ok(false);
+        }
+        let gone = self.session.clone();
+        let next = stage
+            .iter()
+            .find(|id| *id != &gone)
+            .cloned()
+            .unwrap_or_else(|| stage[0].clone());
+        if root.workspace_exists(&self.workspace) {
+            let mut ws = root.workspace(&self.workspace)?;
+            ws.members.retain(|m| m.id() != gone);
+            root.save_workspace(&ws)?;
+        }
+        self.refresh(root)?;
+        self.ensure_tiles();
+        self.session = next;
+        self.kind = RailKind::Member;
+        self.idx = self
+            .members
+            .iter()
+            .position(|m| m == &self.session)
+            .unwrap_or(0);
+        self.persist(root)?;
+        Ok(true)
+    }
+
+    pub fn swap_with(&mut self, root: &FrameRoot, other: &str) -> Result<bool, FrameError> {
+        if other == self.session {
+            return Ok(false);
+        }
+        self.ensure_tiles();
+        if let Some(t) = self.tiles.as_mut() {
+            t.swap_ids(&self.session, other);
+        }
+        self.persist(root)?;
+        Ok(true)
+    }
+
+    pub fn select_catalog(&mut self, root: &FrameRoot, name: &str) -> Result<bool, FrameError> {
+        self.refresh(root)?;
+        if !self.catalogs.iter().any(|c| c == name) {
+            return Ok(false);
+        }
+        if self.catalog == name {
+            self.kind = RailKind::Catalog;
+            return Ok(false);
+        }
+        self.catalog = name.to_string();
+        self.refresh(root)?;
+        if let Some(first) = self.workspaces.first().cloned() {
+            self.select_workspace(root, &first)?;
+        } else {
+            self.persist(root)?;
+        }
+        Ok(true)
     }
 
     pub fn create_clock(&mut self, root: &FrameRoot) -> Result<(), FrameError> {
@@ -572,15 +957,39 @@ impl Rail {
     pub fn create_log(&mut self, root: &FrameRoot, of: &str) -> Result<(), FrameError> {
         let of = FrameRoot::parse_name(of)?;
         let id = format!("{of}-log");
+        let focus = self.session.clone();
         if !root.workspace_exists(&self.workspace) {
             root.create_workspace(&self.workspace)?;
         }
         let mut ws = root.workspace(&self.workspace)?;
         ws.add_member(MemberRef::log(&id, &of));
         root.save_workspace(&ws)?;
+        self.refresh(root)?;
+        self.insert_tile(&focus, &id, SplitDir::Col);
         self.session = id;
         self.kind = RailKind::Member;
+        self.idx = self
+            .members
+            .iter()
+            .position(|m| m == &self.session)
+            .unwrap_or(0);
+        self.persist(root)
+    }
+
+    pub fn create_plot(&mut self, root: &FrameRoot, of: &str) -> Result<(), FrameError> {
+        let of = FrameRoot::parse_name(of)?;
+        let id = format!("{of}-plot");
+        let focus = self.session.clone();
+        if !root.workspace_exists(&self.workspace) {
+            root.create_workspace(&self.workspace)?;
+        }
+        let mut ws = root.workspace(&self.workspace)?;
+        ws.add_member(MemberRef::plot(&id, &of));
+        root.save_workspace(&ws)?;
         self.refresh(root)?;
+        self.insert_tile(&focus, &id, SplitDir::Col);
+        self.session = id;
+        self.kind = RailKind::Member;
         self.idx = self
             .members
             .iter()
@@ -689,6 +1098,45 @@ mod tests {
     }
 
     #[test]
+    fn create_plot_joins_workspace() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_plot(&root, "default").unwrap();
+        assert_eq!(rail.session, "default-plot");
+        assert!(rail.member_is_plot("default-plot"));
+        assert_eq!(rail.plot_of("default-plot"), Some("default"));
+        let ws = root.workspace("default").unwrap();
+        assert!(ws
+            .members
+            .iter()
+            .any(|m| m == &MemberRef::plot("default-plot", "default")));
+        let tiles = rail.tiles.as_ref().unwrap();
+        assert!(tiles.leaves().iter().any(|id| *id == "default-plot"));
+        let layout = root.layout("default").unwrap();
+        assert!(layout
+            .tiles
+            .get("default")
+            .is_some_and(|t| t.leaves().iter().any(|id| *id == "default-plot")));
+    }
+
+    #[test]
+    fn load_heals_a_plot_missing_from_tiles() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_pty(&root, "bash").unwrap();
+        let mut ws = root.workspace("default").unwrap();
+        ws.add_member(MemberRef::plot("default-plot", "default"));
+        root.save_workspace(&ws).unwrap();
+        let rail = Rail::load(&root, None, None, None).unwrap();
+        assert!(rail.member_is_plot("default-plot"));
+        let tiles = rail.tiles.as_ref().unwrap();
+        assert!(tiles.leaves().iter().any(|id| *id == "default-plot"));
+        assert!(tiles.leaves().iter().any(|id| *id == "bash"));
+    }
+
+    #[test]
     fn select_workspace_and_member_jump_without_cycling() {
         let dir = TempDir::new().unwrap();
         let root = FrameRoot::open(dir.path()).unwrap();
@@ -714,5 +1162,92 @@ mod tests {
         assert!(rail.peek_member("audit"));
         assert_eq!(rail.session, "audit");
         assert!(!rail.peek_member("audit"));
+    }
+
+    #[test]
+    fn step_member_peeks_without_leaving_workspace() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        root.ensure_defaults().unwrap();
+        root.create_session("audit").unwrap();
+        root.create_session("research").unwrap();
+        let mut fleet = root.create_workspace("fleet-os").unwrap();
+        fleet.add_member(MemberRef::session("audit"));
+        fleet.add_member(MemberRef::session("research"));
+        root.save_workspace(&fleet).unwrap();
+        let mut cat = root.catalog("default").unwrap();
+        cat.add_workspace("fleet-os");
+        root.save_catalog(&cat).unwrap();
+        let mut rail = Rail::load(&root, Some("default"), Some("fleet-os"), Some("audit")).unwrap();
+        rail.kind = RailKind::Workspace;
+        rail.idx = 0;
+        let next = rail.step_member(1).unwrap();
+        assert_eq!(next, "research");
+        assert_eq!(rail.session, "audit");
+        assert_eq!(rail.kind, RailKind::Member);
+        assert!(rail.peek_member(&next));
+        assert_eq!(rail.session, "research");
+        let layout = root.layout("default").unwrap();
+        assert_ne!(layout.front_session.as_deref(), Some("research"));
+    }
+
+    #[test]
+    fn step_workspace_highlights_without_switching() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        root.ensure_defaults().unwrap();
+        root.create_workspace("fleet-os").unwrap();
+        let mut cat = root.catalog("default").unwrap();
+        cat.add_workspace("fleet-os");
+        root.save_catalog(&cat).unwrap();
+        let mut rail =
+            Rail::load(&root, Some("default"), Some("default"), Some("default")).unwrap();
+        rail.kind = RailKind::Member;
+        let name = rail.step_workspace(1).unwrap();
+        assert_eq!(name, "fleet-os");
+        assert_eq!(rail.workspace, "default");
+        assert_eq!(rail.kind, RailKind::Workspace);
+        let name = rail.step_workspace(-1).unwrap();
+        assert_eq!(name, "default");
+        assert_eq!(rail.workspace, "default");
+    }
+
+    #[test]
+    fn split_pane_mints_a_pty_beside_the_focus() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        let name = rail.split_pane(&root, SplitDir::Row).unwrap();
+        assert!(rail.ptys.iter().any(|p| p == &name));
+        assert_eq!(rail.session, name);
+        let tiles = rail.tiles.as_ref().unwrap();
+        assert_eq!(tiles.leaves(), vec!["default", name.as_str()]);
+        match tiles {
+            Tile::Split {
+                dir: SplitDir::Row, ..
+            } => {}
+            other => panic!("expected row split, got {other:?}"),
+        }
+        let layout = root.layout("default").unwrap();
+        assert!(layout.tiles.get("default").is_some());
+    }
+
+    #[test]
+    fn drag_edge_moves_only_the_pair() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_pty(&root, "bash").unwrap();
+        rail.seed_split_weights(Some(&[]), &[10, 10]);
+        rail.apply_split_gap(Some(&[]), 0, 10, 10, 4);
+        match rail.tiles.as_ref() {
+            Some(Tile::Split { weights, .. }) => assert_eq!(weights, &vec![14, 6]),
+            other => panic!("{other:?}"),
+        }
+        rail.equalize_split(Some(&[]));
+        match rail.tiles.as_ref() {
+            Some(Tile::Split { weights, .. }) => assert_eq!(weights, &vec![1, 1]),
+            other => panic!("{other:?}"),
+        }
     }
 }

@@ -32,12 +32,75 @@ pub struct PtyRun {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fg: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fg_rgb: Option<[u8; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bg: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bg_rgb: Option<[u8; 3]>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub bold: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub underline: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub inverse: bool,
 }
 
 fn is_false(v: &bool) -> bool {
     !*v
+}
+
+fn split_color(c: vt100::Color) -> (Option<u8>, Option<[u8; 3]>) {
+    match c {
+        vt100::Color::Idx(n) => (Some(n), None),
+        vt100::Color::Rgb(r, g, b) => (None, Some([r, g, b])),
+        vt100::Color::Default => (None, None),
+    }
+}
+
+impl PtyRun {
+    fn from_cell(text: String, cell: &vt100::Cell) -> Self {
+        let (fg, fg_rgb) = split_color(cell.fgcolor());
+        let (bg, bg_rgb) = split_color(cell.bgcolor());
+        Self {
+            text,
+            fg,
+            fg_rgb,
+            bg,
+            bg_rgb,
+            bold: cell.bold(),
+            italic: cell.italic(),
+            underline: cell.underline(),
+            inverse: cell.inverse(),
+        }
+    }
+
+    fn blank() -> Self {
+        Self {
+            text: " ".into(),
+            fg: None,
+            fg_rgb: None,
+            bg: None,
+            bg_rgb: None,
+            bold: false,
+            italic: false,
+            underline: false,
+            inverse: false,
+        }
+    }
+
+    fn same_style(&self, other: &Self) -> bool {
+        self.fg == other.fg
+            && self.fg_rgb == other.fg_rgb
+            && self.bg == other.bg
+            && self.bg_rgb == other.bg_rgb
+            && self.bold == other.bold
+            && self.italic == other.italic
+            && self.underline == other.underline
+            && self.inverse == other.inverse
+    }
 }
 
 impl PtyScreen {
@@ -339,48 +402,28 @@ fn screen_lines(screen: &vt100::Screen) -> (Vec<String>, Vec<Vec<PtyRun>>, u16, 
                 } else {
                     cell.contents()
                 };
-                let fg = match cell.fgcolor() {
-                    vt100::Color::Idx(n) => Some(n),
-                    _ => None,
-                };
-                let bold = cell.bold();
+                let run = PtyRun::from_cell(contents.clone(), cell);
                 line.push_str(&contents);
                 if let Some(last) = runs.last_mut() {
-                    if last.fg == fg && last.bold == bold {
+                    if last.same_style(&run) {
                         last.text.push_str(&contents);
                     } else {
-                        runs.push(PtyRun {
-                            text: contents,
-                            fg,
-                            bold,
-                        });
+                        runs.push(run);
                     }
                 } else {
-                    runs.push(PtyRun {
-                        text: contents,
-                        fg,
-                        bold,
-                    });
+                    runs.push(run);
                 }
                 col = col.saturating_add(if cell.is_wide() { 2 } else { 1 });
             } else {
                 line.push(' ');
                 if let Some(last) = runs.last_mut() {
-                    if last.fg.is_none() && !last.bold {
+                    if last.same_style(&PtyRun::blank()) {
                         last.text.push(' ');
                     } else {
-                        runs.push(PtyRun {
-                            text: " ".into(),
-                            fg: None,
-                            bold: false,
-                        });
+                        runs.push(PtyRun::blank());
                     }
                 } else {
-                    runs.push(PtyRun {
-                        text: " ".into(),
-                        fg: None,
-                        bold: false,
-                    });
+                    runs.push(PtyRun::blank());
                 }
                 col = col.saturating_add(1);
             }
@@ -409,6 +452,19 @@ mod tests {
             alive: true,
         };
         assert_eq!(screen.preview().as_deref(), Some("$ echo hi · hi"));
+    }
+
+    #[test]
+    fn rgb_and_bg_survive_the_parser() {
+        let mut parser = vt100::Parser::new(2, 40, 0);
+        parser.process(b"\x1b[48;2;30;30;46m\x1b[38;2;137;180;250mhello\x1b[0m");
+        let (_, runs, ..) = screen_lines(parser.screen());
+        let hello = runs[0]
+            .iter()
+            .find(|r| r.text.contains("hello"))
+            .expect("hello run");
+        assert_eq!(hello.fg_rgb, Some([137, 180, 250]), "{hello:?}");
+        assert_eq!(hello.bg_rgb, Some([30, 30, 46]), "{hello:?}");
     }
 
     #[test]

@@ -45,6 +45,56 @@ pub struct Config {
     pub theme: ThemeConfig,
     #[serde(default)]
     pub keys: KeysConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
+}
+
+/// Casing chrome. `copy_on_select` matches herdr (default on).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiConfig {
+    /// Drag-select copies and toasts. `false` keeps the highlight; Ctrl+C copies.
+    pub copy_on_select: bool,
+    /// Hide the casing status line except inside the focused session seat.
+    /// Default off: the bar stays put like a TWM chrome strip.
+    pub status_auto_hide: bool,
+    /// Ordered status widgets. Unknown names are skipped.
+    /// Built-ins: account, cwd, git, model, context, clock, focus, spin.
+    /// `clock` reads the `casing.status` mount (the existing slot).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub status: Vec<String>,
+    /// Assumed context window when the provider does not say. Used only
+    /// for the context widget fill. None = no bar, just token count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            copy_on_select: true,
+            status_auto_hide: false,
+            status: Vec::new(),
+            context_window: Some(128_000),
+        }
+    }
+}
+
+impl UiConfig {
+    pub fn status_widgets(&self) -> Vec<String> {
+        if self.status.is_empty() {
+            vec![
+                "account".into(),
+                "cwd".into(),
+                "git".into(),
+                "model".into(),
+                "context".into(),
+                "clock".into(),
+            ]
+        } else {
+            self.status.clone()
+        }
+    }
 }
 
 /// Herdr-style keymap. `prefix` plus named actions (`next_sash`, `detach`).
@@ -272,6 +322,28 @@ providers:
             Some("https://api.x.ai/v1/models")
         );
         assert!(cfg.theme.pack.is_none());
+        assert!(cfg.ui.copy_on_select);
+    }
+
+    #[test]
+    fn copy_on_select_can_be_disabled() {
+        let raw = format!("{SAMPLE}\nui:\n  copy_on_select: false\n");
+        let cfg: Config = serde_yaml::from_str(&raw).unwrap();
+        assert!(!cfg.ui.copy_on_select);
+        assert!(!cfg.ui.status_auto_hide);
+    }
+
+    #[test]
+    fn status_widgets_default_and_override() {
+        let cfg: Config = serde_yaml::from_str(SAMPLE).unwrap();
+        assert_eq!(
+            cfg.ui.status_widgets(),
+            vec!["account", "cwd", "git", "model", "context", "clock"]
+        );
+        let raw = format!("{SAMPLE}\nui:\n  status_auto_hide: true\n  status: [model, context]\n");
+        let cfg: Config = serde_yaml::from_str(&raw).unwrap();
+        assert!(cfg.ui.status_auto_hide);
+        assert_eq!(cfg.ui.status_widgets(), vec!["model", "context"]);
     }
 
     #[test]

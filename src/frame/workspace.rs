@@ -12,6 +12,8 @@ pub enum MemberRef {
     Clock { id: String },
     Log { id: String, of: String },
     Edit { id: String },
+    /// Stats pane: phase trace of session `of` (TTFT / think / decode / tool).
+    Plot { id: String, of: String },
 }
 
 impl MemberRef {
@@ -38,13 +40,21 @@ impl MemberRef {
         Self::Edit { id: id.into() }
     }
 
+    pub fn plot(id: impl Into<String>, of: impl Into<String>) -> Self {
+        Self::Plot {
+            id: id.into(),
+            of: of.into(),
+        }
+    }
+
     pub fn id(&self) -> &str {
         match self {
             Self::Session { id }
             | Self::Pty { id }
             | Self::Clock { id }
             | Self::Log { id, .. }
-            | Self::Edit { id } => id,
+            | Self::Edit { id }
+            | Self::Plot { id, .. } => id,
         }
     }
 
@@ -64,6 +74,10 @@ impl MemberRef {
         matches!(self, Self::Edit { .. })
     }
 
+    pub fn is_plot(&self) -> bool {
+        matches!(self, Self::Plot { .. })
+    }
+
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Self::Session { id } => Some(id),
@@ -78,6 +92,13 @@ impl MemberRef {
         }
     }
 
+    pub fn plot_of(&self) -> Option<&str> {
+        match self {
+            Self::Plot { of, .. } => Some(of),
+            _ => None,
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Self::Session { id } => id.clone(),
@@ -85,6 +106,7 @@ impl MemberRef {
             Self::Clock { id } => format!("{id} · clock"),
             Self::Log { id, of } => format!("{id} · log {of}"),
             Self::Edit { id } => format!("{id} · edit"),
+            Self::Plot { id, of } => format!("{id} · plot {of}"),
         }
     }
 }
@@ -172,5 +194,27 @@ impl FrameRoot {
         }
         fs::remove_file(path)?;
         Ok(())
+    }
+
+    pub fn rename_workspace(&self, old: &str, new: &str) -> Result<String, FrameError> {
+        let old = Self::parse_name(old)?;
+        let new = Self::parse_name(new)?;
+        if old == new {
+            return Ok(new);
+        }
+        if self.workspace_exists(&new) {
+            return Err(FrameError::WorkspaceExists(new));
+        }
+        let mut ws = self.workspace(&old)?;
+        ws.name = new.clone();
+        self.save_workspace(&ws)?;
+        self.delete_workspace(&old)?;
+        for mut cat in self.list_catalogs()? {
+            if let Some(slot) = cat.workspaces.iter_mut().find(|w| *w == &old) {
+                *slot = new.clone();
+                self.save_catalog(&cat)?;
+            }
+        }
+        Ok(new)
     }
 }

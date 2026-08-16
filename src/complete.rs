@@ -87,6 +87,72 @@ struct Delta {
 struct Usage {
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_cache_miss_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokenDetails>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokenDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptTokenDetails {
+    cached_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompletionTokenDetails {
+    reasoning_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct UsageSnap {
+    pub prompt: Option<u32>,
+    pub completion: Option<u32>,
+    pub cache_read: Option<u32>,
+    pub cache_write: Option<u32>,
+    pub reason: Option<u32>,
+}
+
+impl UsageSnap {
+    fn from_usage(u: &Usage) -> Self {
+        let cache_read = u.prompt_cache_hit_tokens.or_else(|| {
+            u.prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens)
+        });
+        let uncached = u
+            .prompt_cache_miss_tokens
+            .or_else(|| match (u.prompt_tokens, cache_read) {
+                (Some(p), Some(c)) if p >= c => Some(p - c),
+                (Some(p), None) => Some(p),
+                _ => None,
+            });
+        Self {
+            prompt: uncached,
+            completion: u.completion_tokens,
+            cache_read,
+            cache_write: None,
+            reason: u
+                .completion_tokens_details
+                .as_ref()
+                .and_then(|d| d.reasoning_tokens),
+        }
+    }
+
+    fn apply(&self, t: &mut Timing) {
+        if self.prompt.is_some() {
+            t.tokens_in = self.prompt;
+        }
+        if self.completion.is_some() {
+            t.tokens_out = self.completion;
+        }
+        t.tokens_cache_read = self.cache_read.or(t.tokens_cache_read);
+        t.tokens_cache_write = self.cache_write.or(t.tokens_cache_write);
+        t.tokens_reason = self.reason.or(t.tokens_reason);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,6 +319,7 @@ struct StreamAcc {
     reasoning: String,
     tokens_in: Option<u32>,
     tokens_out: Option<u32>,
+    usage: UsageSnap,
     error: Option<String>,
     in_think: bool,
 }
@@ -270,6 +337,7 @@ impl StreamAcc {
             reasoning: String::new(),
             tokens_in: None,
             tokens_out: None,
+            usage: UsageSnap::default(),
             error: None,
             in_think: false,
         }
@@ -288,9 +356,10 @@ impl StreamAcc {
                 self.error = Some(err);
                 return;
             }
-            if let Some((pin, cout)) = delta.usage {
-                self.tokens_in = pin.or(self.tokens_in);
-                self.tokens_out = cout.or(self.tokens_out);
+            if let Some(u) = delta.usage {
+                self.usage = u.clone();
+                self.tokens_in = u.prompt.or(self.tokens_in);
+                self.tokens_out = u.completion.or(self.tokens_out);
             }
             if let Some(r) = delta.reasoning {
                 if !r.is_empty() {
@@ -385,10 +454,14 @@ impl StreamAcc {
             decode_ns: decode.map(prof::ns),
             reason_ns: reason.map(prof::ns),
             strike_ns: None,
-            tokens_in: self.tokens_in,
-            tokens_out,
+            tokens_in: self.usage.prompt.or(self.tokens_in),
+            tokens_cache_read: self.usage.cache_read,
+            tokens_cache_write: self.usage.cache_write,
+            tokens_out: self.usage.completion.or(tokens_out),
+            tokens_reason: self.usage.reason,
             tok_s: None,
         };
+        timing.infer_reason_from_visible(&text);
         timing.recompute_tok_s();
         Ok(CompleteStats {
             text,
@@ -432,12 +505,12 @@ fn from_json(url: &str, text: &str, t0: Instant) -> Result<CompleteStats, Comple
     let mut timing = Timing::wall(t0.elapsed());
     timing.ttft_ns = Some(timing.wall_ns);
     timing.prefill_ns = Some(timing.wall_ns);
-    timing.tokens_in = parsed.usage.as_ref().and_then(|u| u.prompt_tokens);
-    timing.tokens_out = parsed
-        .usage
-        .as_ref()
-        .and_then(|u| u.completion_tokens)
-        .or_else(|| Some(prof::estimate_tokens(&text)));
+    if let Some(u) = parsed.usage.as_ref() {
+        UsageSnap::from_usage(u).apply(&mut timing);
+    }
+    if timing.tokens_out.is_none() {
+        timing.tokens_out = Some(prof::estimate_tokens(&text));
+    }
     Ok(CompleteStats {
         text,
         reasoning,
@@ -449,7 +522,7 @@ fn from_json(url: &str, text: &str, t0: Instant) -> Result<CompleteStats, Comple
 pub(crate) struct SseDelta {
     content: Option<String>,
     reasoning: Option<String>,
-    usage: Option<(Option<u32>, Option<u32>)>,
+    usage: Option<UsageSnap>,
     error: Option<String>,
 }
 
@@ -474,7 +547,7 @@ pub(crate) fn parse_sse_line(line: &str) -> Option<SseDelta> {
     }
     let mut out = SseDelta::default();
     if let Some(u) = parsed.usage {
-        out.usage = Some((u.prompt_tokens, u.completion_tokens));
+        out.usage = Some(UsageSnap::from_usage(&u));
     }
     if let Some(d) = parsed.choices.into_iter().flatten().find_map(|c| c.delta) {
         out.content = d.content.filter(|s| !s.is_empty());
@@ -503,7 +576,17 @@ mod tests {
         assert_eq!(r.reasoning.as_deref(), Some("hmm"));
         let u = parse_sse_line(r#"data: {"usage":{"prompt_tokens":10,"completion_tokens":4}}"#)
             .unwrap();
-        assert_eq!(u.usage, Some((Some(10), Some(4))));
+        assert_eq!(u.usage.as_ref().and_then(|s| s.prompt), Some(10));
+        assert_eq!(u.usage.as_ref().and_then(|s| s.completion), Some(4));
+        let cached = parse_sse_line(
+            r#"data: {"usage":{"prompt_tokens":100,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20,"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":2}}}"#,
+        )
+        .unwrap();
+        let snap = cached.usage.unwrap();
+        assert_eq!(snap.prompt, Some(20));
+        assert_eq!(snap.cache_read, Some(80));
+        assert_eq!(snap.completion, Some(5));
+        assert_eq!(snap.reason, Some(2));
         assert!(parse_sse_line("data: [DONE]").is_none());
     }
 

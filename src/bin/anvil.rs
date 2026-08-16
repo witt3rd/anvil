@@ -186,6 +186,9 @@ enum WorkspaceCmd {
         /// Add a scratch text editor (edits/<name>.txt).
         #[arg(long)]
         edit: bool,
+        /// Add a stats pane (lifecycle / cache / tok/s / trace) for this session.
+        #[arg(long)]
+        plot: bool,
     },
     Rm {
         name: String,
@@ -582,23 +585,59 @@ fn inspect_cmd(root: Option<&std::path::Path>, json: bool) -> ExitCode {
     if !report.catalogs.is_empty() {
         println!("catalogs\t{}", report.catalogs.join(","));
     }
+    print_stats(&report);
     print_prof(&report.prof, 12);
     ExitCode::SUCCESS
 }
 
+fn print_stats(report: &anvil::serve::Report) {
+    if !report.folds.is_empty() {
+        for (id, fold) in &report.folds {
+            if fold.stats.turns == 0 && fold.stats.steps == 0 && fold.usage.output == 0 {
+                continue;
+            }
+            println!("stats\t{id}\t{}", fold.stats.compact());
+            if fold.usage.billed_in() > 0 || fold.usage.output > 0 {
+                println!("usage\t{id}\t{}", fold.usage.compact());
+            }
+            if fold.context.projected.is_some() || fold.context.messages > 0 {
+                println!("context\t{id}\t{}", fold.context.compact());
+            }
+        }
+        return;
+    }
+    let who = report.stats_session.as_deref().unwrap_or("-");
+    println!("stats\t{who}\t{}", report.stats.compact());
+    if report.usage.billed_in() > 0 || report.usage.output > 0 {
+        println!("usage\t{who}\t{}", report.usage.compact());
+    }
+    if report.context.projected.is_some() || report.context.messages > 0 {
+        println!("context\t{who}\t{}", report.context.compact());
+    }
+}
+
 fn prof_cmd(json: bool, last: usize) -> ExitCode {
-    let snap = match anvil::serve::Client::connect(anvil::serve::default_sock()) {
-        Ok(mut c) => match c.inspect() {
-            Ok(r) => r.prof,
-            Err(_) => anvil::prof::snapshot(),
-        },
-        Err(_) => anvil::prof::snapshot(),
+    let report = match anvil::serve::Client::connect(anvil::serve::default_sock()) {
+        Ok(mut c) => c.inspect().ok(),
+        Err(_) => None,
     };
     if json {
-        println!("{}", serde_json::to_string_pretty(&snap).unwrap());
+        if let Some(r) = report {
+            println!("{}", serde_json::to_string_pretty(&r).unwrap());
+        } else {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&anvil::prof::snapshot()).unwrap()
+            );
+        }
         return ExitCode::SUCCESS;
     }
-    print_prof(&snap, last);
+    if let Some(r) = &report {
+        print_stats(r);
+        print_prof(&r.prof, last);
+    } else {
+        print_prof(&anvil::prof::snapshot(), last);
+    }
     ExitCode::SUCCESS
 }
 
@@ -721,6 +760,12 @@ fn cold_inspect(root: Option<&std::path::Path>) -> Result<anvil::serve::Report, 
         }
     }
     let front = root.layout("default").ok().and_then(|l| l.front_session);
+    let folds = anvil::stats::fold_sessions(&root, anvil::ask::SYSTEM);
+    let stats_session = anvil::stats::pick_session(front.as_deref(), &folds);
+    let fold = stats_session
+        .as_ref()
+        .and_then(|id| folds.get(id).cloned())
+        .unwrap_or_default();
     Ok(anvil::serve::Report {
         root: root.root().display().to_string(),
         sock: "(down)".into(),
@@ -765,6 +810,11 @@ fn cold_inspect(root: Option<&std::path::Path>) -> Result<anvil::serve::Report, 
             .map(|c| c.name)
             .collect(),
         prof: anvil::prof::snapshot(),
+        stats_session,
+        stats: fold.stats,
+        usage: fold.usage,
+        context: fold.context,
+        folds,
     })
 }
 
@@ -803,8 +853,9 @@ fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode
             clock,
             log,
             edit,
+            plot,
         } => {
-            if !pty && !clock && !edit && !root.session_exists(session) {
+            if !pty && !clock && !edit && !plot && !root.session_exists(session) {
                 if let Err(err) = root.create_session(session) {
                     return fail(err);
                 }
@@ -827,6 +878,8 @@ fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode
                 MemberRef::pty(session)
             } else if *edit {
                 MemberRef::edit(session)
+            } else if *plot {
+                MemberRef::plot(format!("{session}-plot"), session)
             } else {
                 MemberRef::session(session)
             };

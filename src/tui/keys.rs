@@ -1,5 +1,5 @@
-//! Configurable keymap. Herdr's model: a prefix so we do not steal
-//! keys from a focused PTY/editor, plus optional direct chords.
+//! Configurable keymap. Defaults are herdr's map, then smith-only verbs
+//! on chords herdr does not own.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -7,11 +7,44 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub enum Action {
     Detach,
     Help,
+    Settings,
+    ReloadConfig,
+    Notify,
     ToggleRail,
+    WorkspacePicker,
+    Goto,
+    NewWorkspace,
+    NewWorktree,
+    RenameWorkspace,
+    CloseWorkspace,
+    NewTab,
+    RenameTab,
+    CloseTab,
     NextSash,
     PrevSash,
-    NextPane,
-    PrevPane,
+    SwitchTab,
+    FocusPaneLeft,
+    FocusPaneDown,
+    FocusPaneUp,
+    FocusPaneRight,
+    NavigatePaneLeft,
+    NavigatePaneDown,
+    NavigatePaneUp,
+    NavigatePaneRight,
+    SwapPaneLeft,
+    SwapPaneDown,
+    SwapPaneUp,
+    SwapPaneRight,
+    CyclePaneNext,
+    CyclePanePrev,
+    SplitVertical,
+    SplitHorizontal,
+    ClosePane,
+    Zoom,
+    ResizeMode,
+    CopyMode,
+    RenamePane,
+    EditScrollback,
     GrowPane,
     ShrinkPane,
     Ask,
@@ -27,13 +60,13 @@ pub enum Action {
     NewEdit,
     NewClock,
     NewLog,
+    NewPlot,
     PageUp,
     PageDown,
     FocusCompose,
-    RailUp,
-    RailDown,
-    RailLeft,
-    RailRight,
+    ClearCompose,
+    RailWorkspaceUp,
+    RailWorkspaceDown,
     RailCycle,
     RailEnter,
     PickerUp,
@@ -46,11 +79,44 @@ impl Action {
     pub const ALL: &'static [Action] = &[
         Action::Detach,
         Action::Help,
+        Action::Settings,
+        Action::ReloadConfig,
+        Action::Notify,
         Action::ToggleRail,
+        Action::WorkspacePicker,
+        Action::Goto,
+        Action::NewWorkspace,
+        Action::NewWorktree,
+        Action::RenameWorkspace,
+        Action::CloseWorkspace,
+        Action::NewTab,
+        Action::RenameTab,
+        Action::CloseTab,
         Action::NextSash,
         Action::PrevSash,
-        Action::NextPane,
-        Action::PrevPane,
+        Action::SwitchTab,
+        Action::FocusPaneLeft,
+        Action::FocusPaneDown,
+        Action::FocusPaneUp,
+        Action::FocusPaneRight,
+        Action::NavigatePaneLeft,
+        Action::NavigatePaneDown,
+        Action::NavigatePaneUp,
+        Action::NavigatePaneRight,
+        Action::SwapPaneLeft,
+        Action::SwapPaneDown,
+        Action::SwapPaneUp,
+        Action::SwapPaneRight,
+        Action::CyclePaneNext,
+        Action::CyclePanePrev,
+        Action::SplitVertical,
+        Action::SplitHorizontal,
+        Action::ClosePane,
+        Action::Zoom,
+        Action::ResizeMode,
+        Action::CopyMode,
+        Action::RenamePane,
+        Action::EditScrollback,
         Action::GrowPane,
         Action::ShrinkPane,
         Action::Ask,
@@ -66,13 +132,13 @@ impl Action {
         Action::NewEdit,
         Action::NewClock,
         Action::NewLog,
+        Action::NewPlot,
         Action::PageUp,
         Action::PageDown,
         Action::FocusCompose,
-        Action::RailUp,
-        Action::RailDown,
-        Action::RailLeft,
-        Action::RailRight,
+        Action::ClearCompose,
+        Action::RailWorkspaceUp,
+        Action::RailWorkspaceDown,
         Action::RailCycle,
         Action::RailEnter,
         Action::PickerUp,
@@ -85,11 +151,44 @@ impl Action {
         match self {
             Action::Detach => "detach",
             Action::Help => "help",
-            Action::ToggleRail => "toggle_rail",
-            Action::NextSash => "next_sash",
-            Action::PrevSash => "prev_sash",
-            Action::NextPane => "next_pane",
-            Action::PrevPane => "prev_pane",
+            Action::Settings => "settings",
+            Action::ReloadConfig => "reload_config",
+            Action::Notify => "open_notification_target",
+            Action::ToggleRail => "toggle_sidebar",
+            Action::WorkspacePicker => "workspace_picker",
+            Action::Goto => "goto",
+            Action::NewWorkspace => "new_workspace",
+            Action::NewWorktree => "new_worktree",
+            Action::RenameWorkspace => "rename_workspace",
+            Action::CloseWorkspace => "close_workspace",
+            Action::NewTab => "new_tab",
+            Action::RenameTab => "rename_tab",
+            Action::CloseTab => "close_tab",
+            Action::NextSash => "next_tab",
+            Action::PrevSash => "previous_tab",
+            Action::SwitchTab => "switch_tab",
+            Action::FocusPaneLeft => "focus_pane_left",
+            Action::FocusPaneDown => "focus_pane_down",
+            Action::FocusPaneUp => "focus_pane_up",
+            Action::FocusPaneRight => "focus_pane_right",
+            Action::NavigatePaneLeft => "navigate_pane_left",
+            Action::NavigatePaneDown => "navigate_pane_down",
+            Action::NavigatePaneUp => "navigate_pane_up",
+            Action::NavigatePaneRight => "navigate_pane_right",
+            Action::SwapPaneLeft => "swap_pane_left",
+            Action::SwapPaneDown => "swap_pane_down",
+            Action::SwapPaneUp => "swap_pane_up",
+            Action::SwapPaneRight => "swap_pane_right",
+            Action::CyclePaneNext => "cycle_pane_next",
+            Action::CyclePanePrev => "cycle_pane_previous",
+            Action::SplitVertical => "split_vertical",
+            Action::SplitHorizontal => "split_horizontal",
+            Action::ClosePane => "close_pane",
+            Action::Zoom => "zoom",
+            Action::ResizeMode => "resize_mode",
+            Action::CopyMode => "copy_mode",
+            Action::RenamePane => "rename_pane",
+            Action::EditScrollback => "edit_scrollback",
             Action::GrowPane => "grow_pane",
             Action::ShrinkPane => "shrink_pane",
             Action::Ask => "ask",
@@ -105,13 +204,13 @@ impl Action {
             Action::NewEdit => "new_edit",
             Action::NewClock => "new_clock",
             Action::NewLog => "new_log",
+            Action::NewPlot => "new_plot",
             Action::PageUp => "page_up",
             Action::PageDown => "page_down",
             Action::FocusCompose => "focus_compose",
-            Action::RailUp => "rail_up",
-            Action::RailDown => "rail_down",
-            Action::RailLeft => "rail_left",
-            Action::RailRight => "rail_right",
+            Action::ClearCompose => "clear_compose",
+            Action::RailWorkspaceUp => "navigate_workspace_up",
+            Action::RailWorkspaceDown => "navigate_workspace_down",
             Action::RailCycle => "rail_cycle",
             Action::RailEnter => "rail_enter",
             Action::PickerUp => "picker_up",
@@ -122,18 +221,62 @@ impl Action {
     }
 
     pub fn parse(name: &str) -> Option<Self> {
-        Action::ALL.iter().copied().find(|a| a.as_str() == name)
+        match name {
+            "next_sash" => Some(Action::NextSash),
+            "prev_sash" | "previous_sash" => Some(Action::PrevSash),
+            "toggle_rail" => Some(Action::ToggleRail),
+            "rail_up" => Some(Action::NavigatePaneUp),
+            "rail_down" => Some(Action::NavigatePaneDown),
+            "rail_left" => Some(Action::NavigatePaneLeft),
+            "rail_right" => Some(Action::NavigatePaneRight),
+            "rail_workspace_up" => Some(Action::RailWorkspaceUp),
+            "rail_workspace_down" => Some(Action::RailWorkspaceDown),
+            other => Action::ALL.iter().copied().find(|a| a.as_str() == other),
+        }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Action::Detach => "close casing",
+            Action::Detach => "detach",
             Action::Help => "keybind help",
+            Action::Settings => "settings",
+            Action::ReloadConfig => "reload config",
+            Action::Notify => "notifications",
             Action::ToggleRail => "rail",
+            Action::WorkspacePicker => "catalog picker",
+            Action::Goto => "goto",
+            Action::NewWorkspace => "new catalog",
+            Action::NewWorktree => "new worktree",
+            Action::RenameWorkspace => "rename catalog",
+            Action::CloseWorkspace => "close catalog",
+            Action::NewTab => "new sash",
+            Action::RenameTab => "rename sash",
+            Action::CloseTab => "close sash",
             Action::NextSash => "next sash",
             Action::PrevSash => "prev sash",
-            Action::NextPane => "next pane",
-            Action::PrevPane => "prev pane",
+            Action::SwitchTab => "sash 1..9",
+            Action::FocusPaneLeft => "pane left",
+            Action::FocusPaneDown => "pane down",
+            Action::FocusPaneUp => "pane up",
+            Action::FocusPaneRight => "pane right",
+            Action::NavigatePaneLeft => "nav pane left",
+            Action::NavigatePaneDown => "nav pane down",
+            Action::NavigatePaneUp => "nav pane up",
+            Action::NavigatePaneRight => "nav pane right",
+            Action::SwapPaneLeft => "swap pane left",
+            Action::SwapPaneDown => "swap pane down",
+            Action::SwapPaneUp => "swap pane up",
+            Action::SwapPaneRight => "swap pane right",
+            Action::CyclePaneNext => "cycle pane",
+            Action::CyclePanePrev => "cycle pane prev",
+            Action::SplitVertical => "split right",
+            Action::SplitHorizontal => "split down",
+            Action::ClosePane => "close pane",
+            Action::Zoom => "zoom",
+            Action::ResizeMode => "resize mode",
+            Action::CopyMode => "copy mode",
+            Action::RenamePane => "rename pane",
+            Action::EditScrollback => "edit scrollback",
             Action::GrowPane => "grow pane",
             Action::ShrinkPane => "shrink pane",
             Action::Ask => "ask",
@@ -149,13 +292,13 @@ impl Action {
             Action::NewEdit => "new edit",
             Action::NewClock => "new clock",
             Action::NewLog => "new log",
+            Action::NewPlot => "new plot",
             Action::PageUp => "page up",
             Action::PageDown => "page down",
             Action::FocusCompose => "compose",
-            Action::RailUp => "rail up",
-            Action::RailDown => "rail down",
-            Action::RailLeft => "rail left",
-            Action::RailRight => "rail right",
+            Action::ClearCompose => "clear compose",
+            Action::RailWorkspaceUp => "workspace up",
+            Action::RailWorkspaceDown => "workspace down",
             Action::RailCycle => "rail cycle",
             Action::RailEnter => "rail enter",
             Action::PickerUp => "picker up",
@@ -165,10 +308,29 @@ impl Action {
         }
     }
 
+    pub fn canonical(self) -> Action {
+        match self {
+            Action::NavigatePaneLeft => Action::FocusPaneLeft,
+            Action::NavigatePaneDown => Action::FocusPaneDown,
+            Action::NavigatePaneUp => Action::FocusPaneUp,
+            Action::NavigatePaneRight => Action::FocusPaneRight,
+            Action::RailWorkspaceUp => Action::PrevSash,
+            Action::RailWorkspaceDown => Action::NextSash,
+            other => other,
+        }
+    }
+
     /// Where a direct (non-prefix) bind is allowed. Prefix binds are global.
     pub fn direct_ok(self, rail: bool, pty: bool, edit: bool, picker: bool, help: bool) -> bool {
         if help {
-            return matches!(self, Action::Help | Action::Detach | Action::PickerCancel);
+            return matches!(
+                self,
+                Action::Help
+                    | Action::Settings
+                    | Action::Detach
+                    | Action::PickerCancel
+                    | Action::FocusCompose
+            );
         }
         if picker {
             return matches!(
@@ -179,6 +341,7 @@ impl Action {
                     | Action::PickerCancel
                     | Action::Detach
                     | Action::Help
+                    | Action::FocusCompose
             );
         }
         if matches!(
@@ -189,10 +352,12 @@ impl Action {
         }
         if matches!(
             self,
-            Action::RailUp
-                | Action::RailDown
-                | Action::RailLeft
-                | Action::RailRight
+            Action::NavigatePaneLeft
+                | Action::NavigatePaneDown
+                | Action::NavigatePaneUp
+                | Action::NavigatePaneRight
+                | Action::RailWorkspaceUp
+                | Action::RailWorkspaceDown
                 | Action::RailCycle
                 | Action::RailEnter
                 | Action::FocusCompose
@@ -201,10 +366,14 @@ impl Action {
                 | Action::NewEdit
                 | Action::NewClock
                 | Action::NewLog
+                | Action::NewPlot
         ) {
             return rail;
         }
-        if matches!(self, Action::Ask | Action::Strike | Action::Newline) {
+        if matches!(
+            self,
+            Action::Ask | Action::Strike | Action::Newline | Action::ClearCompose
+        ) {
             return !pty && !edit && !rail;
         }
         if pty {
@@ -212,12 +381,31 @@ impl Action {
                 self,
                 Action::Detach
                     | Action::Help
+                    | Action::Settings
+                    | Action::ReloadConfig
                     | Action::NextSash
                     | Action::PrevSash
-                    | Action::NextPane
-                    | Action::PrevPane
+                    | Action::SwitchTab
+                    | Action::FocusPaneLeft
+                    | Action::FocusPaneDown
+                    | Action::FocusPaneUp
+                    | Action::FocusPaneRight
+                    | Action::SwapPaneLeft
+                    | Action::SwapPaneDown
+                    | Action::SwapPaneUp
+                    | Action::SwapPaneRight
+                    | Action::CyclePaneNext
+                    | Action::CyclePanePrev
                     | Action::GrowPane
                     | Action::ShrinkPane
+                    | Action::SplitVertical
+                    | Action::SplitHorizontal
+                    | Action::ClosePane
+                    | Action::Zoom
+                    | Action::ResizeMode
+                    | Action::CopyMode
+                    | Action::NewTab
+                    | Action::CloseTab
                     | Action::Mount
                     | Action::Unmount
                     | Action::Trajectory
@@ -232,6 +420,7 @@ pub struct Chord {
     pub prefix: bool,
     pub code: KeyCode,
     pub mods: KeyModifiers,
+    pub indexed: bool,
 }
 
 impl Chord {
@@ -252,7 +441,11 @@ impl Chord {
         if self.mods.contains(KeyModifiers::SUPER) {
             parts.push("cmd".into());
         }
-        parts.push(key_name(self.code));
+        if self.indexed {
+            parts.push("1..9".into());
+        } else {
+            parts.push(key_name(self.code));
+        }
         parts.join("+")
     }
 }
@@ -286,6 +479,7 @@ pub fn parse_chord(raw: &str) -> Option<Chord> {
     let mut prefix = false;
     let mut mods = KeyModifiers::NONE;
     let mut key: Option<KeyCode> = None;
+    let mut indexed = false;
     for part in raw.split('+') {
         let p = part.trim();
         if p.is_empty() {
@@ -298,7 +492,14 @@ pub fn parse_chord(raw: &str) -> Option<Chord> {
             "shift" => mods |= KeyModifiers::SHIFT,
             "cmd" | "super" | "win" => mods |= KeyModifiers::SUPER,
             "enter" | "return" => key = Some(KeyCode::Enter),
-            "tab" => key = Some(KeyCode::Tab),
+            "tab" => {
+                if mods.contains(KeyModifiers::SHIFT) {
+                    mods -= KeyModifiers::SHIFT;
+                    key = Some(KeyCode::BackTab);
+                } else {
+                    key = Some(KeyCode::Tab);
+                }
+            }
             "esc" | "escape" => key = Some(KeyCode::Esc),
             "backspace" | "bs" => key = Some(KeyCode::Backspace),
             "delete" | "del" => key = Some(KeyCode::Delete),
@@ -318,6 +519,10 @@ pub fn parse_chord(raw: &str) -> Option<Chord> {
             "slash" => key = Some(KeyCode::Char('/')),
             "question" => key = Some(KeyCode::Char('?')),
             "backtick" => key = Some(KeyCode::Char('`')),
+            "1..9" | "1-9" => {
+                indexed = true;
+                key = Some(KeyCode::Char('1'));
+            }
             "[" => key = Some(KeyCode::Char('[')),
             "]" => key = Some(KeyCode::Char(']')),
             "=" => key = Some(KeyCode::Char('=')),
@@ -332,6 +537,7 @@ pub fn parse_chord(raw: &str) -> Option<Chord> {
         prefix,
         code: key?,
         mods,
+        indexed,
     })
 }
 
@@ -353,7 +559,20 @@ fn key_eq(got: KeyEvent, want: Chord) -> bool {
     {
         return (mods - KeyModifiers::SHIFT) == (want.mods - KeyModifiers::SHIFT);
     }
+    if want.indexed {
+        let KeyCode::Char(c) = code else {
+            return false;
+        };
+        return c.is_ascii_digit() && c != '0' && mods == want.mods;
+    }
     code == want.code && mods == want.mods
+}
+
+pub fn digit_of(key: KeyEvent) -> Option<u8> {
+    match key.code {
+        KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => c.to_digit(10).map(|d| d as u8),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -390,6 +609,7 @@ impl Keymap {
             km.binds.retain(|(_, a)| *a != action);
             for raw in spec.as_slice() {
                 if let Some(c) = parse_chord(raw) {
+                    km.binds.retain(|(oc, _)| *oc != c);
                     km.binds.push((c, action));
                 }
             }
@@ -426,6 +646,7 @@ impl Keymap {
             .unwrap_or_else(|| action.as_str().into())
     }
 
+    #[allow(dead_code)]
     pub fn help(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
         out.push(("prefix".into(), self.prefix.display()));
@@ -442,39 +663,223 @@ impl Keymap {
         }
         out
     }
+
+    pub fn chords_of(&self, action: Action) -> String {
+        let chords: Vec<String> = self
+            .binds
+            .iter()
+            .filter(|(_, a)| *a == action)
+            .map(|(c, _)| c.display())
+            .collect();
+        if chords.is_empty() {
+            "unset".into()
+        } else {
+            chords.join(" / ")
+        }
+    }
+
+    /// Herdr-shaped groups: heading then (keys, label) rows.
+    pub fn help_groups(&self) -> Vec<(&'static str, Vec<(String, String)>)> {
+        use Action::*;
+        let row = |a: Action| (self.chords_of(a), a.label().into());
+        vec![
+            (
+                "global",
+                vec![
+                    (self.prefix.display(), "prefix mode".into()),
+                    row(Help),
+                    row(Settings),
+                    row(Detach),
+                    row(ReloadConfig),
+                    row(Notify),
+                ],
+            ),
+            (
+                "navigation",
+                vec![
+                    (self.chords_of(FocusCompose), "back".into()),
+                    (
+                        format!(
+                            "{} / {}",
+                            self.chords_of(RailWorkspaceUp),
+                            self.chords_of(RailWorkspaceDown)
+                        ),
+                        "workspace list".into(),
+                    ),
+                    (
+                        format!(
+                            "{} / {} / {} / {}",
+                            self.chords_of(NavigatePaneLeft),
+                            self.chords_of(NavigatePaneDown),
+                            self.chords_of(NavigatePaneUp),
+                            self.chords_of(NavigatePaneRight)
+                        ),
+                        "move focus".into(),
+                    ),
+                    (self.chords_of(ToggleRail), "toggle rail".into()),
+                    (self.chords_of(RailEnter), "open row".into()),
+                    (self.chords_of(SwitchTab), "switch sash 1-9".into()),
+                    (self.chords_of(RailCycle), "rail columns".into()),
+                ],
+            ),
+            (
+                "workspaces / tabs",
+                vec![
+                    row(WorkspacePicker),
+                    row(Goto),
+                    row(NewWorkspace),
+                    row(NewWorktree),
+                    row(RenameWorkspace),
+                    row(CloseWorkspace),
+                    row(NewTab),
+                    row(RenameTab),
+                    row(PrevSash),
+                    row(NextSash),
+                    row(CloseTab),
+                ],
+            ),
+            (
+                "panes",
+                vec![
+                    row(SplitVertical),
+                    row(SplitHorizontal),
+                    row(ClosePane),
+                    row(RenamePane),
+                    row(EditScrollback),
+                    row(CopyMode),
+                    row(Zoom),
+                    row(ResizeMode),
+                    row(GrowPane),
+                    row(ShrinkPane),
+                    row(ToggleRail),
+                    row(FocusPaneLeft),
+                    row(FocusPaneDown),
+                    row(FocusPaneUp),
+                    row(FocusPaneRight),
+                    row(SwapPaneLeft),
+                    row(SwapPaneDown),
+                    row(SwapPaneUp),
+                    row(SwapPaneRight),
+                    row(CyclePaneNext),
+                    row(CyclePanePrev),
+                ],
+            ),
+            (
+                "smith",
+                vec![
+                    row(Ask),
+                    row(Strike),
+                    row(Newline),
+                    (
+                        format!("esc esc / {}", self.chords_of(ClearCompose)),
+                        "clear compose".into(),
+                    ),
+                    row(Fold),
+                    row(Verbosity),
+                    row(Mount),
+                    row(Unmount),
+                    row(Trajectory),
+                    row(NewSession),
+                    row(NewPty),
+                    row(NewEdit),
+                    row(NewClock),
+                    row(NewLog),
+                    row(NewPlot),
+                    row(PageUp),
+                    row(PageDown),
+                ],
+            ),
+        ]
+    }
 }
 
-/// Herdr-shaped defaults: prefix-first, ctrl+alt as the safe direct family.
+pub fn filter_help_groups<'a>(
+    groups: &'a [(&'static str, Vec<(String, String)>)],
+    query: &str,
+) -> Vec<(&'static str, Vec<(String, String)>)> {
+    if query.is_empty() {
+        return groups.to_vec();
+    }
+    let q = query.to_ascii_lowercase();
+    groups
+        .iter()
+        .filter_map(|(name, rows)| {
+            let rows: Vec<_> = rows
+                .iter()
+                .filter(|(k, l)| {
+                    k.to_ascii_lowercase().contains(&q) || l.to_ascii_lowercase().contains(&q)
+                })
+                .cloned()
+                .collect();
+            (!rows.is_empty()).then_some((*name, rows))
+        })
+        .collect()
+}
+
+/// Herdr defaults first, then smith-only verbs on free chords.
 const DEFAULTS: &[(&str, Action)] = &[
     ("prefix+q", Action::Detach),
     ("prefix+?", Action::Help),
+    ("prefix+s", Action::Settings),
+    ("prefix+shift+r", Action::ReloadConfig),
+    ("prefix+o", Action::Notify),
     ("prefix+b,tab", Action::ToggleRail),
+    ("prefix+w", Action::WorkspacePicker),
+    ("prefix+g", Action::Goto),
+    ("prefix+shift+n", Action::NewWorkspace),
+    ("prefix+shift+g", Action::NewWorktree),
+    ("prefix+shift+w", Action::RenameWorkspace),
+    ("prefix+shift+d", Action::CloseWorkspace),
+    ("prefix+c,ctrl+alt+c", Action::NewTab),
+    ("prefix+shift+t", Action::RenameTab),
+    ("prefix+shift+x", Action::CloseTab),
     ("prefix+n,ctrl+alt+]", Action::NextSash),
     ("prefix+p,ctrl+alt+[", Action::PrevSash),
-    ("prefix+j,ctrl+alt+j", Action::NextPane),
-    ("prefix+k,ctrl+alt+k", Action::PrevPane),
+    ("prefix+1..9", Action::SwitchTab),
+    ("prefix+h,ctrl+alt+h", Action::FocusPaneLeft),
+    ("prefix+j,ctrl+alt+j", Action::FocusPaneDown),
+    ("prefix+k,ctrl+alt+k", Action::FocusPaneUp),
+    ("prefix+l,ctrl+alt+l", Action::FocusPaneRight),
+    ("h,left", Action::NavigatePaneLeft),
+    ("j", Action::NavigatePaneDown),
+    ("k", Action::NavigatePaneUp),
+    ("l,right", Action::NavigatePaneRight),
+    ("prefix+shift+h", Action::SwapPaneLeft),
+    ("prefix+shift+j", Action::SwapPaneDown),
+    ("prefix+shift+k", Action::SwapPaneUp),
+    ("prefix+shift+l", Action::SwapPaneRight),
+    ("prefix+tab", Action::CyclePaneNext),
+    ("prefix+shift+tab", Action::CyclePanePrev),
+    ("prefix+v,ctrl+alt+d", Action::SplitVertical),
+    ("prefix+minus,ctrl+alt+shift+d", Action::SplitHorizontal),
+    ("prefix+x", Action::ClosePane),
+    ("prefix+z,ctrl+alt+z", Action::Zoom),
+    ("prefix+r", Action::ResizeMode),
+    ("prefix+[", Action::CopyMode),
+    ("prefix+shift+p", Action::RenamePane),
+    ("prefix+e", Action::EditScrollback),
     ("prefix+plus,prefix+=", Action::GrowPane),
-    ("prefix+minus", Action::ShrinkPane),
+    ("prefix+shift+minus", Action::ShrinkPane),
     ("enter", Action::Ask),
-    ("prefix+s,ctrl+s", Action::Strike),
+    ("ctrl+s,prefix+enter", Action::Strike),
     ("shift+enter,ctrl+j", Action::Newline),
+    ("ctrl+u", Action::ClearCompose),
     ("prefix+.", Action::Fold),
     ("prefix+shift+v", Action::Verbosity),
     ("prefix+m", Action::Mount),
     ("prefix+u", Action::Unmount),
-    ("prefix+shift+l", Action::Trajectory),
-    ("prefix+c,n", Action::NewSession),
+    ("prefix+shift+y", Action::Trajectory),
+    ("n", Action::NewSession),
     ("prefix+t,p", Action::NewPty),
-    ("prefix+e,e", Action::NewEdit),
+    ("e", Action::NewEdit),
     ("prefix+shift+c,c", Action::NewClock),
-    ("prefix+shift+g,g", Action::NewLog),
+    ("g", Action::NewLog),
+    ("o", Action::NewPlot),
     ("pageup", Action::PageUp),
     ("pagedown", Action::PageDown),
     ("esc", Action::FocusCompose),
-    ("up,k", Action::RailUp),
-    ("down,j", Action::RailDown),
-    ("left,h", Action::RailLeft),
-    ("right,l", Action::RailRight),
+    ("up", Action::RailWorkspaceUp),
+    ("down", Action::RailWorkspaceDown),
     ("[", Action::RailCycle),
     ("enter", Action::RailEnter),
     ("up", Action::PickerUp),
@@ -498,6 +903,11 @@ mod tests {
         assert!(d.mods.contains(KeyModifiers::CONTROL | KeyModifiers::ALT));
         assert_eq!(d.code, KeyCode::Char(']'));
         assert!(parse_chord("prefix+minus").unwrap().code == KeyCode::Char('-'));
+        let ix = parse_chord("prefix+1..9").unwrap();
+        assert!(ix.prefix && ix.indexed);
+        let tab = parse_chord("prefix+shift+tab").unwrap();
+        assert!(tab.prefix);
+        assert_eq!(tab.code, KeyCode::BackTab);
     }
 
     #[test]
@@ -513,6 +923,52 @@ mod tests {
         assert_eq!(km.resolve(chord, false, |_| true), Some(Action::NextSash));
         let q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         assert_eq!(km.resolve(q, true, |_| true), Some(Action::Detach));
+    }
+
+    #[test]
+    fn herdr_first_five() {
+        let km = Keymap::defaults();
+        let none = KeyModifiers::NONE;
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Char('c'), none), true, |_| true),
+            Some(Action::NewTab)
+        );
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Char('v'), none), true, |_| true),
+            Some(Action::SplitVertical)
+        );
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Char('-'), none), true, |_| true),
+            Some(Action::SplitHorizontal)
+        );
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Char('h'), none), true, |_| true),
+            Some(Action::FocusPaneLeft)
+        );
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Char('w'), none), true, |_| true),
+            Some(Action::WorkspacePicker)
+        );
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Char('q'), none), true, |_| true),
+            Some(Action::Detach)
+        );
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Char('x'), none), true, |_| true),
+            Some(Action::ClosePane)
+        );
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Char('z'), none), true, |_| true),
+            Some(Action::Zoom)
+        );
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Char('s'), none), true, |_| true),
+            Some(Action::Settings)
+        );
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Char('3'), none), true, |_| true),
+            Some(Action::SwitchTab)
+        );
     }
 
     #[test]
@@ -548,10 +1004,14 @@ mod tests {
 
     #[test]
     fn rail_plain_keys_are_not_global() {
-        assert!(Action::RailUp.direct_ok(true, false, false, false, false));
-        assert!(!Action::RailUp.direct_ok(false, false, false, false, false));
+        assert!(Action::NavigatePaneDown.direct_ok(true, false, false, false, false));
+        assert!(!Action::NavigatePaneDown.direct_ok(false, false, false, false, false));
+        assert!(Action::RailWorkspaceUp.direct_ok(true, false, false, false, false));
+        assert!(!Action::RailWorkspaceUp.direct_ok(false, false, false, false, false));
         assert!(!Action::Ask.direct_ok(false, true, false, false, false));
         assert!(Action::Detach.direct_ok(false, true, false, false, false));
+        assert!(Action::FocusPaneDown.direct_ok(false, true, false, false, false));
+        assert!(!Action::NavigatePaneDown.direct_ok(false, true, false, false, false));
     }
 
     #[test]
@@ -564,5 +1024,51 @@ mod tests {
                 a.as_str()
             );
         }
+    }
+
+    #[test]
+    fn smith_verbs_left_herdr_chords() {
+        let km = Keymap::defaults();
+        let none = KeyModifiers::NONE;
+        assert_ne!(
+            km.resolve(KeyEvent::new(KeyCode::Char('s'), none), true, |_| true),
+            Some(Action::Strike)
+        );
+        assert_ne!(
+            km.resolve(KeyEvent::new(KeyCode::Char('c'), none), true, |_| true),
+            Some(Action::NewSession)
+        );
+        assert_ne!(
+            km.resolve(KeyEvent::new(KeyCode::Char('e'), none), true, |_| true),
+            Some(Action::NewEdit)
+        );
+        assert_eq!(
+            km.resolve(KeyEvent::new(KeyCode::Enter, none), true, |_| true),
+            Some(Action::Strike)
+        );
+        assert_eq!(
+            km.resolve(
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                false,
+                |_| true
+            ),
+            Some(Action::ClearCompose)
+        );
+    }
+
+    #[test]
+    fn help_groups_filter_by_key_or_label() {
+        let km = Keymap::defaults();
+        let groups = km.help_groups();
+        assert!(groups.iter().any(|(n, _)| *n == "global"));
+        assert!(groups.iter().any(|(n, _)| *n == "panes"));
+        let hit = filter_help_groups(&groups, "split");
+        assert!(hit.iter().all(|(n, rows)| {
+            *n == "panes"
+                && rows
+                    .iter()
+                    .any(|(k, l)| k.contains("prefix+v") || l.contains("split"))
+        }));
+        assert!(filter_help_groups(&groups, "zzzz-nope").is_empty());
     }
 }

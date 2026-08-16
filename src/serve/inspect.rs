@@ -45,6 +45,16 @@ pub struct Report {
     pub catalogs: Vec<String>,
     #[serde(default)]
     pub prof: crate::prof::Snap,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats_session: Option<String>,
+    #[serde(default)]
+    pub stats: crate::stats::SessionStats,
+    #[serde(default)]
+    pub usage: crate::stats::TokenUsage,
+    #[serde(default)]
+    pub context: crate::stats::ContextView,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub folds: std::collections::BTreeMap<String, crate::stats::Fold>,
 }
 
 impl State {
@@ -148,6 +158,12 @@ impl State {
                 });
             }
         }
+        let folds = crate::stats::fold_sessions(&self.root, crate::ask::SYSTEM);
+        let stats_session = crate::stats::pick_session(self.live_front().as_deref(), &folds);
+        let fold = stats_session
+            .as_ref()
+            .and_then(|id| folds.get(id).cloned())
+            .unwrap_or_default();
         let front = self.live_front();
         let front_text = front.as_deref().and_then(|name| {
             self.ptys.peek(name).and_then(|s| s.preview()).or_else(|| {
@@ -208,6 +224,11 @@ impl State {
                 .map(|c| c.name)
                 .collect(),
             prof: crate::prof::snapshot(),
+            stats_session,
+            stats: fold.stats,
+            usage: fold.usage,
+            context: fold.context,
+            folds,
         }
     }
 }

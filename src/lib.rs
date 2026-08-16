@@ -9,6 +9,7 @@ pub mod config;
 pub mod frame;
 pub mod oauth;
 pub mod prof;
+pub mod stats;
 pub mod remote;
 pub mod secret;
 pub mod serve;

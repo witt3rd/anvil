@@ -37,6 +37,9 @@ pub enum EventBody {
     },
     Thinking {
         text: String,
+        /// `prefill` / `think` / `decode` / `tool`. Missing = think (legacy).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
     },
     Strike {
         code: String,
@@ -53,6 +56,11 @@ pub enum EventBody {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timing: Option<Timing>,
+    },
+    /// One model complete inside an ask. Not model-visible.
+    Step {
+        n: u32,
+        timing: Timing,
     },
     Status {
         text: String,
@@ -180,7 +188,7 @@ impl FrameRoot {
 fn body_from_transcript(line: TranscriptLine) -> EventBody {
     match line {
         TranscriptLine::User { text } => EventBody::User { text },
-        TranscriptLine::Thinking { text } => EventBody::Thinking { text },
+        TranscriptLine::Thinking { text } => EventBody::Thinking { text, phase: None },
         TranscriptLine::Strike {
             code,
             stdout,
@@ -239,7 +247,11 @@ mod tests {
         let events = root.load_events("fox").unwrap();
         assert_eq!(events.len(), 2);
         assert!(events[1].body.model_visible());
-        assert!(!EventBody::Thinking { text: "hmm".into() }.model_visible());
+        assert!(!EventBody::Thinking {
+            text: "hmm".into(),
+            phase: None
+        }
+        .model_visible());
     }
 
     #[test]

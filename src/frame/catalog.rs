@@ -89,4 +89,20 @@ impl FrameRoot {
         fs::remove_file(path)?;
         Ok(())
     }
+
+    pub fn rename_catalog(&self, old: &str, new: &str) -> Result<String, FrameError> {
+        let old = Self::parse_name(old)?;
+        let new = Self::parse_name(new)?;
+        if old == new {
+            return Ok(new);
+        }
+        if self.catalog_exists(&new) {
+            return Err(FrameError::CatalogExists(new));
+        }
+        let mut cat = self.catalog(&old)?;
+        cat.name = new.clone();
+        self.save_catalog(&cat)?;
+        self.delete_catalog(&old)?;
+        Ok(new)
+    }
 }

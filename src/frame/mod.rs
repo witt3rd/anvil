@@ -11,7 +11,7 @@ mod transcript;
 mod workspace;
 
 pub use catalog::Catalog;
-pub use layout::Layout;
+pub use layout::{apply_gap, clamp_weight, Layout, SplitDir, Tile};
 pub use log::{Event, EventBody};
 pub use session::{SessionMeta, SessionRef};
 pub use transcript::TranscriptLine;
@@ -307,6 +307,24 @@ mod tests {
         assert!(got.members.iter().any(|m| m.is_edit()));
         assert_eq!(got.members[0].label(), "scratch · edit");
         assert!(!root.session_exists("scratch"));
+    }
+
+    #[test]
+    fn plot_member_round_trips() {
+        let (_dir, root) = tmp();
+        let mut ws = root.create_workspace("fleet-os").unwrap();
+        ws.add_member(MemberRef::plot("audit-plot", "audit"));
+        root.save_workspace(&ws).unwrap();
+        let got = root.workspace("fleet-os").unwrap();
+        assert!(got.members.iter().any(|m| m.is_plot()));
+        assert_eq!(
+            got.members
+                .iter()
+                .find(|m| m.is_plot())
+                .and_then(|m| m.plot_of()),
+            Some("audit")
+        );
+        assert_eq!(got.members[0].label(), "audit-plot · plot audit");
     }
 
     #[test]

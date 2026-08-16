@@ -164,10 +164,11 @@ leaks.
 telemetry are *projections*. **Model-visible means logged** — if the
 model saw it, the log can reconstruct it. Do not dump the transcript
 into the next ask; derive. Timing (prefill, TTFT, decode, reasoning,
-tok/s, strike wall, respawn) is data on that stream (`Timing` on
-Ask/Strike/Answer) and on the live ring (`src/prof.rs`, `anvil inspect`
-/ `anvil prof`). Zoom/diagnose is a workspace member that injects the
-same session, not a debug flag.
+tok/s, strike wall, cache, respawn) lives on Ask/Strike/Answer/`Step`
+events. `src/stats.rs` folds the whole log the DSH way (turns, steps,
+ttft sum/avg, decode tok/s, tool wall, billed usage, context
+heuristic). `anvil inspect` / `anvil prof` print the fold. The live
+ring stays in `src/prof.rs`. Zoomed timeline is still the viz half.
 
 Self-mod without a log is a trick you cannot debug. A log without
 slots is a file you `less`.
@@ -264,8 +265,23 @@ The next ask is a projection of the event log, not a paste of cards.
 
 - Web member. Promoted mounts beyond clock.
 - Zoomed timeline (log pane is the first diagnose member).
-- Drag-resize (Alt+= / Alt+- persist weights). Mouse click/wheel
-  already hit-tests panes, tabs, rail rows, and sash pills.
+  Plot member (`MemberRef::Plot`, rail `o`, `anvil workspace add ws sess --plot`)
+  is the stats pane: lifecycle bar (prefill / think / decode / tool),
+  TTFT p95, cache/context gauges, Braille tok/s chart, and a trace
+  table from the event log. Not a ring-buffer sparkline — agent
+  work is phases, not ticks. Same SSH/cell grid. No GPU.
+- Drag the shared pane border to resize (weights persist on the
+  layout). Double-click an edge to equalize that split. Esc or
+  release ends the drag. `prefix+v` / `prefix+-` bisect the focused
+  pane (new PTY; tile tree on the layout). `prefix+=` /
+  `prefix+shift+-` grow/shrink. Mouse click/wheel hit-tests panes,
+  tabs, rail rows, and sash pills. Drag-select copies (herdr
+  `ui.copy_on_select`, default on) and toasts `copied to clipboard`.
+  `false` keeps the highlight; Ctrl+C / prefix+`[` `y` copies. Ask
+  paste chips `[Pasted: N lines]` / `[Image #N]` with a grok-build
+  preview (`paste again or double-click to expand`). Image chips
+  show type, pixels, size, and path. Ctrl+V reads the clipboard
+  image (`wl-paste`); a pasted image file path becomes a chip too.
 - Theme is UX, not conceptual. Every painted surface is a dotted
   face in `src/tui/theme.rs` (`message.user.field`, `hint.key`, …).
   Add the face before the widget. Packs fill inks; `theme:` in
@@ -273,7 +289,8 @@ The next ask is a projection of the event log, not a paste of cards.
 - Prof is first-class. New serve op / fiber / model phase gets a
   `prof::span` (and a `Timing` field if it is logged). `ANVIL_TRACE=1`
   for the tracing subscriber.
-- Keys: every action is named in `src/tui/keys.rs`. Defaults follow
-  herdr (prefix `ctrl+b`, `prefix+?` help, `ctrl+alt` as the safe
-  direct family). Override under `keys:` in config. A new action
-  adds a name + default before the handler.
+- Keys: every herdr default is a named action in `src/tui/keys.rs`
+  (`next_tab`, `split_vertical`, `focus_pane_left`, …). Defaults are
+  herdr's map plus the `ctrl+alt` family. Smith-only verbs use free
+  chords. Override under `keys:`. A new action adds a name + default
+  before the handler. `prefix+1..9` is `switch_tab`.

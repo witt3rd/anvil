@@ -74,10 +74,12 @@ pub trait AskSink {
     fn on_status(&mut self, _status: &str) {}
     fn on_delta(&mut self, _kind: &str, _text: &str) {}
     fn on_draft(&mut self, _text: &str) {}
+    fn on_reason(&mut self, _text: &str) {}
     fn on_strike(&mut self, _code: &str, _reply: &StrikeReply) {}
     fn on_strike_timed(&mut self, code: &str, reply: &StrikeReply, _timing: &Timing) {
         self.on_strike(code, reply);
     }
+    fn on_step(&mut self, _n: u32, _timing: &Timing) {}
 }
 
 impl AskSink for () {}
@@ -117,6 +119,10 @@ pub fn ask_with_log(
         sink.on_status("waiting");
         let stats = completer.complete_timed(&messages, sink)?;
         timing.merge_model(&stats.timing);
+        sink.on_step(turn as u32, &stats.timing);
+        if !stats.reasoning.is_empty() {
+            sink.on_reason(&stats.reasoning);
+        }
         sink.on_draft(&stats.text);
         messages.push(Message {
             role: "assistant".into(),
@@ -212,7 +218,10 @@ pub fn messages_from_log(events: &[Event], prompt: &str) -> Vec<Message> {
                     content: format!("terminal {member}:\n{text}"),
                 });
             }
-            EventBody::Thinking { .. } | EventBody::Status { .. } | EventBody::Fiber { .. } => {}
+            EventBody::Thinking { .. }
+            | EventBody::Status { .. }
+            | EventBody::Fiber { .. }
+            | EventBody::Step { .. } => {}
         }
     }
     let already = messages
@@ -500,7 +509,10 @@ mod tests {
             Event {
                 seq: 2,
                 ts: 3,
-                body: EventBody::Thinking { text: "hmm".into() },
+                body: EventBody::Thinking {
+                    text: "hmm".into(),
+                    phase: None,
+                },
             },
             Event {
                 seq: 3,

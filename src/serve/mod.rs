@@ -498,7 +498,7 @@ fn warm_workspace(state: &State, workspace: &str) -> io::Result<()> {
                     let _ = state.mounts.mount("clock", inspect::SLOT_STATUS);
                 }
             }
-            crate::frame::MemberRef::Log { .. } => {}
+            crate::frame::MemberRef::Log { .. } | crate::frame::MemberRef::Plot { .. } => {}
             crate::frame::MemberRef::Edit { id } => {
                 let _ = state.edits.snap(&id);
                 state.touch(&id);
@@ -577,11 +577,27 @@ impl AskSink for WireSink<'_> {
             },
         );
     }
+    fn on_reason(&mut self, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        let _ = self.root.append_event(
+            &self.session,
+            EventBody::Thinking {
+                text: text.into(),
+                phase: Some("think".into()),
+            },
+        );
+    }
     fn on_draft(&mut self, text: &str) {
         if ask::extract_python(text).is_none() {
-            let _ = self
-                .root
-                .append_event(&self.session, EventBody::Thinking { text: text.into() });
+            let _ = self.root.append_event(
+                &self.session,
+                EventBody::Thinking {
+                    text: text.into(),
+                    phase: Some("decode".into()),
+                },
+            );
         }
         let _ = write_msg(
             self.writer,
@@ -597,6 +613,15 @@ impl AskSink for WireSink<'_> {
     }
     fn on_strike_timed(&mut self, code: &str, reply: &StrikeReply, timing: &crate::prof::Timing) {
         self.log_strike(code, reply, Some(timing.clone()));
+    }
+    fn on_step(&mut self, n: u32, timing: &crate::prof::Timing) {
+        let _ = self.root.append_event(
+            &self.session,
+            EventBody::Step {
+                n,
+                timing: timing.clone(),
+            },
+        );
     }
 }
 

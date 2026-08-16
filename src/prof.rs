@@ -84,7 +84,13 @@ pub struct Timing {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_in: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_cache_read: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_cache_write: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_out: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_reason: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tok_s: Option<f64>,
 }
@@ -109,6 +115,35 @@ impl Timing {
             && self.reason_ns.is_none()
             && self.strike_ns.is_none()
             && self.tokens_out.is_none()
+            && self.tokens_cache_read.is_none()
+    }
+
+    pub fn billed_in(&self) -> u32 {
+        self.tokens_in.unwrap_or(0)
+            + self.tokens_cache_read.unwrap_or(0)
+            + self.tokens_cache_write.unwrap_or(0)
+    }
+
+    /// Visible decode tokens. Billed `tokens_out` often includes reasoning.
+    pub fn decode_tokens(&self) -> u32 {
+        self.tokens_out
+            .unwrap_or(0)
+            .saturating_sub(self.tokens_reason.unwrap_or(0))
+    }
+
+    /// When the provider omits `reasoning_tokens`, treat extra billed
+    /// completion over the visible text as think.
+    pub fn infer_reason_from_visible(&mut self, visible: &str) {
+        if self.tokens_reason.is_some() {
+            return;
+        }
+        let Some(billed) = self.tokens_out else {
+            return;
+        };
+        let vis = estimate_tokens(visible);
+        if billed > vis {
+            self.tokens_reason = Some(billed - vis);
+        }
     }
 
     pub fn add_strike(&mut self, strike_ns: u64) {
@@ -125,14 +160,19 @@ impl Timing {
         self.decode_ns = sum_opt(self.decode_ns, other.decode_ns);
         self.reason_ns = sum_opt(self.reason_ns, other.reason_ns);
         self.tokens_in = sum_opt_u32(self.tokens_in, other.tokens_in);
+        self.tokens_cache_read = sum_opt_u32(self.tokens_cache_read, other.tokens_cache_read);
+        self.tokens_cache_write = sum_opt_u32(self.tokens_cache_write, other.tokens_cache_write);
         self.tokens_out = sum_opt_u32(self.tokens_out, other.tokens_out);
+        self.tokens_reason = sum_opt_u32(self.tokens_reason, other.tokens_reason);
         self.recompute_tok_s();
     }
 
     pub fn recompute_tok_s(&mut self) {
-        let toks = self.tokens_out.unwrap_or(0);
+        let toks = self.decode_tokens();
         let dec = self.decode_ns.unwrap_or(0);
-        self.tok_s = if toks > 0 && dec > 0 {
+        // Faster than 1ms/token is a buffered flush, not generation.
+        const MIN_NS_PER_TOK: u64 = 1_000_000;
+        self.tok_s = if toks > 0 && dec >= u64::from(toks) * MIN_NS_PER_TOK {
             Some(toks as f64 / (dec as f64 / 1_000_000_000.0))
         } else {
             None
@@ -276,6 +316,22 @@ pub fn last_model() -> Option<Timing> {
     inner().lock().ok().and_then(|g| g.last_model.clone())
 }
 
+impl Snap {
+    /// Last `n` sample durations in a group (or all groups). Oldest first.
+    pub fn durs(&self, group: Option<&str>, n: usize) -> Vec<u64> {
+        let mut out: Vec<u64> = self
+            .samples
+            .iter()
+            .filter(|s| group.is_none_or(|g| s.group == g))
+            .rev()
+            .take(n)
+            .map(|s| s.dur_ns.max(1))
+            .collect();
+        out.reverse();
+        out
+    }
+}
+
 pub fn snapshot() -> Snap {
     inner()
         .lock()
@@ -326,6 +382,26 @@ mod tests {
     }
 
     #[test]
+    fn durs_takes_last_n_oldest_first() {
+        let snap = Snap {
+            samples: (1..=5)
+                .map(|i| Sample {
+                    name: format!("s{i}"),
+                    group: if i % 2 == 0 { "tui" } else { "serve" }.into(),
+                    t0_ns: i,
+                    dur_ns: i * 10,
+                    tokens: None,
+                    extra: None,
+                })
+                .collect(),
+            counters: BTreeMap::new(),
+            last_model: None,
+        };
+        assert_eq!(snap.durs(None, 3), vec![30, 40, 50]);
+        assert_eq!(snap.durs(Some("tui"), 8), vec![20, 40]);
+    }
+
+    #[test]
     fn compact_names_the_model_phases() {
         let t = Timing {
             wall_ns: 500_000_000,
@@ -335,7 +411,10 @@ mod tests {
             reason_ns: Some(20_000_000),
             strike_ns: Some(3_000_000),
             tokens_in: Some(100),
+            tokens_cache_read: None,
+            tokens_cache_write: None,
             tokens_out: Some(40),
+            tokens_reason: None,
             tok_s: Some(100.0),
         };
         let s = t.compact();
@@ -355,6 +434,37 @@ mod tests {
         t.recompute_tok_s();
         let rate = t.tok_s.unwrap();
         assert!((rate - 50.0).abs() < 0.01, "{rate}");
+    }
+
+    #[test]
+    fn tok_s_uses_decode_tokens_not_billed_completion() {
+        let mut t = Timing {
+            decode_ns: Some(80_000_000),
+            tokens_out: Some(864),
+            tokens_reason: Some(849),
+            ..Timing::default()
+        };
+        t.recompute_tok_s();
+        let rate = t.tok_s.unwrap();
+        assert!(
+            (rate - 187.5).abs() < 1.0,
+            "15 toks / 80ms => ~187.5, got {rate}"
+        );
+    }
+
+    #[test]
+    fn tok_s_is_none_when_the_window_is_a_flush() {
+        let mut t = Timing {
+            decode_ns: Some(67_845_276),
+            tokens_out: Some(864),
+            ..Timing::default()
+        };
+        t.recompute_tok_s();
+        assert_eq!(t.tok_s, None, "864 toks in 68ms is a dump, not decode");
+        t.infer_reason_from_visible("total_tokens = 0\nprint(total_tokens)");
+        assert!(t.tokens_reason.unwrap() > 800);
+        t.recompute_tok_s();
+        assert!(t.tok_s.is_none() || t.tok_s.unwrap() < 500.0);
     }
 
     #[test]

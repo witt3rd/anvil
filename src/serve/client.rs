@@ -93,7 +93,9 @@ impl Client {
         loop {
             match self.recv_for(&id)? {
                 Msg::Status { text, .. } => sink.on_status(&text),
-                Msg::Delta { delta_kind, text, .. } => sink.on_delta(&delta_kind, &text),
+                Msg::Delta {
+                    delta_kind, text, ..
+                } => sink.on_delta(&delta_kind, &text),
                 Msg::Draft { text, .. } => sink.on_draft(&text),
                 Msg::Strike {
                     code,

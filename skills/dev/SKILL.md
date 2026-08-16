@@ -35,7 +35,7 @@ respawns if it exits; the store is the namespace.
 ```bash
 cargo test
 python3 hammer/hammer.py --self-test         # guest only, no rust
-anvil prof                                   # last spans (serve if up)
+anvil prof                                   # fold + last spans (serve if up)
 ANVIL_TRACE=1 smith -p nim                   # tracing spans on stderr
 ```
 
@@ -118,26 +118,42 @@ cargo build --bins
 ./target/debug/smith -p nim
 ```
 
-Keys follow herdr: prefix is `ctrl+b`, then an action (`prefix+q`
-detach, `prefix+n`/`p` sash, `prefix+j`/`k` pane, `prefix+?` help).
-Safe direct chords: `ctrl+alt+][` sash, `ctrl+alt+j/k` pane. Tab still
-toggles the rail except on a focused PTY. Override under `keys:` in
-config.yaml. Enter asks (model → strike). `prefix+s` / Ctrl+S raw-strikes.
+Keys follow herdr's default map (`src/tui/keys.rs`, herdr action names).
+First five: `prefix+c` new sash, `prefix+v`/`-` split, `prefix+h/j/k/l`
+pane, `prefix+w` catalog picker, `prefix+q` detach. Also `prefix+x`
+close pane, `prefix+z` zoom, `prefix+r` resize, `prefix+[` copy-scroll,
+`prefix+1..9` sash jump, `prefix+s` settings, `prefix+shift+r` reload.
+Smith-only verbs are off herdr chords: strike is `ctrl+s`/`prefix+enter`,
+new session is rail `n`, trajectory is `prefix+shift+y`, stats is rail `o`
+(lifecycle / cache / tok/s / trace of the focused session). Double-esc
+(or `ctrl+u`) clears the compose box.
+Safe direct chords: `ctrl+alt+][` sash, `ctrl+alt+h/j/k/l` pane,
+`ctrl+alt+d` split. On the rail, `hjkl` focus panes, arrows switch
+sashes, `[` cycles catalog/workspace/member columns.
+Tab still toggles the rail except on a focused PTY. Override under
+`keys:` in config.yaml. Enter asks (model → strike). `prefix+s` /
+Ctrl+S raw-strikes.
 `@` opens a fuzzy file picker (cwd, skips `.git`/`target`).
-Alt+. folds the last thinking/strike card. Alt+V cycles ask verbosity
-(quiet / steps / full): a live chip (`⋮ Waiting · 12s · ↑ 1.2k tok`)
-and diamond steps (`◆ Thought for 7.5s`, `◆ python · print… · 7ms`).
+Alt+. folds the last think/decode/strike card. Alt+V cycles ask verbosity
+(quiet / steps / full). Phases match the stats pane: Prefill, Think,
+Decode, Tool, same colors. Full streams the reason and decode text
+(and step timings) instead of a generic "Thinking" label.
+Drag-select copies to the clipboard and toasts (herdr
+`ui.copy_on_select`, default on). `ui.copy_on_select: false` keeps the
+highlight; Ctrl+C copies. Drag a shared pane border to resize;
+double-click the edge to equalize. Paste into ask becomes
+`[Pasted: N lines]` or `[Image #N]` with a preview card; paste again
+or double-click expands. Ctrl+V pastes a clipboard image.
 Wheel / PgUp / PgDn scroll.
 Tab focuses the rail. Click a tab, rail row, or pane to focus it.
 Wheel scrolls the pane under the cursor (a focused PTY gets up/down;
-wheel on the rail moves the cursor; wheel on the sash cycles
+wheel on a member peeks like `j`/`k`; wheel on a workspace
+highlights like arrows; wheel on the sash strip cycles
 workspaces). Click `[<]` `[>]` to cycle sashes; `+` names a session.
-Alt+[ / Alt+] cycle workspace sashes. Alt+J /
-Alt+K cycle members when a bench has two or more (all of them stack).
-Alt+L toggles
-the trajectory sash (event log). A second `smith` is another casing
-on the same serve.
-`/mount clock` and `/unmount` (Alt+M / Alt+U;
+`prefix+n`/`p` cycle sashes; `prefix+h/j/k/l` cycle members.
+`prefix+shift+l` toggles the trajectory sash (event log). A second
+`smith` is another casing on the same serve.
+`/mount clock` and `/unmount` (`prefix+m` / `prefix+u`;
 rail `m`/`u`) mount a temporary clock on `casing.status`. Ctrl+C
 closes the casing; serve keeps the hammers. Rail `p` names a PTY
 member. When that pane is focused, keys go to `$SHELL` and Ctrl+Q
@@ -148,8 +164,12 @@ Every painted surface has a dotted face (`message.user.field`,
 `theme:` in `~/.config/anvil/config.yaml` retints inks or overrides
 faces. User messages sit on a raised field; agent messages stay on
 the canvas. The sash carries `[<] [>] [catalog]` pills; the bottom
-row is the keybind hint bar. Restart smith to pick up a theme
-change; serve can stay.
+row is the keybind hint bar. Each smith pane has its own status strip (account │ cwd │ git │
+model │ context%). Context/git/cwd/model come from that session.
+`clock` is the `casing.status` mount and only shows on the focused
+pane. `ui.status_auto_hide: true` hides the strip on unfocused
+smith panes. Widgets are listed under `ui.status`. Restart smith
+to pick up a theme or ui change; serve can stay.
 
 ## Ask
 
