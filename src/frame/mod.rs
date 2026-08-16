@@ -5,12 +5,14 @@
 
 mod catalog;
 mod layout;
+mod log;
 mod session;
 mod transcript;
 mod workspace;
 
 pub use catalog::Catalog;
 pub use layout::Layout;
+pub use log::{Event, EventBody};
 pub use session::{SessionMeta, SessionRef};
 pub use transcript::TranscriptLine;
 pub use workspace::{MemberRef, Workspace};

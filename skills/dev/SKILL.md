@@ -59,6 +59,10 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
 - `anvil serve` owns hammers. smith starts it if the socket is down.
   `anvil serve --status` / `--stop`. Log: `~/.anvil/serve.log`.
   Close smith: serve stays. `--store` is still in-process (no serve).
+- Event log is `sessions/<id>/events.jsonl` (seq, ts, kind). Serve
+  writes it. Cards project it. `anvil session log NAME`.
+- `anvil inspect` reports services, fibers, slots. Live if serve is
+  up; otherwise cold from disk. Mount/unmount is not built.
 - Conceptual objects: `anvil session|workspace|catalog` under
   `$ANVIL_ROOT` (default `~/.anvil`). Destroying a workspace or catalog
   does not destroy its occupants.

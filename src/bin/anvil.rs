@@ -100,14 +100,31 @@ enum Command {
         #[command(subcommand)]
         cmd: CatalogCmd,
     },
+    /// Live fibers, services, slots (serve if up; else disk-cold).
+    Inspect {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
 enum SessionCmd {
     List,
-    New { name: String },
-    Show { name: String },
-    Rm { name: String },
+    New {
+        name: String,
+    },
+    Show {
+        name: String,
+    },
+    /// Print the event log (source of truth).
+    Log {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Rm {
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -137,6 +154,7 @@ fn main() -> ExitCode {
         Command::Serve { sock, stop, status } => {
             return serve_cmd(&cli, sock.clone(), *stop, *status);
         }
+        Command::Inspect { json } => return inspect_cmd(cli.root.as_deref(), *json),
         _ => {}
     }
 
@@ -215,7 +233,8 @@ fn main() -> ExitCode {
         Command::Session { .. }
         | Command::Workspace { .. }
         | Command::Catalog { .. }
-        | Command::Serve { .. } => unreachable!("handled above"),
+        | Command::Serve { .. }
+        | Command::Inspect { .. } => unreachable!("handled above"),
     }
 }
 
@@ -331,11 +350,135 @@ fn session_cmd(root: Option<&std::path::Path>, cmd: &SessionCmd) -> ExitCode {
             }
             Err(err) => fail(err),
         },
+        SessionCmd::Log { name, json } => match root.load_events(name) {
+            Ok(events) => {
+                if *json {
+                    println!("{}", serde_json::to_string_pretty(&events).unwrap());
+                } else {
+                    for ev in events {
+                        let vis = if ev.body.model_visible() { "v" } else { " " };
+                        println!(
+                            "{:>4} {vis} {}\t{}",
+                            ev.seq,
+                            ev.ts,
+                            serde_json::to_string(&ev.body).unwrap()
+                        );
+                    }
+                }
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(err),
+        },
         SessionCmd::Rm { name } => match root.delete_session(name) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => fail(err),
         },
     }
+}
+
+fn inspect_cmd(root: Option<&std::path::Path>, json: bool) -> ExitCode {
+    let report = match anvil::serve::Client::connect(anvil::serve::default_sock()) {
+        Ok(mut c) => match c.inspect() {
+            Ok(r) => r,
+            Err(err) => return fail(err),
+        },
+        Err(_) => match cold_inspect(root) {
+            Ok(r) => r,
+            Err(err) => return fail(err),
+        },
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        return ExitCode::SUCCESS;
+    }
+    println!("root\t{}", report.root);
+    println!("sock\t{}", report.sock);
+    println!("services");
+    for s in &report.services {
+        println!("  {}\t{}\t{}\tevents={}", s.name, s.kind, s.state, s.events);
+    }
+    println!("fibers");
+    for f in &report.fibers {
+        println!("  {}\t{}\t{}", f.name, f.kind, f.state);
+    }
+    println!("slots");
+    for sl in &report.slots {
+        let who = sl.occupant.as_deref().unwrap_or("-");
+        println!("  {}\t{}\t{}", sl.name, sl.kind, who);
+    }
+    if !report.workspaces.is_empty() {
+        println!("workspaces\t{}", report.workspaces.join(","));
+    }
+    if !report.catalogs.is_empty() {
+        println!("catalogs\t{}", report.catalogs.join(","));
+    }
+    ExitCode::SUCCESS
+}
+
+fn cold_inspect(root: Option<&std::path::Path>) -> Result<anvil::serve::Report, String> {
+    let root = open_root(root)?;
+    let _ = root.ensure_defaults();
+    let sessions = root.list_sessions().map_err(|e| e.to_string())?;
+    let mut services = Vec::new();
+    let mut fibers = Vec::new();
+    for sess in &sessions {
+        let events = root
+            .load_events(&sess.id)
+            .map(|e| e.len() as u64)
+            .unwrap_or(0);
+        services.push(anvil::serve::Service {
+            name: sess.id.clone(),
+            kind: "session".into(),
+            state: "cold".into(),
+            events,
+        });
+        fibers.push(anvil::serve::Fiber {
+            name: format!("adapter/{}", sess.id),
+            kind: "adapter".into(),
+            state: "pending".into(),
+        });
+    }
+    let front = root.layout("default").ok().and_then(|l| l.front_session);
+    Ok(anvil::serve::Report {
+        root: root.root().display().to_string(),
+        sock: "(down)".into(),
+        services,
+        fibers,
+        slots: vec![
+            anvil::serve::Slot {
+                name: "casing.rail".into(),
+                kind: "chrome".into(),
+                occupant: None,
+            },
+            anvil::serve::Slot {
+                name: "casing.main".into(),
+                kind: "stage".into(),
+                occupant: front.clone(),
+            },
+            anvil::serve::Slot {
+                name: "casing.status".into(),
+                kind: "chrome".into(),
+                occupant: None,
+            },
+            anvil::serve::Slot {
+                name: "session.transcript".into(),
+                kind: "smith".into(),
+                occupant: front,
+            },
+        ],
+        workspaces: root
+            .list_workspaces()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|w| w.name)
+            .collect(),
+        catalogs: root
+            .list_catalogs()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|c| c.name)
+            .collect(),
+    })
 }
 
 fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode {

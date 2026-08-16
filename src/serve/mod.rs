@@ -1,9 +1,11 @@
 //! `anvil serve` — owns hammers. Casings attach over a unix socket.
 
 mod client;
+mod inspect;
 mod proto;
 
 pub use client::Client;
+pub use inspect::{Fiber, Report, Service, Slot};
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -19,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::ask::{self, AskSink, HttpCompleter};
 use crate::config::Config;
-use crate::frame::FrameRoot;
+use crate::frame::{EventBody, FrameRoot};
 use crate::{Anvil, StrikeReply};
 
 use proto::{Msg, Req};
@@ -62,16 +64,18 @@ fn pid_path(sock: &Path) -> PathBuf {
 }
 
 pub fn run(opts: ServeOpts) -> io::Result<()> {
+    let sock = opts.sock.clone();
     let state = State::open(&opts)?;
-    listen(opts.sock, state)
+    listen(sock, state)
 }
 
-struct State {
-    root: FrameRoot,
+pub(crate) struct State {
+    pub(crate) root: FrameRoot,
     hammer: PathBuf,
     cfg: Option<Config>,
-    slots: Mutex<HashMap<String, Arc<Mutex<Anvil>>>>,
+    pub(crate) slots: Mutex<HashMap<String, Arc<Mutex<Anvil>>>>,
     running: AtomicBool,
+    pub(crate) sock: PathBuf,
 }
 
 impl State {
@@ -88,6 +92,7 @@ impl State {
             cfg,
             slots: Mutex::new(HashMap::new()),
             running: AtomicBool::new(true),
+            sock: opts.sock.clone(),
         })
     }
 
@@ -105,6 +110,13 @@ impl State {
             Anvil::open(self.root.session_dir(session), &self.hammer).map_err(io::Error::other)?;
         let slot = Arc::new(Mutex::new(anvil));
         slots.insert(session.to_string(), slot.clone());
+        drop(slots);
+        let _ = self.root.append_event(
+            session,
+            EventBody::Fiber {
+                state: "hot".into(),
+            },
+        );
         Ok(slot)
     }
 }
@@ -201,15 +213,37 @@ fn dispatch(req: &Req, state: &State, writer: &mut UnixStream) -> io::Result<()>
     match req {
         Req::Ping { id } => write_msg(writer, &Msg::Pong { id: id.clone() }),
         Req::Shutdown { .. } => Ok(()),
+        Req::Inspect { id } => write_msg(
+            writer,
+            &Msg::Inspect {
+                id: id.clone(),
+                report: state.inspect(),
+            },
+        ),
         Req::Strike { id, session, code } => {
+            let start = Instant::now();
             match with_session(state, session, |anvil| anvil.strike(code)) {
-                Ok(reply) => write_msg(
-                    writer,
-                    &Msg::Reply {
-                        id: id.clone(),
-                        reply,
-                    },
-                ),
+                Ok(reply) => {
+                    let ms = start.elapsed().as_millis() as u64;
+                    let _ = state.root.append_event(
+                        session,
+                        EventBody::Strike {
+                            code: code.clone(),
+                            stdout: reply.stdout.clone(),
+                            stderr: reply.stderr.clone(),
+                            error: reply.error.clone(),
+                            ok: reply.ok,
+                            ms: Some(ms),
+                        },
+                    );
+                    write_msg(
+                        writer,
+                        &Msg::Reply {
+                            id: id.clone(),
+                            reply,
+                        },
+                    )
+                }
                 Err(err) => write_msg(
                     writer,
                     &Msg::Error {
@@ -265,6 +299,7 @@ fn with_session<T>(
 
 struct WireSink<'a> {
     writer: &'a mut UnixStream,
+    root: &'a FrameRoot,
     id: String,
     session: String,
 }
@@ -281,6 +316,11 @@ impl AskSink for WireSink<'_> {
         );
     }
     fn on_draft(&mut self, text: &str) {
+        if ask::extract_python(text).is_none() {
+            let _ = self
+                .root
+                .append_event(&self.session, EventBody::Thinking { text: text.into() });
+        }
         let _ = write_msg(
             self.writer,
             &Msg::Draft {
@@ -291,6 +331,17 @@ impl AskSink for WireSink<'_> {
         );
     }
     fn on_strike(&mut self, code: &str, reply: &StrikeReply) {
+        let _ = self.root.append_event(
+            &self.session,
+            EventBody::Strike {
+                code: code.into(),
+                stdout: reply.stdout.clone(),
+                stderr: reply.stderr.clone(),
+                error: reply.error.clone(),
+                ok: reply.ok,
+                ms: None,
+            },
+        );
         let _ = write_msg(
             self.writer,
             &Msg::Strike {
@@ -347,24 +398,41 @@ fn run_ask(
     };
     let mut llm = HttpCompleter {
         provider: prov.clone(),
-        model,
+        model: model.clone(),
     };
+    let _ = state.root.append_event(
+        session,
+        EventBody::Ask {
+            prompt: prompt.into(),
+            provider: provider.map(str::to_string),
+            model: Some(model),
+        },
+    );
     let slot = state.slot(session)?;
     let mut anvil = slot.lock().map_err(|_| io::Error::other("session busy"))?;
     let mut sink = WireSink {
         writer,
+        root: &state.root,
         id: id.into(),
         session: session.into(),
     };
     match ask::ask_with(&mut llm, &mut anvil, prompt, &mut sink) {
-        Ok(result) => write_msg(
-            writer,
-            &Msg::Answer {
-                id: id.into(),
-                session: session.into(),
-                text: result.answer,
-            },
-        ),
+        Ok(result) => {
+            let _ = state.root.append_event(
+                session,
+                EventBody::Answer {
+                    text: result.answer.clone(),
+                },
+            );
+            write_msg(
+                writer,
+                &Msg::Answer {
+                    id: id.into(),
+                    session: session.into(),
+                    text: result.answer,
+                },
+            )
+        }
         Err(err) => write_msg(
             writer,
             &Msg::Error {
@@ -528,6 +596,32 @@ mod tests {
             assert_eq!(reply.value, serde_json::json!(42));
             c.shutdown().unwrap();
         }
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn strike_is_logged_and_inspect_sees_hot_fiber() {
+        let (tmp, sock, handle) = boot();
+        let mut c = Client::connect(&sock).unwrap();
+        c.strike("fox", "1+1").unwrap();
+        let report = c.inspect().unwrap();
+        let fox = report
+            .services
+            .iter()
+            .find(|s| s.name == "fox")
+            .expect("fox service");
+        assert_eq!(fox.state, "hot");
+        assert!(fox.events >= 1, "{report:?}");
+        assert!(report.slots.iter().any(|s| s.name == "session.transcript"));
+        let root = FrameRoot::open(tmp.path().join("root")).unwrap();
+        let events = root.load_events("fox").unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e.body, EventBody::Strike { ok: true, .. })),
+            "{events:?}"
+        );
+        c.shutdown().unwrap();
         let _ = handle.join();
     }
 

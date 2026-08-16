@@ -229,10 +229,10 @@ The next ask is a projection of the event log, not a paste of cards.
 2. **Serve** — done. Unix socket; smith attaches; hammers outlive the
    casing. No systemd unit yet (reboot is later).
 3. **Workspace + catalog** — done as persist + CLI + rail.
-4. **Event log** — replace card-transcript as source of truth.
-   Model-visible means logged. Cards and ask project the log.
-5. **Slots + inspect** — named seats on the casing; live report of
-   fibers/services/slots. Then mount/unmount can land.
+4. **Event log** — first cut. `events.jsonl` is the source. Serve
+   appends. Cards project. Legacy `transcript.jsonl` migrates.
+5. **Slots + inspect** — first cut. Named seats on the report;
+   `anvil inspect` (live if serve is up). Mount/unmount not yet.
 6. **Layout geometry + many casings** — splits; more than one smith.
 7. **Reboot** — systemd user unit; cold until exposed.
 8. **Remote** — SSH bridge.

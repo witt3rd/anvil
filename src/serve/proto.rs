@@ -29,6 +29,9 @@ pub enum Req {
     Shutdown {
         id: String,
     },
+    Inspect {
+        id: String,
+    },
 }
 
 impl Req {
@@ -38,7 +41,8 @@ impl Req {
             | Self::Strike { id, .. }
             | Self::Reset { id, .. }
             | Self::Ask { id, .. }
-            | Self::Shutdown { id } => id,
+            | Self::Shutdown { id }
+            | Self::Inspect { id } => id,
         }
     }
 }
@@ -84,6 +88,10 @@ pub enum Msg {
     Bye {
         id: String,
     },
+    Inspect {
+        id: String,
+        report: crate::serve::Report,
+    },
 }
 
 impl Msg {
@@ -96,7 +104,8 @@ impl Msg {
             | Self::Answer { id, .. }
             | Self::Reply { id, .. }
             | Self::Error { id, .. }
-            | Self::Bye { id } => id,
+            | Self::Bye { id }
+            | Self::Inspect { id, .. } => id,
         }
     }
 }

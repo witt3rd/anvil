@@ -181,6 +181,8 @@ anvil session new audit
 anvil workspace add fleet-os audit
 anvil catalog add compute-saturation fleet-os
 anvil serve --status
+anvil inspect
+anvil session log audit
 smith -p nim                     # casing + rail; starts serve
 smith -s audit -p nim
 ```

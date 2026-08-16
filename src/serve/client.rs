@@ -7,6 +7,7 @@ use crate::ask::AskSink;
 use crate::StrikeReply;
 
 use super::proto::{Msg, Req};
+use super::Report;
 
 #[derive(Debug)]
 pub struct Client {
@@ -104,8 +105,18 @@ impl Client {
                 }
                 Msg::Answer { text, .. } => return Ok(text),
                 Msg::Error { text, .. } => return Err(io::Error::other(text)),
-                Msg::Pong { .. } | Msg::Reply { .. } | Msg::Bye { .. } => {}
+                Msg::Pong { .. } | Msg::Reply { .. } | Msg::Bye { .. } | Msg::Inspect { .. } => {}
             }
+        }
+    }
+
+    pub fn inspect(&mut self) -> io::Result<Report> {
+        let id = self.next();
+        self.send(&Req::Inspect { id: id.clone() })?;
+        match self.recv_for(&id)? {
+            Msg::Inspect { report, .. } => Ok(report),
+            Msg::Error { text, .. } => Err(io::Error::other(text)),
+            other => Err(io::Error::other(format!("unexpected {other:?}"))),
         }
     }
 

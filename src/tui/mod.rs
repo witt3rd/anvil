@@ -29,7 +29,7 @@ use ratatui::Terminal;
 
 use crate::ask::{self, AskSink, HttpCompleter};
 use crate::config::{Config, Provider};
-use crate::frame::{self, FrameRoot, TranscriptLine};
+use crate::frame::{self, Event as LogEvent, EventBody, FrameRoot};
 use crate::serve::{self, Client, Spawn};
 use crate::{default_hammer, Anvil, StrikeReply};
 
@@ -152,10 +152,7 @@ impl App {
     }
 
     fn push_card(&mut self, card: Card) {
-        if let (Some(root), Some(rail)) = (&self.frame, &self.rail) {
-            let line = transcript_from_card(&card);
-            let _ = root.append_transcript(&rail.session, &line);
-        }
+        // Serve appends the event log. The casing only projects.
         self.cards.push(card);
     }
 
@@ -165,13 +162,13 @@ impl App {
             return;
         };
         let id = self.session_id();
-        match root.load_transcript(&id) {
-            Ok(lines) => {
-                let start = lines.len().saturating_sub(200);
-                self.cards = lines[start..].iter().map(card_from_transcript).collect();
+        match root.load_events(&id) {
+            Ok(events) => {
+                let start = events.len().saturating_sub(200);
+                self.cards = events[start..].iter().filter_map(card_from_event).collect();
             }
             Err(err) => self.cards.push(Card::Status {
-                text: format!("transcript: {err}"),
+                text: format!("log: {err}"),
             }),
         }
         self.stick_bottom = true;
@@ -983,52 +980,35 @@ fn push_rail_section(
     }
 }
 
-fn card_from_transcript(line: &TranscriptLine) -> Card {
-    match line {
-        TranscriptLine::User { text } => Card::User { text: text.clone() },
-        TranscriptLine::Thinking { text } => Card::Thinking {
+fn card_from_event(event: &LogEvent) -> Option<Card> {
+    match &event.body {
+        EventBody::User { text } | EventBody::Ask { prompt: text, .. } => {
+            Some(Card::User { text: text.clone() })
+        }
+        EventBody::Thinking { text } => Some(Card::Thinking {
             text: text.clone(),
             folded: true,
-        },
-        TranscriptLine::Strike {
-            code,
-            stdout,
-            stderr,
-            error,
-            ok,
-        } => Card::Strike {
-            code: code.clone(),
-            stdout: stdout.clone(),
-            stderr: stderr.clone(),
-            error: error.clone(),
-            ok: *ok,
-            folded: true,
-        },
-        TranscriptLine::Answer { text } => Card::Answer { text: text.clone() },
-        TranscriptLine::Status { text } => Card::Status { text: text.clone() },
-    }
-}
-
-fn transcript_from_card(card: &Card) -> TranscriptLine {
-    match card {
-        Card::User { text } => TranscriptLine::User { text: text.clone() },
-        Card::Thinking { text, .. } => TranscriptLine::Thinking { text: text.clone() },
-        Card::Strike {
+        }),
+        EventBody::Strike {
             code,
             stdout,
             stderr,
             error,
             ok,
             ..
-        } => TranscriptLine::Strike {
+        } => Some(Card::Strike {
             code: code.clone(),
             stdout: stdout.clone(),
             stderr: stderr.clone(),
             error: error.clone(),
             ok: *ok,
-        },
-        Card::Answer { text } => TranscriptLine::Answer { text: text.clone() },
-        Card::Status { text } => TranscriptLine::Status { text: text.clone() },
+            folded: true,
+        }),
+        EventBody::Answer { text } => Some(Card::Answer { text: text.clone() }),
+        EventBody::Status { text } => Some(Card::Status { text: text.clone() }),
+        EventBody::Fiber { state } => Some(Card::Status {
+            text: format!("fiber {state}"),
+        }),
     }
 }
 
