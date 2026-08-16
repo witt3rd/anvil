@@ -160,6 +160,9 @@ struct App {
     busy: bool,
     activity: Option<activity::Activity>,
     verbosity: activity::Verbosity,
+    pointer: Option<(u16, u16)>,
+    hover: Option<String>,
+    scroll_under: Option<String>,
     views: HashMap<String, PaneView>,
     hits: Hits,
     tick: u8,
@@ -282,6 +285,29 @@ impl App {
                 Err(err) => self.status = err.to_string(),
             }
         }
+    }
+
+    /// Hover focus: switch the front member without flushing the layout.
+    fn hover_member(&mut self, id: &str, focus: Focus) -> bool {
+        if id.ends_with("::log") {
+            let changed = self.view != MainView::Trajectory || self.focus != Focus::Compose;
+            self.view = MainView::Trajectory;
+            self.focus = Focus::Compose;
+            return changed;
+        }
+        if self.busy && id != self.session_id() {
+            return false;
+        }
+        self.focus = focus;
+        self.view = MainView::Smith;
+        if let Some(rail) = self.rail.as_mut() {
+            if rail.peek_member(id) {
+                self.load_session_cards();
+                self.expose_live();
+                return true;
+            }
+        }
+        false
     }
 
     fn focused_is_pty(&self) -> bool {
@@ -844,6 +870,9 @@ pub fn run(launch: Launch) -> io::Result<()> {
         busy: false,
         activity: None,
         verbosity: activity::Verbosity::Steps,
+        pointer: None,
+        hover: None,
+        scroll_under: None,
         views: HashMap::new(),
         hits: Hits::default(),
         tick: 0,
@@ -1108,9 +1137,10 @@ fn event_loop(
                         }
                         dirty = true;
                     }
-                    Event::Mouse(mouse) if mouse_action(mouse.kind) => {
-                        handle_mouse(app, mouse);
-                        dirty = true;
+                    Event::Mouse(mouse) => {
+                        if handle_mouse(app, mouse) {
+                            dirty = true;
+                        }
                     }
                     Event::Resize(_, _) => {
                         sync_pty_size(terminal, app);
@@ -1167,6 +1197,7 @@ fn event_loop(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn mouse_action(kind: MouseEventKind) -> bool {
     matches!(
         kind,
@@ -1261,92 +1292,147 @@ fn swap_pane(app: &mut App, delta: isize) {
     }
 }
 
-fn handle_mouse(app: &mut App, mouse: MouseEvent) {
-    let kind = app.hits.at(mouse.column, mouse.row).cloned();
+fn handle_mouse(app: &mut App, mouse: MouseEvent) -> bool {
     match mouse.kind {
+        MouseEventKind::Moved | MouseEventKind::Drag(_) => hover_at(app, mouse.column, mouse.row),
         MouseEventKind::Down(MouseButton::Left) => {
-            let Some(kind) = kind else {
-                return;
-            };
-            match kind {
-                HitKind::Rail => app.focus = Focus::Rail,
-                HitKind::Catalog => {
-                    if let Some(rail) = app.rail.as_mut() {
-                        rail.kind = RailKind::Catalog;
-                        rail.idx = rail
-                            .catalogs
-                            .iter()
-                            .position(|c| c == &rail.catalog)
-                            .unwrap_or(0);
-                    }
-                    app.focus = Focus::Rail;
-                }
-                HitKind::Workspace(name) => {
-                    app.click_workspace(&name);
-                    app.focus = Focus::Rail;
-                }
-                HitKind::Member(id) => app.click_member(&id, Focus::Rail),
-                HitKind::Tab(name) => {
-                    app.click_workspace(&name);
-                    app.focus = Focus::Compose;
-                }
-                HitKind::TabAdd => {
-                    if let Some(rail) = app.rail.as_mut() {
-                        rail.naming = Some(Naming::Session(String::new()));
-                    }
-                    app.focus = Focus::Rail;
-                }
-                HitKind::SashPrev => cycle_sash(app, -1),
-                HitKind::SashNext => cycle_sash(app, 1),
-                HitKind::Pane(id) => {
-                    if id.ends_with("::log") {
-                        app.view = MainView::Trajectory;
-                        app.focus = Focus::Compose;
-                    } else {
-                        app.view = MainView::Smith;
-                        app.click_member(&id, Focus::Compose);
-                    }
-                }
-                HitKind::Compose => app.focus = Focus::Compose,
-                HitKind::Picker(i) => {
-                    if let Some(picker) = app.picker.as_mut() {
-                        picker.selected = i.min(picker.hits.len().saturating_sub(1));
-                    }
-                    app.accept_picker();
-                }
-            }
+            hover_at(app, mouse.column, mouse.row);
+            click_at(app, mouse.column, mouse.row);
+            true
         }
-        MouseEventKind::ScrollUp => handle_wheel(app, kind.as_ref(), -1),
-        MouseEventKind::ScrollDown => handle_wheel(app, kind.as_ref(), 1),
-        _ => {}
+        MouseEventKind::ScrollUp => {
+            wheel_at(app, mouse.column, mouse.row, -1);
+            true
+        }
+        MouseEventKind::ScrollDown => {
+            wheel_at(app, mouse.column, mouse.row, 1);
+            true
+        }
+        _ => false,
     }
 }
 
-fn handle_wheel(app: &mut App, kind: Option<&HitKind>, dir: i32) {
-    let steps = 3 * dir;
+fn hit_key(kind: &HitKind) -> String {
     match kind {
-        Some(HitKind::Pane(id)) => {
-            if id.ends_with("::log") {
-                app.bump_scroll(id, steps);
-                return;
-            }
-            if app.member_is_pty(id) {
-                if app.session_id() == *id && app.focus == Focus::Compose {
-                    let bytes: &[u8] = if dir < 0 { b"\x1b[A" } else { b"\x1b[B" };
-                    app.send_pty(bytes);
-                } else {
-                    app.click_member(id, Focus::Compose);
-                }
-            } else if app.member_is_edit(id) {
-                if app.session_id() == *id && app.focus == Focus::Compose {
-                    app.send_edit(if dir < 0 { EditOp::Up } else { EditOp::Down }, "");
-                } else {
-                    app.click_member(id, Focus::Compose);
-                }
-            } else {
-                app.bump_scroll(id, steps);
+        HitKind::Pane(id) => format!("pane:{id}"),
+        HitKind::Member(id) => format!("member:{id}"),
+        HitKind::Workspace(name) => format!("ws:{name}"),
+        HitKind::Catalog => "catalog".into(),
+        HitKind::Rail => "rail".into(),
+        HitKind::Compose => "compose".into(),
+        HitKind::Tab(name) => format!("tab:{name}"),
+        HitKind::TabAdd => "tabadd".into(),
+        HitKind::SashPrev => "sash-".into(),
+        HitKind::SashNext => "sash+".into(),
+        HitKind::Picker(i) => format!("pick:{i}"),
+    }
+}
+
+fn hover_at(app: &mut App, col: u16, row: u16) -> bool {
+    app.pointer = Some((col, row));
+    let Some(kind) = app.hits.at(col, row).cloned() else {
+        return false;
+    };
+    if let HitKind::Pane(id) = &kind {
+        app.scroll_under = Some(id.clone());
+    }
+    let key = hit_key(&kind);
+    if app.hover.as_deref() == Some(key.as_str()) {
+        return false;
+    }
+    app.hover = Some(key);
+    match kind {
+        HitKind::Pane(id) => {
+            app.hover_member(&id, Focus::Compose);
+        }
+        HitKind::Member(id) => {
+            app.hover_member(&id, Focus::Rail);
+        }
+        HitKind::Compose => app.focus = Focus::Compose,
+        HitKind::Rail => app.focus = Focus::Rail,
+        HitKind::Workspace(name) => {
+            app.focus = Focus::Rail;
+            if let Some(rail) = app.rail.as_mut() {
+                rail.peek_row(RailKind::Workspace, &name);
             }
         }
+        HitKind::Catalog => {
+            app.focus = Focus::Rail;
+            if let Some(rail) = app.rail.as_mut() {
+                rail.kind = RailKind::Catalog;
+            }
+        }
+        HitKind::Tab(_) | HitKind::TabAdd | HitKind::SashPrev | HitKind::SashNext => {}
+        HitKind::Picker(_) => {}
+    }
+    true
+}
+
+fn click_at(app: &mut App, col: u16, row: u16) {
+    let Some(kind) = app.hits.at(col, row).cloned() else {
+        return;
+    };
+    match kind {
+        HitKind::Rail => app.focus = Focus::Rail,
+        HitKind::Catalog => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.kind = RailKind::Catalog;
+                rail.idx = rail
+                    .catalogs
+                    .iter()
+                    .position(|c| c == &rail.catalog)
+                    .unwrap_or(0);
+            }
+            app.focus = Focus::Rail;
+        }
+        HitKind::Workspace(name) => {
+            app.click_workspace(&name);
+            app.focus = Focus::Rail;
+        }
+        HitKind::Member(id) => app.click_member(&id, Focus::Rail),
+        HitKind::Tab(name) => {
+            app.click_workspace(&name);
+            app.focus = Focus::Compose;
+        }
+        HitKind::TabAdd => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.naming = Some(Naming::Session(String::new()));
+            }
+            app.focus = Focus::Rail;
+        }
+        HitKind::SashPrev => cycle_sash(app, -1),
+        HitKind::SashNext => cycle_sash(app, 1),
+        HitKind::Pane(id) => {
+            if id.ends_with("::log") {
+                app.view = MainView::Trajectory;
+                app.focus = Focus::Compose;
+            } else {
+                app.view = MainView::Smith;
+                app.click_member(&id, Focus::Compose);
+            }
+        }
+        HitKind::Compose => app.focus = Focus::Compose,
+        HitKind::Picker(i) => {
+            if let Some(picker) = app.picker.as_mut() {
+                picker.selected = i.min(picker.hits.len().saturating_sub(1));
+            }
+            app.accept_picker();
+        }
+    }
+}
+
+fn wheel_at(app: &mut App, col: u16, row: u16, dir: i32) {
+    let kind = app.hits.at_scroll(col, row).cloned().or_else(|| {
+        app.pointer
+            .and_then(|(c, r)| app.hits.at_scroll(c, r).cloned())
+    });
+    if let Some(HitKind::Pane(id)) = &kind {
+        app.scroll_under = Some(id.clone());
+    }
+    app.pointer = Some((col, row));
+    let steps = 3 * dir;
+    match kind {
+        Some(HitKind::Pane(id)) => wheel_pane(app, &id, dir, steps),
         Some(HitKind::Member(_)) | Some(HitKind::Workspace(_)) | Some(HitKind::Rail) => {
             if let Some(rail) = app.rail.as_mut() {
                 rail.move_idx(if dir < 0 { -1 } else { 1 });
@@ -1365,15 +1451,33 @@ fn handle_wheel(app: &mut App, kind: Option<&HitKind>, dir: i32) {
                 }
             }
         }
-        Some(HitKind::Compose) => {
-            let id = app.scroll_key();
-            app.bump_scroll(&id, steps);
-        }
-        _ => {
-            let id = app.scroll_key();
+        Some(HitKind::Compose) | Some(HitKind::Catalog) | Some(HitKind::TabAdd) | None => {
+            let id = app.scroll_under.clone().unwrap_or_else(|| app.scroll_key());
             app.bump_scroll(&id, steps);
         }
     }
+}
+
+fn wheel_pane(app: &mut App, id: &str, dir: i32, steps: i32) {
+    let _ = app.hover_member(id, Focus::Compose);
+    if id.ends_with("::log") {
+        app.bump_scroll(id, steps);
+        return;
+    }
+    if app.member_is_pty(id) {
+        if app.session_id() == id {
+            let bytes: &[u8] = if dir < 0 { b"\x1b[A" } else { b"\x1b[B" };
+            app.send_pty(bytes);
+        }
+        return;
+    }
+    if app.member_is_edit(id) {
+        if app.session_id() == id {
+            app.send_edit(if dir < 0 { EditOp::Up } else { EditOp::Down }, "");
+        }
+        return;
+    }
+    app.bump_scroll(id, steps);
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {

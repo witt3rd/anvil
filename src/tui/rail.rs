@@ -286,17 +286,34 @@ impl Rail {
     /// Focus a member in the current workspace. Returns true if the
     /// front member changed.
     pub fn select_member(&mut self, root: &FrameRoot, id: &str) -> Result<bool, FrameError> {
-        if !self.members.iter().any(|m| m == id) {
+        if !self.peek_member(id) {
             return Ok(false);
+        }
+        self.persist(root)?;
+        Ok(true)
+    }
+
+    /// Point the rail at a member without writing the layout. Hover uses
+    /// this so crossing a pane does not flush disk.
+    pub fn peek_member(&mut self, id: &str) -> bool {
+        if !self.members.iter().any(|m| m == id) {
+            return false;
         }
         self.kind = RailKind::Member;
         self.idx = self.members.iter().position(|m| m == id).unwrap_or(0);
         if self.session == id {
-            return Ok(false);
+            return false;
         }
         self.session = id.to_string();
-        self.persist(root)?;
-        Ok(true)
+        true
+    }
+
+    pub fn peek_row(&mut self, kind: RailKind, name: &str) {
+        self.kind = kind;
+        let list = self.current_list();
+        if let Some(i) = list.iter().position(|n| n == name) {
+            self.idx = i;
+        }
     }
 
     #[allow(dead_code)]
@@ -694,5 +711,8 @@ mod tests {
         assert_eq!(rail.session, "research");
         assert!(!rail.select_member(&root, "research").unwrap());
         assert!(!rail.select_workspace(&root, "fleet-os").unwrap());
+        assert!(rail.peek_member("audit"));
+        assert_eq!(rail.session, "audit");
+        assert!(!rail.peek_member("audit"));
     }
 }

@@ -46,6 +46,24 @@ impl Hits {
             .find(|h| inside(h.area, col, row))
             .map(|h| &h.kind)
     }
+
+    /// Wheel target: the pane under the pointer, even if compose/chip
+    /// sits on top of it. Falls back to the finest hit.
+    pub fn at_scroll(&self, col: u16, row: u16) -> Option<&HitKind> {
+        self.targets
+            .iter()
+            .rev()
+            .find_map(|h| {
+                if !inside(h.area, col, row) {
+                    return None;
+                }
+                match &h.kind {
+                    HitKind::Compose => None,
+                    other => Some(other),
+                }
+            })
+            .or_else(|| self.at(col, row))
+    }
 }
 
 pub fn inside(r: Rect, x: u16, y: u16) -> bool {
@@ -76,6 +94,12 @@ mod tests {
         assert_eq!(hits.at(30, 4), Some(&HitKind::Pane("audit".into())));
         assert_eq!(hits.at(30, 7), Some(&HitKind::Compose));
         assert_eq!(hits.at(80, 0), None);
+        assert_eq!(
+            hits.at_scroll(30, 7),
+            Some(&HitKind::Pane("audit".into())),
+            "wheel on compose still scrolls the pane"
+        );
+        assert_eq!(hits.at_scroll(30, 4), Some(&HitKind::Pane("audit".into())));
     }
 
     #[test]
