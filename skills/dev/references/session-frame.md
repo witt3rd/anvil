@@ -273,3 +273,7 @@ The next ask is a projection of the event log, not a paste of cards.
 - Prof is first-class. New serve op / fiber / model phase gets a
   `prof::span` (and a `Timing` field if it is logged). `ANVIL_TRACE=1`
   for the tracing subscriber.
+- Keys: every action is named in `src/tui/keys.rs`. Defaults follow
+  herdr (prefix `ctrl+b`, `prefix+?` help, `ctrl+alt` as the safe
+  direct family). Override under `keys:` in config. A new action
+  adds a name + default before the handler.

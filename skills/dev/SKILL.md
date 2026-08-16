@@ -118,8 +118,12 @@ cargo build --bins
 ./target/debug/smith -p nim
 ```
 
-Enter asks (model → strike). Ctrl+S raw-strikes the compose buffer as
-Python. `@` opens a fuzzy file picker (cwd, skips `.git`/`target`).
+Keys follow herdr: prefix is `ctrl+b`, then an action (`prefix+q`
+detach, `prefix+n`/`p` sash, `prefix+j`/`k` pane, `prefix+?` help).
+Safe direct chords: `ctrl+alt+][` sash, `ctrl+alt+j/k` pane. Tab still
+toggles the rail except on a focused PTY. Override under `keys:` in
+config.yaml. Enter asks (model → strike). `prefix+s` / Ctrl+S raw-strikes.
+`@` opens a fuzzy file picker (cwd, skips `.git`/`target`).
 Alt+. folds the last thinking/strike card. Alt+V cycles ask verbosity
 (quiet / steps / full): a live chip (`⋮ Waiting · 12s · ↑ 1.2k tok`)
 and diamond steps (`◆ Thought for 7.5s`, `◆ python · print… · 7ms`).

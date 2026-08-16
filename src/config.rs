@@ -43,6 +43,37 @@ pub struct Config {
     pub providers: BTreeMap<String, Provider>,
     #[serde(default)]
     pub theme: ThemeConfig,
+    #[serde(default)]
+    pub keys: KeysConfig,
+}
+
+/// Herdr-style keymap. `prefix` plus named actions (`next_sash`, `detach`).
+/// A value is one chord or a list: `prefix+n` or `[prefix+n, ctrl+alt+]]`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct KeysConfig {
+    pub prefix: Option<String>,
+    #[serde(flatten)]
+    pub actions: BTreeMap<String, KeySpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(untagged)]
+pub enum KeySpec {
+    #[default]
+    Empty,
+    One(String),
+    Many(Vec<String>),
+}
+
+impl KeySpec {
+    pub fn as_slice(&self) -> &[String] {
+        match self {
+            KeySpec::Empty => &[],
+            KeySpec::One(s) => std::slice::from_ref(s),
+            KeySpec::Many(v) => v,
+        }
+    }
 }
 
 /// Pack name plus optional ink/face overrides. Faces are dotted names
@@ -271,5 +302,34 @@ theme:
         let face = cfg.theme.face.get("hint.key").expect("hint.key");
         assert_eq!(face.fg.as_deref(), Some("accent"));
         assert_eq!(face.bold, Some(true));
+    }
+
+    #[test]
+    fn keys_prefix_and_list_parse() {
+        let raw = r#"
+default_provider: omni
+providers:
+  omni:
+    base_url: http://x
+    auth:
+      type: api_key
+      key: k
+keys:
+  prefix: ctrl+a
+  next_sash:
+    - prefix+n
+    - ctrl+alt+]
+  detach: prefix+q
+"#;
+        let cfg: Config = serde_yaml::from_str(raw).unwrap();
+        assert_eq!(cfg.keys.prefix.as_deref(), Some("ctrl+a"));
+        assert_eq!(
+            cfg.keys.actions.get("detach").unwrap().as_slice(),
+            ["prefix+q"]
+        );
+        assert_eq!(
+            cfg.keys.actions.get("next_sash").unwrap().as_slice().len(),
+            2
+        );
     }
 }

@@ -2,6 +2,7 @@
 
 mod activity;
 mod hits;
+mod keys;
 mod picker;
 mod rail;
 mod term;
@@ -163,6 +164,9 @@ struct App {
     pointer: Option<(u16, u16)>,
     hover: Option<String>,
     scroll_under: Option<String>,
+    keys: keys::Keymap,
+    prefix_armed: bool,
+    help: bool,
     views: HashMap<String, PaneView>,
     hits: Hits,
     tick: u8,
@@ -831,6 +835,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
     }
     .map_err(|err| io::Error::other(err.to_string()))?;
     theme::install(theme::Theme::from_config(&cfg.theme));
+    let keymap = keys::Keymap::from_config(&cfg.keys);
     let (provider_name, provider) = cfg
         .provider(launch.provider.as_deref())
         .map_err(|err| io::Error::other(err.to_string()))?;
@@ -915,6 +920,9 @@ pub fn run(launch: Launch) -> io::Result<()> {
         scroll_under: None,
         views: HashMap::new(),
         hits: Hits::default(),
+        keys: keymap,
+        prefix_armed: false,
+        help: false,
         tick: 0,
         files,
         picker: None,
@@ -1527,94 +1535,63 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         let buf = match naming {
             Naming::Session(buf) | Naming::Pty(buf) | Naming::Edit(buf) => buf,
         };
+        if app.keys.is_prefix(key) {
+            app.prefix_armed = true;
+            app.status = "prefix".into();
+            return false;
+        }
         return handle_naming(app, key, buf);
     }
 
-    if let Some(picker) = app.picker.as_mut() {
-        match (key.code, key.modifiers) {
-            (KeyCode::Esc, _) => {
-                app.picker = None;
-                return false;
-            }
-            (KeyCode::Up, _) => {
-                picker.selected = picker.selected.saturating_sub(1);
-                return false;
-            }
-            (KeyCode::Down, _) => {
-                if !picker.hits.is_empty() {
-                    picker.selected = (picker.selected + 1).min(picker.hits.len() - 1);
-                }
-                return false;
-            }
-            (KeyCode::Tab, _) | (KeyCode::Enter, _) => {
-                app.accept_picker();
-                return false;
-            }
-            _ => {}
-        }
-    }
+    let rail = app.focus == Focus::Rail;
+    let pty = app.focused_is_pty() && app.focus == Focus::Compose;
+    let edit = app.focused_is_edit() && app.focus == Focus::Compose;
+    let picker = app.picker.is_some();
+    let help = app.help;
+    let ok = |a: keys::Action| a.direct_ok(rail, pty, edit, picker, help);
 
-    if app.rail.is_some() && matches!((key.code, key.modifiers), (KeyCode::Tab, _)) {
-        app.focus = match app.focus {
-            Focus::Rail => Focus::Compose,
-            Focus::Compose => Focus::Rail,
-        };
+    if app.prefix_armed {
+        app.prefix_armed = false;
+        if app.status == "prefix" {
+            app.status = "idle".into();
+        }
+        if app.keys.is_prefix(key) {
+            if pty {
+                if let Some(bytes) = term::key_bytes(key) {
+                    app.send_pty(&bytes);
+                }
+            }
+            return false;
+        }
+        if let Some(act) = app.keys.resolve(key, true, |_| true) {
+            return dispatch(app, act);
+        }
         return false;
     }
 
-    if app.focus == Focus::Rail {
-        return handle_rail_key(app, key);
+    if app.keys.is_prefix(key) {
+        app.prefix_armed = true;
+        app.status = "prefix".into();
+        return false;
     }
 
-    if app.focused_is_pty() {
-        return handle_pty_key(app, key);
+    if let Some(act) = app.keys.resolve(key, false, ok) {
+        return dispatch(app, act);
     }
 
-    if app.focused_is_edit() {
-        return handle_edit_key(app, key);
+    if pty {
+        if let Some(bytes) = term::key_bytes(key) {
+            app.send_pty(&bytes);
+        }
+        return false;
     }
-
+    if edit {
+        return handle_edit_passthrough(app, key);
+    }
+    if rail || picker || help {
+        return false;
+    }
     match (key.code, key.modifiers) {
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
-        (KeyCode::Esc, _) => {}
-        (KeyCode::Enter, KeyModifiers::NONE) => app.submit_ask(),
-        (KeyCode::Char('s'), KeyModifiers::CONTROL) => app.submit_strike(),
-        (KeyCode::Char('j'), KeyModifiers::CONTROL) | (KeyCode::Enter, KeyModifiers::SHIFT) => {
-            app.insert('\n');
-        }
-        (KeyCode::Char('.'), KeyModifiers::ALT) => app.toggle_last_fold(),
-        (KeyCode::Char('v'), KeyModifiers::ALT) => {
-            app.verbosity = app.verbosity.next();
-            app.status = format!("verbose {}", app.verbosity.label());
-        }
-        (KeyCode::Char('m'), KeyModifiers::ALT) => app.mount("clock", None),
-        (KeyCode::Char('u'), KeyModifiers::ALT) => app.unmount(None),
-        (KeyCode::Char('l'), KeyModifiers::ALT) => {
-            app.view = match app.view {
-                MainView::Smith => MainView::Trajectory,
-                MainView::Trajectory => MainView::Smith,
-            };
-            if app.view == MainView::Trajectory {
-                app.reload_log();
-                app.stick_focused();
-            }
-        }
-        (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
-        (KeyCode::Char(']'), KeyModifiers::ALT) => cycle_sash(app, 1),
-        (KeyCode::Char('='), KeyModifiers::ALT) | (KeyCode::Char('+'), KeyModifiers::ALT) => {
-            bump_weight(app, 1);
-        }
-        (KeyCode::Char('-'), KeyModifiers::ALT) => bump_weight(app, -1),
-        (KeyCode::Char('j'), KeyModifiers::ALT) => swap_pane(app, 1),
-        (KeyCode::Char('k'), KeyModifiers::ALT) => swap_pane(app, -1),
-        (KeyCode::PageUp, _) => {
-            let id = app.scroll_key();
-            app.bump_scroll(&id, -10);
-        }
-        (KeyCode::PageDown, _) => {
-            let id = app.scroll_key();
-            app.bump_scroll(&id, 10);
-        }
         (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => app.insert(ch),
         (KeyCode::Backspace, _) => app.backspace(),
         (KeyCode::Left, _) if app.cursor > 0 => {
@@ -1638,6 +1615,162 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         _ => {}
     }
     false
+}
+
+fn dispatch(app: &mut App, act: keys::Action) -> bool {
+    use keys::Action::*;
+    match act {
+        Detach => return true,
+        Help => app.help = !app.help,
+        ToggleRail => {
+            if app.rail.is_some() {
+                app.focus = match app.focus {
+                    Focus::Rail => Focus::Compose,
+                    Focus::Compose => Focus::Rail,
+                };
+            }
+        }
+        NextSash => cycle_sash(app, 1),
+        PrevSash => cycle_sash(app, -1),
+        NextPane => swap_pane(app, 1),
+        PrevPane => swap_pane(app, -1),
+        GrowPane => bump_weight(app, 1),
+        ShrinkPane => bump_weight(app, -1),
+        Ask => app.submit_ask(),
+        Strike => app.submit_strike(),
+        Newline => app.insert('\n'),
+        Fold => app.toggle_last_fold(),
+        Verbosity => {
+            app.verbosity = app.verbosity.next();
+            app.status = format!("verbose {}", app.verbosity.label());
+        }
+        Mount => app.mount("clock", None),
+        Unmount => app.unmount(None),
+        Trajectory => {
+            app.view = match app.view {
+                MainView::Smith => MainView::Trajectory,
+                MainView::Trajectory => MainView::Smith,
+            };
+            if app.view == MainView::Trajectory {
+                app.reload_log();
+                app.stick_focused();
+            }
+        }
+        NewSession => start_naming(app, Naming::Session(String::new())),
+        NewPty => start_naming(app, Naming::Pty(String::new())),
+        NewEdit => start_naming(app, Naming::Edit(String::new())),
+        NewClock => {
+            if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+                match rail.create_clock(root) {
+                    Ok(()) => {
+                        app.mount("clock", None);
+                        app.status = "clock member".into();
+                    }
+                    Err(err) => app.status = err.to_string(),
+                }
+            }
+        }
+        NewLog => {
+            if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+                let of = rail.session.clone();
+                match rail.create_log(root, &of) {
+                    Ok(()) => {
+                        app.load_session_cards();
+                        app.expose_live();
+                        app.status = format!("log {of}");
+                    }
+                    Err(err) => app.status = err.to_string(),
+                }
+            }
+        }
+        PageUp => {
+            let id = app.scroll_key();
+            app.bump_scroll(&id, -10);
+        }
+        PageDown => {
+            let id = app.scroll_key();
+            app.bump_scroll(&id, 10);
+        }
+        FocusCompose => {
+            app.help = false;
+            app.focus = Focus::Compose;
+        }
+        RailUp => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.move_idx(-1);
+            }
+        }
+        RailDown => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.move_idx(1);
+            }
+        }
+        RailLeft => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.kind = match rail.kind {
+                    RailKind::Member => RailKind::Workspace,
+                    RailKind::Workspace => RailKind::Catalog,
+                    RailKind::Catalog => RailKind::Catalog,
+                };
+                rail.reclamp();
+            }
+        }
+        RailRight => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.kind = match rail.kind {
+                    RailKind::Catalog => RailKind::Workspace,
+                    RailKind::Workspace => RailKind::Member,
+                    RailKind::Member => RailKind::Member,
+                };
+                rail.reclamp();
+            }
+        }
+        RailCycle => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.cycle_kind();
+            }
+        }
+        RailEnter => {
+            if app.busy {
+                app.status = "busy — wait to switch".into();
+            } else if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+                match rail.apply_enter(root) {
+                    Ok(true) => {
+                        app.load_session_cards();
+                        app.expose_live();
+                        app.status = format!("session {}", app.session_id());
+                    }
+                    Ok(false) => {}
+                    Err(err) => app.status = err.to_string(),
+                }
+            }
+        }
+        PickerUp => {
+            if let Some(p) = app.picker.as_mut() {
+                p.selected = p.selected.saturating_sub(1);
+            }
+        }
+        PickerDown => {
+            if let Some(p) = app.picker.as_mut() {
+                if !p.hits.is_empty() {
+                    p.selected = (p.selected + 1).min(p.hits.len() - 1);
+                }
+            }
+        }
+        PickerAccept => app.accept_picker(),
+        PickerCancel => {
+            app.picker = None;
+            app.help = false;
+        }
+    }
+    false
+}
+
+fn start_naming(app: &mut App, naming: Naming) {
+    if let Some(rail) = app.rail.as_mut() {
+        rail.naming = Some(naming);
+        app.focus = Focus::Rail;
+    }
 }
 
 fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
@@ -1709,177 +1842,22 @@ fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
     false
 }
 
-fn handle_edit_key(app: &mut App, key: KeyEvent) -> bool {
-    match (key.code, key.modifiers) {
-        (KeyCode::Char('q'), KeyModifiers::CONTROL)
-        | (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
-        (KeyCode::Char('m'), KeyModifiers::ALT) => app.mount("clock", None),
-        (KeyCode::Char('u'), KeyModifiers::ALT) => app.unmount(None),
-        (KeyCode::Char('l'), KeyModifiers::ALT) => {
-            app.view = match app.view {
-                MainView::Smith => MainView::Trajectory,
-                MainView::Trajectory => MainView::Smith,
-            };
-            if app.view == MainView::Trajectory {
-                app.reload_log();
-                app.stick_focused();
-            }
-        }
-        (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
-        (KeyCode::Char(']'), KeyModifiers::ALT) => cycle_sash(app, 1),
-        (KeyCode::Char('j'), KeyModifiers::ALT) => swap_pane(app, 1),
-        (KeyCode::Char('k'), KeyModifiers::ALT) => swap_pane(app, -1),
-        (KeyCode::Char('='), KeyModifiers::ALT) | (KeyCode::Char('+'), KeyModifiers::ALT) => {
-            bump_weight(app, 1);
-        }
-        (KeyCode::Char('-'), KeyModifiers::ALT) => bump_weight(app, -1),
-        (KeyCode::Enter, _) => app.send_edit(EditOp::Enter, ""),
-        (KeyCode::Backspace, _) => app.send_edit(EditOp::Backspace, ""),
-        (KeyCode::Delete, _) => app.send_edit(EditOp::Delete, ""),
-        (KeyCode::Left, _) => app.send_edit(EditOp::Left, ""),
-        (KeyCode::Right, _) => app.send_edit(EditOp::Right, ""),
-        (KeyCode::Up, _) => app.send_edit(EditOp::Up, ""),
-        (KeyCode::Down, _) => app.send_edit(EditOp::Down, ""),
-        (KeyCode::Home, _) => app.send_edit(EditOp::Home, ""),
-        (KeyCode::End, _) => app.send_edit(EditOp::End, ""),
-        (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+fn handle_edit_passthrough(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Enter => app.send_edit(EditOp::Enter, ""),
+        KeyCode::Backspace => app.send_edit(EditOp::Backspace, ""),
+        KeyCode::Delete => app.send_edit(EditOp::Delete, ""),
+        KeyCode::Left => app.send_edit(EditOp::Left, ""),
+        KeyCode::Right => app.send_edit(EditOp::Right, ""),
+        KeyCode::Up => app.send_edit(EditOp::Up, ""),
+        KeyCode::Down => app.send_edit(EditOp::Down, ""),
+        KeyCode::Home => app.send_edit(EditOp::Home, ""),
+        KeyCode::End => app.send_edit(EditOp::End, ""),
+        KeyCode::Char(ch)
+            if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
+        {
             let mut tmp = [0u8; 4];
             app.send_edit(EditOp::Insert, ch.encode_utf8(&mut tmp));
-        }
-        _ => {}
-    }
-    false
-}
-
-fn handle_pty_key(app: &mut App, key: KeyEvent) -> bool {
-    match (key.code, key.modifiers) {
-        (KeyCode::Char('q'), KeyModifiers::CONTROL) => return true,
-        (KeyCode::Char('m'), KeyModifiers::ALT) => app.mount("clock", None),
-        (KeyCode::Char('u'), KeyModifiers::ALT) => app.unmount(None),
-        (KeyCode::Char('l'), KeyModifiers::ALT) => {
-            app.view = match app.view {
-                MainView::Smith => MainView::Trajectory,
-                MainView::Trajectory => MainView::Smith,
-            };
-            if app.view == MainView::Trajectory {
-                app.reload_log();
-                app.stick_focused();
-            }
-        }
-        (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
-        (KeyCode::Char(']'), KeyModifiers::ALT) => cycle_sash(app, 1),
-        (KeyCode::Char('='), KeyModifiers::ALT) | (KeyCode::Char('+'), KeyModifiers::ALT) => {
-            bump_weight(app, 1);
-        }
-        (KeyCode::Char('-'), KeyModifiers::ALT) => bump_weight(app, -1),
-        (KeyCode::Char('j'), KeyModifiers::ALT) => swap_pane(app, 1),
-        (KeyCode::Char('k'), KeyModifiers::ALT) => swap_pane(app, -1),
-        _ => {
-            if let Some(bytes) = term::key_bytes(key) {
-                app.send_pty(&bytes);
-            }
-        }
-    }
-    false
-}
-
-fn handle_rail_key(app: &mut App, key: KeyEvent) -> bool {
-    match (key.code, key.modifiers) {
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
-        (KeyCode::Esc, _) => app.focus = Focus::Compose,
-        (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-            if let Some(rail) = app.rail.as_mut() {
-                rail.move_idx(-1);
-            }
-        }
-        (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-            if let Some(rail) = app.rail.as_mut() {
-                rail.move_idx(1);
-            }
-        }
-        (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
-            if let Some(rail) = app.rail.as_mut() {
-                rail.kind = match rail.kind {
-                    RailKind::Member => RailKind::Workspace,
-                    RailKind::Workspace => RailKind::Catalog,
-                    RailKind::Catalog => RailKind::Catalog,
-                };
-                rail.reclamp();
-            }
-        }
-        (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
-            if let Some(rail) = app.rail.as_mut() {
-                rail.kind = match rail.kind {
-                    RailKind::Catalog => RailKind::Workspace,
-                    RailKind::Workspace => RailKind::Member,
-                    RailKind::Member => RailKind::Member,
-                };
-                rail.reclamp();
-            }
-        }
-        (KeyCode::Char('['), _) => {
-            if let Some(rail) = app.rail.as_mut() {
-                rail.cycle_kind();
-            }
-        }
-        (KeyCode::Char('n'), KeyModifiers::NONE) => {
-            if let Some(rail) = app.rail.as_mut() {
-                rail.naming = Some(Naming::Session(String::new()));
-            }
-        }
-        (KeyCode::Char('p'), KeyModifiers::NONE) => {
-            if let Some(rail) = app.rail.as_mut() {
-                rail.naming = Some(Naming::Pty(String::new()));
-            }
-        }
-        (KeyCode::Char('e'), KeyModifiers::NONE) => {
-            if let Some(rail) = app.rail.as_mut() {
-                rail.naming = Some(Naming::Edit(String::new()));
-            }
-        }
-        (KeyCode::Char('c'), KeyModifiers::NONE) => {
-            if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
-                match rail.create_clock(root) {
-                    Ok(()) => {
-                        app.mount("clock", None);
-                        app.status = "clock member".into();
-                    }
-                    Err(err) => app.status = err.to_string(),
-                }
-            }
-        }
-        (KeyCode::Char('g'), KeyModifiers::NONE) => {
-            if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
-                let of = rail.session.clone();
-                match rail.create_log(root, &of) {
-                    Ok(()) => {
-                        app.load_session_cards();
-                        app.expose_live();
-                        app.status = format!("log {of}");
-                    }
-                    Err(err) => app.status = err.to_string(),
-                }
-            }
-        }
-        (KeyCode::Char('m'), KeyModifiers::NONE) => app.mount("clock", None),
-        (KeyCode::Char('u'), KeyModifiers::NONE) => app.unmount(None),
-        (KeyCode::Enter, _) => {
-            if app.busy {
-                app.status = "busy — wait to switch".into();
-                return false;
-            }
-            if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
-                match rail.apply_enter(root) {
-                    Ok(switched) => {
-                        if switched {
-                            app.load_session_cards();
-                            app.expose_live();
-                            app.status = format!("session {}", app.session_id());
-                        }
-                    }
-                    Err(err) => app.status = err.to_string(),
-                }
-            }
         }
         _ => {}
     }
@@ -2075,7 +2053,45 @@ fn draw(frame: &mut Frame, app: &mut App) {
         }
         draw_status_line(frame, status_area, app);
     }
+    if app.help {
+        draw_help(frame, app);
+    }
     app.hits = hits;
+}
+
+fn draw_help(frame: &mut Frame, app: &App) {
+    let th = theme::t();
+    let area = frame.area();
+    let w = area.width.saturating_sub(8).min(72);
+    let lines: Vec<Line> = app
+        .keys
+        .help()
+        .into_iter()
+        .map(|(label, chord)| {
+            Line::from(vec![
+                Span::styled(format!(" {chord:<22} "), th.style(Face::HintKey)),
+                Span::styled(label, th.style(Face::HintLabel)),
+            ])
+        })
+        .collect();
+    let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let x = area.x + area.width.saturating_sub(w).saturating_sub(2) / 2;
+    let y = area.y + 1;
+    let box_area = Rect::new(x, y, w, h);
+    frame.render_widget(Clear, box_area);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(th.pane_border(true))
+                .title(Span::styled(
+                    format!(" keys · {} ", app.keys.prefix.display()),
+                    th.pane_title(true),
+                ))
+                .style(th.style(Face::PickerField)),
+        ),
+        box_area,
+    );
 }
 
 fn draw_edit_pane(
@@ -2352,25 +2368,43 @@ fn hint_pair<'a>(key: &'a str, label: &'a str) -> Vec<Span<'a>> {
     ]
 }
 
-fn bottom_hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    if app.focused_is_pty() {
-        vec![("Tab", "rail"), ("keys", "shell"), ("Ctrl+Q", "close")]
-    } else if app.focused_is_edit() {
-        vec![("Tab", "rail"), ("type", "edit"), ("Ctrl+Q", "close")]
+fn bottom_hints(app: &App) -> Vec<(String, String)> {
+    let k = &app.keys;
+    if app.prefix_armed {
+        return vec![
+            (k.display(keys::Action::Detach), "detach".into()),
+            (k.display(keys::Action::Help), "help".into()),
+            (k.display(keys::Action::NextSash), "next sash".into()),
+            (k.display(keys::Action::NextPane), "next pane".into()),
+            (k.prefix.display(), "literal".into()),
+        ];
+    }
+    if app.focused_is_pty() && app.focus == Focus::Compose {
+        vec![
+            (k.display(keys::Action::ToggleRail), "rail".into()),
+            ("keys".into(), "shell".into()),
+            (k.display(keys::Action::Detach), "close".into()),
+            (k.display(keys::Action::Help), "help".into()),
+        ]
+    } else if app.focused_is_edit() && app.focus == Focus::Compose {
+        vec![
+            (k.display(keys::Action::ToggleRail), "rail".into()),
+            ("type".into(), "edit".into()),
+            (k.display(keys::Action::Detach), "close".into()),
+        ]
     } else {
         vec![
-            ("Tab", "rail"),
-            ("Enter", "ask"),
-            ("Ctrl+S", "strike"),
-            ("Alt+V", "verbose"),
-            ("Alt+[/]", "sash"),
-            ("Alt+J/K", "pane"),
-            ("Ctrl+C", "close"),
+            (k.display(keys::Action::ToggleRail), "rail".into()),
+            (k.display(keys::Action::Ask), "ask".into()),
+            (k.display(keys::Action::Strike), "strike".into()),
+            (k.display(keys::Action::NextSash), "sash".into()),
+            (k.display(keys::Action::NextPane), "pane".into()),
+            (k.display(keys::Action::Help), "help".into()),
         ]
     }
 }
 
-fn draw_hint_bar(frame: &mut Frame, area: ratatui::layout::Rect, pairs: Vec<(&str, &str)>) {
+fn draw_hint_bar(frame: &mut Frame, area: ratatui::layout::Rect, pairs: Vec<(String, String)>) {
     let th = theme::t();
     frame.render_widget(Block::default().style(th.style(Face::HintBar)), area);
     let mut spans: Vec<Span> = Vec::new();
@@ -2378,7 +2412,7 @@ fn draw_hint_bar(frame: &mut Frame, area: ratatui::layout::Rect, pairs: Vec<(&st
         if i > 0 {
             spans.push(Span::styled("  │  ", th.style(Face::HintSep)));
         }
-        spans.extend(hint_pair(key, label));
+        spans.extend(hint_pair(key.as_str(), label.as_str()));
     }
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(th.style(Face::HintBar)),

@@ -163,6 +163,7 @@ one Cargo.toml, two bins
   src/serve/           unix socket daemon + client + PTY host
   src/tui/             smith casing (rail, blocks, worker, @ picker, pty pane)
   src/tui/theme.rs     named faces + ink packs (mocha, terminal)
+  src/tui/keys.rs      herdr-style prefix keymap (every action named)
   src/prof.rs          ns ring + Timing (prefill, TTFT, decode, tok/s, strike)
   src/bin/anvil.rs     CLI
   src/bin/smith.rs     TUI binary

@@ -39,3 +39,14 @@ theme:
   #   hint.key: { fg: accent, bold: true }
   #   message.user.field: { bg: raised }
   #   message.agent.field: { bg: canvas }
+
+# Keys: herdr model. prefix (default ctrl+b) then an action key so a
+# focused PTY keeps ctrl+c / typing. Direct chords are optional; ctrl+alt
+# is the safe family. prefix+? shows the live map. Restart smith.
+# keys:
+#   prefix: ctrl+b
+#   detach: prefix+q
+#   next_sash: [prefix+n, ctrl+alt+]]
+#   prev_sash: [prefix+p, ctrl+alt+[]
+#   next_pane: [prefix+j, ctrl+alt+j]
+#   prev_pane: [prefix+k, ctrl+alt+k]
