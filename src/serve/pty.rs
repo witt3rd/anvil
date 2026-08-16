@@ -22,7 +22,22 @@ pub struct PtyScreen {
     pub cursor_col: u16,
     pub cursor_row: u16,
     pub lines: Vec<String>,
+    #[serde(default)]
+    pub runs: Vec<Vec<PtyRun>>,
     pub alive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PtyRun {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fg: Option<u8>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bold: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl PtyScreen {
@@ -41,6 +56,21 @@ impl PtyScreen {
         }
         rows.reverse();
         Some(rows.join(" · "))
+    }
+
+    /// Last nonempty rows for the event log / ask.
+    pub fn observe_text(&self) -> String {
+        self.lines
+            .iter()
+            .map(|line| line.trim_end())
+            .filter(|line| !line.is_empty())
+            .rev()
+            .take(16)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -256,12 +286,12 @@ impl LivePty {
 
     fn snap(&self, name: &str) -> PtyScreen {
         let _ = self.reap_if_dead();
-        let (lines, cols, rows, cursor_col, cursor_row) = self
+        let (lines, runs, cols, rows, cursor_col, cursor_row) = self
             .parser
             .lock()
             .ok()
             .map(|p| screen_lines(p.screen()))
-            .unwrap_or_else(|| (Vec::new(), DEFAULT_COLS, DEFAULT_ROWS, 0, 0));
+            .unwrap_or_else(|| (Vec::new(), Vec::new(), DEFAULT_COLS, DEFAULT_ROWS, 0, 0));
         PtyScreen {
             name: name.into(),
             cols,
@@ -269,6 +299,7 @@ impl LivePty {
             cursor_col,
             cursor_row,
             lines,
+            runs,
             alive: self.alive(),
         }
     }
@@ -288,12 +319,14 @@ impl Drop for LivePty {
     }
 }
 
-fn screen_lines(screen: &vt100::Screen) -> (Vec<String>, u16, u16, u16, u16) {
+fn screen_lines(screen: &vt100::Screen) -> (Vec<String>, Vec<Vec<PtyRun>>, u16, u16, u16, u16) {
     let (rows, cols) = screen.size();
     let (cursor_row, cursor_col) = screen.cursor_position();
     let mut lines = Vec::with_capacity(rows as usize);
+    let mut all_runs = Vec::with_capacity(rows as usize);
     for row in 0..rows {
         let mut line = String::new();
+        let mut runs: Vec<PtyRun> = Vec::new();
         let mut col = 0u16;
         while col < cols {
             if let Some(cell) = screen.cell(row, col) {
@@ -301,21 +334,61 @@ fn screen_lines(screen: &vt100::Screen) -> (Vec<String>, u16, u16, u16, u16) {
                     col = col.saturating_add(1);
                     continue;
                 }
-                let contents = cell.contents();
-                if contents.is_empty() {
-                    line.push(' ');
+                let contents = if cell.contents().is_empty() {
+                    " ".to_string()
                 } else {
-                    line.push_str(&contents);
+                    cell.contents()
+                };
+                let fg = match cell.fgcolor() {
+                    vt100::Color::Idx(n) => Some(n),
+                    _ => None,
+                };
+                let bold = cell.bold();
+                line.push_str(&contents);
+                if let Some(last) = runs.last_mut() {
+                    if last.fg == fg && last.bold == bold {
+                        last.text.push_str(&contents);
+                    } else {
+                        runs.push(PtyRun {
+                            text: contents,
+                            fg,
+                            bold,
+                        });
+                    }
+                } else {
+                    runs.push(PtyRun {
+                        text: contents,
+                        fg,
+                        bold,
+                    });
                 }
                 col = col.saturating_add(if cell.is_wide() { 2 } else { 1 });
             } else {
                 line.push(' ');
+                if let Some(last) = runs.last_mut() {
+                    if last.fg.is_none() && !last.bold {
+                        last.text.push(' ');
+                    } else {
+                        runs.push(PtyRun {
+                            text: " ".into(),
+                            fg: None,
+                            bold: false,
+                        });
+                    }
+                } else {
+                    runs.push(PtyRun {
+                        text: " ".into(),
+                        fg: None,
+                        bold: false,
+                    });
+                }
                 col = col.saturating_add(1);
             }
         }
         lines.push(line);
+        all_runs.push(runs);
     }
-    (lines, cols, rows, cursor_col, cursor_row)
+    (lines, all_runs, cols, rows, cursor_col, cursor_row)
 }
 
 #[cfg(test)]
@@ -332,6 +405,7 @@ mod tests {
             cursor_col: 0,
             cursor_row: 1,
             lines: vec!["$ echo hi".into(), "hi".into(), "        ".into()],
+            runs: Vec::new(),
             alive: true,
         };
         assert_eq!(screen.preview().as_deref(), Some("$ echo hi · hi"));

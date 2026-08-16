@@ -244,8 +244,9 @@ The next ask is a projection of the event log, not a paste of cards.
    stacks; Alt+J / Alt+K cycle focus. Many casings already attach
    to one serve.
 8. **Reboot** — first cut. `anvil serve --install` writes
-   `~/.config/systemd/user/anvil.service`. Cold until a casing
-   warms a session. Temporary mounts do not survive.
+   `~/.config/systemd/user/anvil.service`. First casing `warm`s
+   the front workspace (hammers, PTYs, clock). Temporary mounts
+   that are not members do not survive.
 9. **Remote** — first cut. `smith --remote HOST` / `anvil --remote HOST`
    is SSH; sessions stay on HOST. Linger on `--install`.
 10. **Mixed members** — first cut. Bash is a `MemberRef::Pty`. Serve
@@ -258,6 +259,6 @@ The next ask is a projection of the event log, not a paste of cards.
 
 ## Open
 
-- Session names: always typed vs mint a word if omitted.
-- After reboot: all cold, or warm whatever the front layout still
-  names when the first casing attaches?
+- Web member. Promoted mounts beyond clock.
+- Zoomed timeline (log pane is the first diagnose member).
+- Drag-resize (Alt+= / Alt+- persist weights).

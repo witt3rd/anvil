@@ -9,7 +9,7 @@ pub mod unit;
 
 pub use client::Client;
 pub use inspect::{Fiber, Report, Service, Slot};
-pub use pty::PtyScreen;
+pub use pty::{PtyRun, PtyScreen};
 pub use unit::{UNIT_BODY, UNIT_NAME};
 
 use std::collections::HashMap;
@@ -385,7 +385,50 @@ fn dispatch(req: &Req, state: &State, writer: &mut UnixStream) -> io::Result<()>
             state.touch(name);
             pty_reply(writer, id, state.ptys.snap(name))
         }
+        Req::Warm { id, workspace } => match warm_workspace(state, workspace) {
+            Ok(()) => write_msg(writer, &Msg::Pong { id: id.clone() }),
+            Err(err) => write_msg(
+                writer,
+                &Msg::Error {
+                    id: id.clone(),
+                    text: err.to_string(),
+                },
+            ),
+        },
     }
+}
+
+fn warm_workspace(state: &State, workspace: &str) -> io::Result<()> {
+    let ws = if state.root.workspace_exists(workspace) {
+        state.root.workspace(workspace).map_err(io::Error::other)?
+    } else if let Ok(layout) = state.root.layout("default") {
+        let name = layout.front_workspace.as_deref().unwrap_or("default");
+        if state.root.workspace_exists(name) {
+            state.root.workspace(name).map_err(io::Error::other)?
+        } else {
+            return Ok(());
+        }
+    } else {
+        return Ok(());
+    };
+    for member in ws.members {
+        match member {
+            crate::frame::MemberRef::Session { id } => {
+                let _ = state.slot(&id);
+            }
+            crate::frame::MemberRef::Pty { id } => {
+                let _ = state.ptys.snap(&id);
+                state.touch(&id);
+            }
+            crate::frame::MemberRef::Clock { .. } => {
+                if state.mounts.seat(inspect::SLOT_STATUS).is_none() {
+                    let _ = state.mounts.mount("clock", inspect::SLOT_STATUS);
+                }
+            }
+            crate::frame::MemberRef::Log { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 fn pty_reply(
@@ -404,6 +447,7 @@ fn pty_reply(
                 cursor_col: screen.cursor_col,
                 cursor_row: screen.cursor_row,
                 lines: screen.lines,
+                runs: screen.runs,
                 alive: screen.alive,
             },
         ),
@@ -530,6 +574,7 @@ fn run_ask(
         provider: prov.clone(),
         model: model.clone(),
     };
+    observe_hot_ptys(state, session);
     let _ = state.root.append_event(
         session,
         EventBody::Ask {
@@ -571,6 +616,21 @@ fn run_ask(
                 text: err.to_string(),
             },
         ),
+    }
+}
+
+fn observe_hot_ptys(state: &State, session: &str) {
+    for name in state.ptys.names() {
+        let Some(screen) = state.ptys.peek(&name) else {
+            continue;
+        };
+        let text = screen.observe_text();
+        if text.is_empty() {
+            continue;
+        }
+        let _ = state
+            .root
+            .append_event(session, EventBody::See { member: name, text });
     }
 }
 
@@ -888,5 +948,26 @@ mod tests {
         c.shutdown().unwrap();
         let _ = handle.join();
         panic!("inspect never showed pty preview: {last:?}");
+    }
+
+    #[test]
+    fn warm_starts_pty_in_the_workspace() {
+        let (tmp, sock, handle) = boot();
+        let root = FrameRoot::open(tmp.path().join("root")).unwrap();
+        let mut ws = root.workspace("default").unwrap();
+        ws.add_member(crate::frame::MemberRef::pty("bash"));
+        root.save_workspace(&ws).unwrap();
+        let mut c = Client::connect(&sock).unwrap();
+        c.warm("default").unwrap();
+        let report = c.inspect().unwrap();
+        let bash = report
+            .services
+            .iter()
+            .find(|s| s.name == "bash")
+            .expect("bash");
+        assert_eq!(bash.kind, "pty");
+        assert_eq!(bash.state, "hot");
+        c.shutdown().unwrap();
+        let _ = handle.join();
     }
 }

@@ -9,6 +9,8 @@ use super::{FrameError, FrameRoot};
 pub enum MemberRef {
     Session { id: String },
     Pty { id: String },
+    Clock { id: String },
+    Log { id: String, of: String },
 }
 
 impl MemberRef {
@@ -20,9 +22,22 @@ impl MemberRef {
         Self::Pty { id: id.into() }
     }
 
+    pub fn clock(id: impl Into<String>) -> Self {
+        Self::Clock { id: id.into() }
+    }
+
+    pub fn log(id: impl Into<String>, of: impl Into<String>) -> Self {
+        Self::Log {
+            id: id.into(),
+            of: of.into(),
+        }
+    }
+
     pub fn id(&self) -> &str {
         match self {
-            Self::Session { id } | Self::Pty { id } => id,
+            Self::Session { id } | Self::Pty { id } | Self::Clock { id } | Self::Log { id, .. } => {
+                id
+            }
         }
     }
 
@@ -30,10 +45,25 @@ impl MemberRef {
         matches!(self, Self::Pty { .. })
     }
 
+    pub fn is_clock(&self) -> bool {
+        matches!(self, Self::Clock { .. })
+    }
+
+    pub fn is_log(&self) -> bool {
+        matches!(self, Self::Log { .. })
+    }
+
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Self::Session { id } => Some(id),
-            Self::Pty { .. } => None,
+            _ => None,
+        }
+    }
+
+    pub fn log_of(&self) -> Option<&str> {
+        match self {
+            Self::Log { of, .. } => Some(of),
+            _ => None,
         }
     }
 
@@ -41,6 +71,8 @@ impl MemberRef {
         match self {
             Self::Session { id } => id.clone(),
             Self::Pty { id } => format!("{id} · pty"),
+            Self::Clock { id } => format!("{id} · clock"),
+            Self::Log { id, of } => format!("{id} · log {of}"),
         }
     }
 }

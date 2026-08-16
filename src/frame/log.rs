@@ -52,6 +52,11 @@ pub enum EventBody {
     Fiber {
         state: String,
     },
+    /// A snapshot of another member the model is allowed to see (a PTY).
+    See {
+        member: String,
+        text: String,
+    },
 }
 
 impl EventBody {
@@ -59,7 +64,11 @@ impl EventBody {
     pub fn model_visible(&self) -> bool {
         matches!(
             self,
-            Self::User { .. } | Self::Ask { .. } | Self::Strike { .. } | Self::Answer { .. }
+            Self::User { .. }
+                | Self::Ask { .. }
+                | Self::Strike { .. }
+                | Self::Answer { .. }
+                | Self::See { .. }
         )
     }
 }

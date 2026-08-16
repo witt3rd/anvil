@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{FrameError, FrameRoot};
 
-/// Saved arrangement of a catalog. First cut: which catalog, what's front.
-/// Window/sash/pane geometry waits until the casing mutates splits.
+/// Saved arrangement of a catalog: what's front, and pane weights.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Layout {
     pub name: String,
@@ -14,6 +13,9 @@ pub struct Layout {
     pub front_workspace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub front_session: Option<String>,
+    /// Relative heights of stage members (workspace order). Empty = equal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weights: Vec<u16>,
 }
 
 impl Layout {
@@ -23,6 +25,7 @@ impl Layout {
             catalog: catalog.into(),
             front_workspace: Some("default".into()),
             front_session: Some("default".into()),
+            weights: Vec::new(),
         }
     }
 }

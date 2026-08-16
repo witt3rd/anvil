@@ -17,6 +17,7 @@ pub use session::{SessionMeta, SessionRef};
 pub use transcript::TranscriptLine;
 pub use workspace::{MemberRef, Workspace};
 
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -133,6 +134,36 @@ impl FrameRoot {
         Ok(name.to_string())
     }
 
+    /// Unused short word. For `n` / `session new` with no name typed.
+    pub fn mint_name(&self) -> Result<String, FrameError> {
+        let mut taken = HashSet::new();
+        for s in self.list_sessions()? {
+            taken.insert(s.id);
+        }
+        for ws in self.list_workspaces()? {
+            for m in ws.members {
+                taken.insert(m.id().to_string());
+            }
+        }
+        const WORDS: &[&str] = &[
+            "audit", "bench", "cedar", "drift", "ember", "flint", "grove", "hearth", "ink",
+            "jasper", "keel", "loom", "moss", "nock", "oak", "pine", "quarry", "ridge", "slate",
+            "tide", "urn", "vale", "wick", "yarn",
+        ];
+        for word in WORDS {
+            if !taken.contains(*word) {
+                return Ok((*word).to_string());
+            }
+        }
+        for n in 2..1000 {
+            let name = format!("oak-{n}");
+            if !taken.contains(&name) {
+                return Ok(name);
+            }
+        }
+        Err(FrameError::BadName("name space exhausted".into()))
+    }
+
     fn write_json<T: serde::Serialize>(&self, path: &Path, value: &T) -> Result<(), FrameError> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -219,6 +250,33 @@ mod tests {
         root.delete_catalog("compute saturation").unwrap();
         assert!(!root.catalog_exists("compute saturation"));
         assert!(root.workspace_exists("fleet-os"));
+    }
+
+    #[test]
+    fn mint_name_skips_taken_words() {
+        let (_dir, root) = tmp();
+        root.create_session("audit").unwrap();
+        let name = root.mint_name().unwrap();
+        assert_ne!(name, "audit");
+        assert!(FrameRoot::parse_name(&name).is_ok());
+    }
+
+    #[test]
+    fn clock_and_log_members_round_trip() {
+        let (_dir, root) = tmp();
+        let mut ws = root.create_workspace("fleet-os").unwrap();
+        ws.add_member(MemberRef::clock("clock"));
+        ws.add_member(MemberRef::log("audit-log", "audit"));
+        root.save_workspace(&ws).unwrap();
+        let got = root.workspace("fleet-os").unwrap();
+        assert!(got.members.iter().any(|m| m.is_clock()));
+        assert_eq!(
+            got.members
+                .iter()
+                .find(|m| m.is_log())
+                .and_then(|m| m.log_of()),
+            Some("audit")
+        );
     }
 
     #[test]

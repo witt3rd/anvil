@@ -89,10 +89,11 @@ dependency, no.
 ```
 
 **Now:** named sessions / workspaces / catalogs on disk. `anvil serve`
-owns hammers on a unix socket; smith attaches. Close the casing, work
-stays. Direction (not built): event log as source of truth; slots so
-smith can mount fibers in band; inspect / mount / unmount. Scar:
-Cordis + DeepSeek Harness. Not a host.
+owns hammers and `$SHELL` PTYs on a unix socket; smith attaches. Close
+the casing, work stays. First casing after reboot warms the front
+bench. Event log is the source of truth; slots + inspect + mount
+clock; ask sees sibling terminals. Scar: Cordis + DeepSeek Harness.
+Not a host.
 
 **When use bruises us, in this order** (session frame first — that is
 the current bruise; in-process tiles wait):
@@ -142,8 +143,8 @@ special protocol beyond “another process.”
 | **casing** | UI, live. What `smith` launches. Destroys its windows. Many casings can load one layout. |
 | **ask** | Model writes Python; extract; strike; print stdout. Not `complete`. |
 | **complete** | Raw HTTP chat. Will waffle. Smoke only. |
-| **slot** | Named seat on the casing a live fiber can occupy. Not yet built. |
-| **log** | Append-only events for one member. Cards and ask project it. Not yet the source of truth. |
+| **slot** | Named seat on the casing a live fiber can occupy (`casing.status`, …). |
+| **log** | Append-only events for one member. Cards and ask project it. |
 | **tile** | A pane we own: smith or pty. Bash is a PTY member, not a smith. |
 
 ## Layout
@@ -178,9 +179,12 @@ anvil providers
 anvil login grok
 anvil models --refresh
 anvil ask -p nim 'how many files have synlinks ~/dotfiles/ (recursive)'
+anvil session new                    # mints a short unused word
 anvil session new audit
 anvil workspace add fleet-os audit
 anvil workspace add fleet-os bash --pty
+anvil workspace add fleet-os clock --clock
+anvil workspace add fleet-os audit --log
 anvil pty new bash --workspace fleet-os
 anvil pty snap bash                  # live screen; warms $SHELL
 anvil pty write bash echo anvil-pty-ok

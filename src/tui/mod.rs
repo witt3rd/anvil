@@ -159,6 +159,7 @@ struct App {
     view: MainView,
     log_events: Vec<LogEvent>,
     other_cards: HashMap<String, Vec<Card>>,
+    other_logs: HashMap<String, Vec<LogEvent>>,
     pty_screen: Option<PtyScreen>,
     other_ptys: HashMap<String, PtyScreen>,
     pty_cols: u16,
@@ -195,6 +196,10 @@ impl App {
             .is_some_and(|r| r.ptys.iter().any(|p| p == id))
     }
 
+    fn member_is_log(&self, id: &str) -> bool {
+        self.rail.as_ref().is_some_and(|r| r.member_is_log(id))
+    }
+
     fn push_card(&mut self, card: Card) {
         // Serve appends the event log. The casing only projects.
         self.cards.push(card);
@@ -203,7 +208,15 @@ impl App {
     fn load_session_cards(&mut self) {
         self.cards.clear();
         self.log_events.clear();
-        if !self.focused_is_pty() {
+        if self.member_is_log(&self.session_id()) {
+            if let (Some(root), Some(rail)) = (&self.frame, &self.rail) {
+                if let Some(of) = rail.log_of(&self.session_id()) {
+                    if let Ok(events) = root.load_events(of) {
+                        self.log_events = events;
+                    }
+                }
+            }
+        } else if !self.focused_is_pty() {
             self.reload_log();
             let start = self.log_events.len().saturating_sub(200);
             self.cards = self.log_events[start..]
@@ -226,11 +239,22 @@ impl App {
     fn load_others(&mut self) {
         self.other_cards.clear();
         self.other_ptys.clear();
+        self.other_logs.clear();
         let Some(root) = &self.frame else {
             return;
         };
         for id in self.other_ids() {
             if self.member_is_pty(&id) {
+                continue;
+            }
+            if let Some(of) = self
+                .rail
+                .as_ref()
+                .and_then(|r| r.log_of(&id).map(str::to_string))
+            {
+                if let Ok(events) = root.load_events(&of) {
+                    self.other_logs.insert(id, events);
+                }
                 continue;
             }
             if let Ok(events) = root.load_events(&id) {
@@ -546,6 +570,9 @@ pub fn run(launch: Launch) -> io::Result<()> {
             sock: sock.clone(),
         })
         .map_err(|err| io::Error::other(format!("anvil serve: {err}")))?;
+        if let Ok(mut c) = Client::connect(&sock) {
+            let _ = c.warm(&rail.workspace);
+        }
         (Some(root), Some(rail), WorkerOpen::Serve { sock })
     };
     let inspect_sock = match &opener {
@@ -603,6 +630,7 @@ pub fn run(launch: Launch) -> io::Result<()> {
         view: MainView::Smith,
         log_events: Vec::new(),
         other_cards: HashMap::new(),
+        other_logs: HashMap::new(),
         pty_screen: None,
         other_ptys: HashMap::new(),
         pty_cols: 80,
@@ -933,6 +961,14 @@ fn cycle_sash(app: &mut App, delta: isize) {
     }
 }
 
+fn bump_weight(app: &mut App, delta: i16) {
+    if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+        if let Err(err) = rail.bump_weight(root, delta) {
+            app.status = err.to_string();
+        }
+    }
+}
+
 fn swap_pane(app: &mut App, delta: isize) {
     if app.busy {
         app.status = "busy — wait to switch".into();
@@ -1022,6 +1058,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
         (KeyCode::Char(']'), KeyModifiers::ALT) => cycle_sash(app, 1),
+        (KeyCode::Char('='), KeyModifiers::ALT) | (KeyCode::Char('+'), KeyModifiers::ALT) => {
+            bump_weight(app, 1);
+        }
+        (KeyCode::Char('-'), KeyModifiers::ALT) => bump_weight(app, -1),
         (KeyCode::Char('j'), KeyModifiers::ALT) => swap_pane(app, 1),
         (KeyCode::Char('k'), KeyModifiers::ALT) => swap_pane(app, -1),
         (KeyCode::PageUp, _) => {
@@ -1133,6 +1173,10 @@ fn handle_pty_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
         (KeyCode::Char(']'), KeyModifiers::ALT) => cycle_sash(app, 1),
+        (KeyCode::Char('='), KeyModifiers::ALT) | (KeyCode::Char('+'), KeyModifiers::ALT) => {
+            bump_weight(app, 1);
+        }
+        (KeyCode::Char('-'), KeyModifiers::ALT) => bump_weight(app, -1),
         (KeyCode::Char('j'), KeyModifiers::ALT) => swap_pane(app, 1),
         (KeyCode::Char('k'), KeyModifiers::ALT) => swap_pane(app, -1),
         _ => {
@@ -1191,6 +1235,30 @@ fn handle_rail_key(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Char('p'), KeyModifiers::NONE) => {
             if let Some(rail) = app.rail.as_mut() {
                 rail.naming = Some(Naming::Pty(String::new()));
+            }
+        }
+        (KeyCode::Char('c'), KeyModifiers::NONE) => {
+            if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+                match rail.create_clock(root) {
+                    Ok(()) => {
+                        app.mount("clock", None);
+                        app.status = "clock member".into();
+                    }
+                    Err(err) => app.status = err.to_string(),
+                }
+            }
+        }
+        (KeyCode::Char('g'), KeyModifiers::NONE) => {
+            if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
+                let of = rail.session.clone();
+                match rail.create_log(root, &of) {
+                    Ok(()) => {
+                        app.load_session_cards();
+                        app.expose_live();
+                        app.status = format!("log {of}");
+                    }
+                    Err(err) => app.status = err.to_string(),
+                }
             }
         }
         (KeyCode::Char('m'), KeyModifiers::NONE) => app.mount("clock", None),
@@ -1269,13 +1337,26 @@ fn draw(frame: &mut Frame, app: &App) {
     let stage = app
         .rail
         .as_ref()
-        .map(|r| r.members.clone())
+        .map(|r| r.stage_members())
         .filter(|m| !m.is_empty())
         .unwrap_or_else(|| vec![app.session_id()]);
     let split = app.view == MainView::Smith && stage.len() > 1;
     if split {
-        let n = stage.len() as u32;
-        let constraints: Vec<Constraint> = stage.iter().map(|_| Constraint::Ratio(1, n)).collect();
+        let weights = app
+            .rail
+            .as_ref()
+            .map(|r| r.weights.clone())
+            .unwrap_or_default();
+        let constraints: Vec<Constraint> = if weights.len() == stage.len() {
+            let sum = u32::from(weights.iter().sum::<u16>()).max(1);
+            weights
+                .iter()
+                .map(|w| Constraint::Ratio(u32::from(*w), sum))
+                .collect()
+        } else {
+            let n = stage.len() as u32;
+            stage.iter().map(|_| Constraint::Ratio(1, n)).collect()
+        };
         let panes = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
@@ -1375,6 +1456,16 @@ fn draw_member_pane(
         .as_ref()
         .map(|r| r.member_label(id))
         .unwrap_or_else(|| id.to_string());
+    if app.member_is_log(id) {
+        let events = if focused {
+            &app.log_events
+        } else {
+            app.other_logs.get(id).map(Vec::as_slice).unwrap_or(&[])
+        };
+        let lines = render_trajectory(events);
+        draw_scroll_pane(frame, area, &format!(" {label} "), &lines, app);
+        return;
+    }
     if app.member_is_pty(id) {
         let screen = if focused {
             app.pty_screen.as_ref()
@@ -1588,6 +1679,9 @@ fn card_from_event(event: &LogEvent) -> Option<Card> {
         EventBody::Fiber { state } => Some(Card::Status {
             text: format!("fiber {state}"),
         }),
+        EventBody::See { member, text } => Some(Card::Status {
+            text: format!("see {member}\n{text}"),
+        }),
     }
 }
 
@@ -1622,6 +1716,7 @@ fn trajectory_line(event: &LogEvent) -> Line<'static> {
         EventBody::Answer { text } => ("answer", clip(text, 60)),
         EventBody::Status { text } => ("status", clip(text, 60)),
         EventBody::Fiber { state } => ("fiber", state.clone()),
+        EventBody::See { member, .. } => ("see", member.clone()),
     };
     let color = match &event.body {
         EventBody::Strike { ok: false, .. } => Color::Red,
@@ -1629,6 +1724,7 @@ fn trajectory_line(event: &LogEvent) -> Line<'static> {
         EventBody::Ask { .. } | EventBody::User { .. } => Color::Cyan,
         EventBody::Answer { .. } => Color::White,
         EventBody::Thinking { .. } => Color::Yellow,
+        EventBody::See { .. } => Color::Magenta,
         EventBody::Fiber { .. } | EventBody::Status { .. } => Color::DarkGray,
     };
     Line::from(Span::styled(

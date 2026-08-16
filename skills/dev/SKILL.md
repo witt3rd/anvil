@@ -78,9 +78,11 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
   `$ANVIL_ROOT` (default `~/.anvil`). Destroying a workspace or catalog
   does not destroy its occupants.
 - smith without `--store` is a casing: Tab focuses the rail, `n` names
-  a session in the current workspace, `p` names a PTY member, Enter
-  exposes a member. Transcript is `sessions/<id>/transcript.jsonl`.
-  `--store` is the old single-pane escape hatch.
+  a session (empty Enter mints a word), `p` names a PTY, `c` adds a
+  clock member, `g` pins a diagnose log of the focused session. Enter
+  exposes a member. First attach warms the front bench. Transcript is
+  `sessions/<id>/transcript.jsonl`. `--store` is the old single-pane
+  escape hatch.
 - Mixed members: `anvil workspace add fleet-os bash --pty` (or
   `anvil pty new bash`). Serve owns `$SHELL` (portable-pty + vt100).
   Focus the pty pane: keys go to the shell; Ctrl+C is SIGINT; Ctrl+Q

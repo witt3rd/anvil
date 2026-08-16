@@ -14,6 +14,7 @@ use crate::{Anvil, AnvilError, StrikeReply};
 pub const SYSTEM: &str = "\
 You are the smith. You write Python for a persistent CPython guest (the hammer).
 The harness will exec your code. Print the answer.
+You may be shown views of sibling terminals as 'terminal NAME:'.
 Rules:
 - Reply with Python only. No prose, no markdown, no bash.
 - Use pathlib / os / subprocess as needed. The machine is real.
@@ -172,6 +173,12 @@ pub fn messages_from_log(events: &[Event], prompt: &str) -> Vec<Message> {
                         content: text.clone(),
                     });
                 }
+            }
+            EventBody::See { member, text } => {
+                messages.push(Message {
+                    role: "user".into(),
+                    content: format!("terminal {member}:\n{text}"),
+                });
             }
             EventBody::Thinking { .. } | EventBody::Status { .. } | EventBody::Fiber { .. } => {}
         }
@@ -491,6 +498,23 @@ mod tests {
         assert!(!msgs.iter().any(|m| m.content.contains("hmm")));
         assert!(!msgs.iter().any(|m| m.content.contains("hot")));
         assert_eq!(msgs.iter().filter(|m| m.content == "double it").count(), 1);
+    }
+
+    #[test]
+    fn see_is_visible_and_enters_the_prompt() {
+        use crate::frame::Event;
+        let events = vec![Event {
+            seq: 0,
+            ts: 1,
+            body: EventBody::See {
+                member: "bash".into(),
+                text: "anvil-pty-ok".into(),
+            },
+        }];
+        assert!(events[0].body.model_visible());
+        let msgs = messages_from_log(&events, "what is on the terminal");
+        assert!(msgs.iter().any(|m| m.content.contains("terminal bash")));
+        assert!(msgs.iter().any(|m| m.content.contains("anvil-pty-ok")));
     }
 
     #[test]

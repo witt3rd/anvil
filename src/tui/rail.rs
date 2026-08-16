@@ -30,6 +30,9 @@ pub struct Rail {
     pub workspaces: Vec<String>,
     pub members: Vec<String>,
     pub ptys: Vec<String>,
+    pub clocks: Vec<String>,
+    pub logs: Vec<(String, String)>,
+    pub weights: Vec<u16>,
     pub kind: RailKind,
     pub idx: usize,
     pub naming: Option<Naming>,
@@ -82,12 +85,26 @@ impl Rail {
             .filter(|m| m.is_pty())
             .map(|m| m.id().to_string())
             .collect();
+        let clocks: Vec<String> = ws
+            .members
+            .iter()
+            .filter(|m| m.is_clock())
+            .map(|m| m.id().to_string())
+            .collect();
+        let logs: Vec<(String, String)> = ws
+            .members
+            .iter()
+            .filter_map(|m| m.log_of().map(|of| (m.id().to_string(), of.to_string())))
+            .collect();
         let session = session
             .map(str::to_string)
             .or(layout.front_session.clone())
             .or_else(|| members.first().cloned())
             .unwrap_or_else(|| "default".into());
-        if !ptys.iter().any(|p| p == &session) && !root.session_exists(&session) {
+        let named = ptys.iter().any(|p| p == &session)
+            || clocks.iter().any(|c| c == &session)
+            || logs.iter().any(|(id, _)| id == &session);
+        if !named && !root.session_exists(&session) {
             root.create_session(&session)?;
         }
         if !members.iter().any(|m| m == &session) {
@@ -103,6 +120,9 @@ impl Rail {
             workspaces,
             members,
             ptys,
+            clocks,
+            logs,
+            weights: layout.weights.clone(),
             kind: RailKind::Member,
             idx: 0,
             naming: None,
@@ -132,9 +152,20 @@ impl Rail {
                 .filter(|m| m.is_pty())
                 .map(|m| m.id().to_string())
                 .collect();
+            self.clocks = ms
+                .iter()
+                .filter(|m| m.is_clock())
+                .map(|m| m.id().to_string())
+                .collect();
+            self.logs = ms
+                .iter()
+                .filter_map(|m| m.log_of().map(|of| (m.id().to_string(), of.to_string())))
+                .collect();
         } else {
             self.members.clear();
             self.ptys.clear();
+            self.clocks.clear();
+            self.logs.clear();
         }
         self.clamp();
         Ok(())
@@ -253,9 +284,48 @@ impl Rail {
     pub fn member_label(&self, id: &str) -> String {
         if self.ptys.iter().any(|p| p == id) {
             format!("{id} · pty")
+        } else if self.clocks.iter().any(|c| c == id) {
+            format!("{id} · clock")
+        } else if let Some((_, of)) = self.logs.iter().find(|(lid, _)| lid == id) {
+            format!("{id} · log {of}")
         } else {
             id.to_string()
         }
+    }
+
+    pub fn member_is_clock(&self, id: &str) -> bool {
+        self.clocks.iter().any(|c| c == id)
+    }
+
+    pub fn member_is_log(&self, id: &str) -> bool {
+        self.logs.iter().any(|(lid, _)| lid == id)
+    }
+
+    pub fn log_of(&self, id: &str) -> Option<&str> {
+        self.logs
+            .iter()
+            .find(|(lid, _)| lid == id)
+            .map(|(_, of)| of.as_str())
+    }
+
+    pub fn stage_members(&self) -> Vec<String> {
+        self.members
+            .iter()
+            .filter(|id| !self.member_is_clock(id))
+            .cloned()
+            .collect()
+    }
+
+    pub fn bump_weight(&mut self, root: &FrameRoot, delta: i16) -> Result<(), FrameError> {
+        let stage = self.stage_members();
+        if self.weights.len() != stage.len() {
+            self.weights = vec![1; stage.len().max(1)];
+        }
+        if let Some(i) = stage.iter().position(|m| m == &self.session) {
+            let next = (self.weights[i] as i16 + delta).clamp(1, 20) as u16;
+            self.weights[i] = next;
+        }
+        self.persist(root)
     }
 
     pub fn create_pty(&mut self, root: &FrameRoot, name: &str) -> Result<(), FrameError> {
@@ -335,14 +405,19 @@ impl Rail {
     }
 
     pub fn create_session(&mut self, root: &FrameRoot, name: &str) -> Result<(), FrameError> {
-        if !root.session_exists(name) {
-            root.create_session(name)?;
+        let name = if name.trim().is_empty() {
+            root.mint_name()?
+        } else {
+            FrameRoot::parse_name(name)?
+        };
+        if !root.session_exists(&name) {
+            root.create_session(&name)?;
         }
         if !root.workspace_exists(&self.workspace) {
             root.create_workspace(&self.workspace)?;
         }
         let mut ws = root.workspace(&self.workspace)?;
-        ws.add_member(MemberRef::session(name));
+        ws.add_member(MemberRef::session(&name));
         root.save_workspace(&ws)?;
         if root.catalog_exists(&self.catalog) {
             let mut cat = root.catalog(&self.catalog)?;
@@ -351,7 +426,7 @@ impl Rail {
                 root.save_catalog(&cat)?;
             }
         }
-        self.session = FrameRoot::parse_name(name)?;
+        self.session = name;
         self.kind = RailKind::Member;
         self.refresh(root)?;
         self.idx = self
@@ -372,7 +447,39 @@ impl Rail {
         layout.catalog = self.catalog.clone();
         layout.front_workspace = Some(self.workspace.clone());
         layout.front_session = Some(self.session.clone());
+        layout.weights = self.weights.clone();
         root.save_layout(&layout)
+    }
+
+    pub fn create_clock(&mut self, root: &FrameRoot) -> Result<(), FrameError> {
+        if !root.workspace_exists(&self.workspace) {
+            root.create_workspace(&self.workspace)?;
+        }
+        let mut ws = root.workspace(&self.workspace)?;
+        ws.add_member(MemberRef::clock("clock"));
+        root.save_workspace(&ws)?;
+        self.refresh(root)?;
+        self.persist(root)
+    }
+
+    pub fn create_log(&mut self, root: &FrameRoot, of: &str) -> Result<(), FrameError> {
+        let of = FrameRoot::parse_name(of)?;
+        let id = format!("{of}-log");
+        if !root.workspace_exists(&self.workspace) {
+            root.create_workspace(&self.workspace)?;
+        }
+        let mut ws = root.workspace(&self.workspace)?;
+        ws.add_member(MemberRef::log(&id, &of));
+        root.save_workspace(&ws)?;
+        self.session = id;
+        self.kind = RailKind::Member;
+        self.refresh(root)?;
+        self.idx = self
+            .members
+            .iter()
+            .position(|m| m == &self.session)
+            .unwrap_or(0);
+        self.persist(root)
     }
 }
 

@@ -215,6 +215,7 @@ impl Client {
                 cursor_col,
                 cursor_row,
                 lines,
+                runs,
                 alive,
                 ..
             } => Ok(PtyScreen {
@@ -224,8 +225,22 @@ impl Client {
                 cursor_col,
                 cursor_row,
                 lines,
+                runs,
                 alive,
             }),
+            Msg::Error { text, .. } => Err(io::Error::other(text)),
+            other => Err(io::Error::other(format!("unexpected {other:?}"))),
+        }
+    }
+
+    pub fn warm(&mut self, workspace: &str) -> io::Result<()> {
+        let id = self.next();
+        self.send(&Req::Warm {
+            id: id.clone(),
+            workspace: workspace.into(),
+        })?;
+        match self.recv_for(&id)? {
+            Msg::Pong { .. } => Ok(()),
             Msg::Error { text, .. } => Err(io::Error::other(text)),
             other => Err(io::Error::other(format!("unexpected {other:?}"))),
         }

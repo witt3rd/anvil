@@ -68,6 +68,11 @@ pub enum Req {
         id: String,
         name: String,
     },
+    /// Warm hammers and PTYs in a workspace. First casing after reboot.
+    Warm {
+        id: String,
+        workspace: String,
+    },
 }
 
 impl Req {
@@ -85,7 +90,8 @@ impl Req {
             | Self::PtyOpen { id, .. }
             | Self::PtyWrite { id, .. }
             | Self::PtyResize { id, .. }
-            | Self::PtySnap { id, .. } => id,
+            | Self::PtySnap { id, .. }
+            | Self::Warm { id, .. } => id,
         }
     }
 }
@@ -153,6 +159,8 @@ pub enum Msg {
         cursor_col: u16,
         cursor_row: u16,
         lines: Vec<String>,
+        #[serde(default)]
+        runs: Vec<Vec<super::pty::PtyRun>>,
         alive: bool,
     },
 }

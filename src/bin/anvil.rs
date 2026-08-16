@@ -135,7 +135,8 @@ enum Command {
 enum SessionCmd {
     List,
     New {
-        name: String,
+        /// Omit to mint a short unused word.
+        name: Option<String>,
     },
     Show {
         name: String,
@@ -163,6 +164,12 @@ enum WorkspaceCmd {
         /// Add a login-shell member instead of an anvil session.
         #[arg(long)]
         pty: bool,
+        /// Add a clock member (remounted on attach).
+        #[arg(long)]
+        clock: bool,
+        /// Add a diagnose pane that projects this session's event log.
+        #[arg(long)]
+        log: bool,
     },
     Rm {
         name: String,
@@ -451,13 +458,22 @@ fn session_cmd(root: Option<&std::path::Path>, cmd: &SessionCmd) -> ExitCode {
             }
             Err(err) => fail(err),
         },
-        SessionCmd::New { name } => match root.create_session(name) {
-            Ok(s) => {
-                println!("{}\t{}", s.id, s.dir.display());
-                ExitCode::SUCCESS
+        SessionCmd::New { name } => {
+            let minted = match name.as_deref() {
+                Some(n) if !n.trim().is_empty() => n.to_string(),
+                _ => match root.mint_name() {
+                    Ok(n) => n,
+                    Err(err) => return fail(err),
+                },
+            };
+            match root.create_session(&minted) {
+                Ok(s) => {
+                    println!("{}\t{}", s.id, s.dir.display());
+                    ExitCode::SUCCESS
+                }
+                Err(err) => fail(err),
             }
-            Err(err) => fail(err),
-        },
+        }
         SessionCmd::Show { name } => match root.session(name) {
             Ok(s) => {
                 println!("id\t{}", s.id);
@@ -691,8 +707,10 @@ fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode
             workspace,
             session,
             pty,
+            clock,
+            log,
         } => {
-            if !pty && !root.session_exists(session) {
+            if !pty && !clock && !root.session_exists(session) {
                 if let Err(err) = root.create_session(session) {
                     return fail(err);
                 }
@@ -707,19 +725,20 @@ fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode
                 }
                 Err(err) => return fail(err),
             };
-            let member = if *pty {
+            let member = if *clock {
+                MemberRef::clock(session)
+            } else if *log {
+                MemberRef::log(format!("{session}-log"), session)
+            } else if *pty {
                 MemberRef::pty(session)
             } else {
                 MemberRef::session(session)
             };
+            let label = member.label();
             ws.add_member(member);
             match root.save_workspace(&ws) {
                 Ok(()) => {
-                    if *pty {
-                        println!("{workspace}\t{session} · pty");
-                    } else {
-                        println!("{workspace}\t{session}");
-                    }
+                    println!("{workspace}\t{label}");
                     ExitCode::SUCCESS
                 }
                 Err(err) => fail(err),
