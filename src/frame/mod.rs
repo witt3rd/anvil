@@ -68,6 +68,7 @@ impl FrameRoot {
         fs::create_dir_all(root.join("workspaces"))?;
         fs::create_dir_all(root.join("catalogs"))?;
         fs::create_dir_all(root.join("layouts"))?;
+        fs::create_dir_all(root.join("edits"))?;
         Ok(Self { root })
     }
 
@@ -135,6 +136,11 @@ impl FrameRoot {
     }
 
     /// Unused short word. For `n` / `session new` with no name typed.
+    pub fn edit_path(&self, id: &str) -> Result<std::path::PathBuf, FrameError> {
+        let id = Self::parse_name(id)?;
+        Ok(self.root.join("edits").join(format!("{id}.txt")))
+    }
+
     pub fn mint_name(&self) -> Result<String, FrameError> {
         let mut taken = HashSet::new();
         for s in self.list_sessions()? {
@@ -289,6 +295,18 @@ mod tests {
         assert_eq!(got.members, vec![MemberRef::pty("bash")]);
         assert_eq!(got.members[0].label(), "bash · pty");
         assert!(!root.session_exists("bash"));
+    }
+
+    #[test]
+    fn edit_member_round_trips() {
+        let (_dir, root) = tmp();
+        let mut ws = root.create_workspace("notes").unwrap();
+        ws.add_member(MemberRef::edit("scratch"));
+        root.save_workspace(&ws).unwrap();
+        let got = root.workspace("notes").unwrap();
+        assert!(got.members.iter().any(|m| m.is_edit()));
+        assert_eq!(got.members[0].label(), "scratch · edit");
+        assert!(!root.session_exists("scratch"));
     }
 
     #[test]

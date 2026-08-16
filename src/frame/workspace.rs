@@ -11,6 +11,7 @@ pub enum MemberRef {
     Pty { id: String },
     Clock { id: String },
     Log { id: String, of: String },
+    Edit { id: String },
 }
 
 impl MemberRef {
@@ -33,11 +34,17 @@ impl MemberRef {
         }
     }
 
+    pub fn edit(id: impl Into<String>) -> Self {
+        Self::Edit { id: id.into() }
+    }
+
     pub fn id(&self) -> &str {
         match self {
-            Self::Session { id } | Self::Pty { id } | Self::Clock { id } | Self::Log { id, .. } => {
-                id
-            }
+            Self::Session { id }
+            | Self::Pty { id }
+            | Self::Clock { id }
+            | Self::Log { id, .. }
+            | Self::Edit { id } => id,
         }
     }
 
@@ -51,6 +58,10 @@ impl MemberRef {
 
     pub fn is_log(&self) -> bool {
         matches!(self, Self::Log { .. })
+    }
+
+    pub fn is_edit(&self) -> bool {
+        matches!(self, Self::Edit { .. })
     }
 
     pub fn session_id(&self) -> Option<&str> {
@@ -73,6 +84,7 @@ impl MemberRef {
             Self::Pty { id } => format!("{id} · pty"),
             Self::Clock { id } => format!("{id} · clock"),
             Self::Log { id, of } => format!("{id} · log {of}"),
+            Self::Edit { id } => format!("{id} · edit"),
         }
     }
 }

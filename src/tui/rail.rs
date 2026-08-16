@@ -12,6 +12,7 @@ pub enum Focus {
 pub enum Naming {
     Session(String),
     Pty(String),
+    Edit(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub struct Rail {
     pub ptys: Vec<String>,
     pub clocks: Vec<String>,
     pub logs: Vec<(String, String)>,
+    pub edits: Vec<String>,
     pub weights: Vec<u16>,
     pub kind: RailKind,
     pub idx: usize,
@@ -96,6 +98,12 @@ impl Rail {
             .iter()
             .filter_map(|m| m.log_of().map(|of| (m.id().to_string(), of.to_string())))
             .collect();
+        let edits: Vec<String> = ws
+            .members
+            .iter()
+            .filter(|m| m.is_edit())
+            .map(|m| m.id().to_string())
+            .collect();
         let session = session
             .map(str::to_string)
             .or(layout.front_session.clone())
@@ -103,7 +111,8 @@ impl Rail {
             .unwrap_or_else(|| "default".into());
         let named = ptys.iter().any(|p| p == &session)
             || clocks.iter().any(|c| c == &session)
-            || logs.iter().any(|(id, _)| id == &session);
+            || logs.iter().any(|(id, _)| id == &session)
+            || edits.iter().any(|e| e == &session);
         if !named && !root.session_exists(&session) {
             root.create_session(&session)?;
         }
@@ -122,6 +131,7 @@ impl Rail {
             ptys,
             clocks,
             logs,
+            edits,
             weights: layout.weights.clone(),
             kind: RailKind::Member,
             idx: 0,
@@ -161,11 +171,17 @@ impl Rail {
                 .iter()
                 .filter_map(|m| m.log_of().map(|of| (m.id().to_string(), of.to_string())))
                 .collect();
+            self.edits = ms
+                .iter()
+                .filter(|m| m.is_edit())
+                .map(|m| m.id().to_string())
+                .collect();
         } else {
             self.members.clear();
             self.ptys.clear();
             self.clocks.clear();
             self.logs.clear();
+            self.edits.clear();
         }
         self.clamp();
         Ok(())
@@ -281,9 +297,15 @@ impl Rail {
         self.ptys.iter().any(|p| p == &self.session)
     }
 
+    pub fn focused_is_edit(&self) -> bool {
+        self.edits.iter().any(|e| e == &self.session)
+    }
+
     pub fn member_label(&self, id: &str) -> String {
         if self.ptys.iter().any(|p| p == id) {
             format!("{id} · pty")
+        } else if self.edits.iter().any(|e| e == id) {
+            format!("{id} · edit")
         } else if self.clocks.iter().any(|c| c == id) {
             format!("{id} · clock")
         } else if let Some((_, of)) = self.logs.iter().find(|(lid, _)| lid == id) {
@@ -335,6 +357,30 @@ impl Rail {
         }
         let mut ws = root.workspace(&self.workspace)?;
         ws.add_member(MemberRef::pty(&name));
+        root.save_workspace(&ws)?;
+        self.session = name;
+        self.kind = RailKind::Member;
+        self.refresh(root)?;
+        self.idx = self
+            .members
+            .iter()
+            .position(|m| m == &self.session)
+            .unwrap_or(0);
+        self.persist(root)?;
+        Ok(())
+    }
+
+    pub fn create_edit(&mut self, root: &FrameRoot, name: &str) -> Result<(), FrameError> {
+        let name = if name.trim().is_empty() {
+            root.mint_name()?
+        } else {
+            FrameRoot::parse_name(name)?
+        };
+        if !root.workspace_exists(&self.workspace) {
+            root.create_workspace(&self.workspace)?;
+        }
+        let mut ws = root.workspace(&self.workspace)?;
+        ws.add_member(MemberRef::edit(&name));
         root.save_workspace(&ws)?;
         self.session = name;
         self.kind = RailKind::Member;
@@ -566,5 +612,18 @@ mod tests {
         assert!(ws.members.iter().any(|m| m == &MemberRef::pty("bash")));
         let layout = root.layout("default").unwrap();
         assert_eq!(layout.front_session.as_deref(), Some("bash"));
+    }
+
+    #[test]
+    fn create_edit_joins_workspace_without_a_session() {
+        let dir = TempDir::new().unwrap();
+        let root = FrameRoot::open(dir.path()).unwrap();
+        let mut rail = Rail::load(&root, None, None, None).unwrap();
+        rail.create_edit(&root, "notes").unwrap();
+        assert_eq!(rail.session, "notes");
+        assert!(rail.focused_is_edit());
+        assert!(!root.session_exists("notes"));
+        let ws = root.workspace("default").unwrap();
+        assert!(ws.members.iter().any(|m| m == &MemberRef::edit("notes")));
     }
 }

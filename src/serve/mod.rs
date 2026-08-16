@@ -1,6 +1,7 @@
 //! `anvil serve` — owns hammers. Casings attach over a unix socket.
 
 mod client;
+mod edit;
 mod inspect;
 mod mount;
 mod proto;
@@ -8,6 +9,7 @@ mod pty;
 pub mod unit;
 
 pub use client::Client;
+pub use edit::{EditBuf, EditOp};
 pub use inspect::{Fiber, Report, Service, Slot};
 pub use pty::{PtyRun, PtyScreen};
 pub use unit::{UNIT_BODY, UNIT_NAME};
@@ -84,6 +86,7 @@ pub(crate) struct State {
     last_active: Mutex<Option<String>>,
     pub(crate) mounts: Arc<mount::Mounts>,
     pub(crate) ptys: pty::PtyHost,
+    pub(crate) edits: edit::EditHost,
 }
 
 impl State {
@@ -94,6 +97,7 @@ impl State {
             Some(p) => Some(Config::load_from(p).map_err(io::Error::other)?.1),
             None => Config::load().ok().map(|(_, c)| c),
         };
+        let edits = edit::EditHost::new(&root);
         Ok(Self {
             root,
             hammer: opts.hammer.clone(),
@@ -104,6 +108,7 @@ impl State {
             last_active: Mutex::new(None),
             mounts: Arc::new(mount::Mounts::default()),
             ptys: pty::PtyHost::default(),
+            edits,
         })
     }
 
@@ -395,6 +400,44 @@ fn dispatch(req: &Req, state: &State, writer: &mut UnixStream) -> io::Result<()>
                 },
             ),
         },
+        Req::EditSnap { id, name } => {
+            state.touch(name);
+            edit_reply(writer, id, state.edits.snap(name))
+        }
+        Req::Edit {
+            id,
+            name,
+            edit_op,
+            text,
+        } => {
+            state.touch(name);
+            edit_reply(writer, id, state.edits.apply(name, *edit_op, text))
+        }
+    }
+}
+
+fn edit_reply(
+    writer: &mut UnixStream,
+    id: &str,
+    result: io::Result<edit::EditBuf>,
+) -> io::Result<()> {
+    match result {
+        Ok(buf) => write_msg(
+            writer,
+            &Msg::EditBuf {
+                id: id.into(),
+                name: buf.name,
+                text: buf.text,
+                cursor: buf.cursor,
+            },
+        ),
+        Err(err) => write_msg(
+            writer,
+            &Msg::Error {
+                id: id.into(),
+                text: err.to_string(),
+            },
+        ),
     }
 }
 
@@ -426,6 +469,10 @@ fn warm_workspace(state: &State, workspace: &str) -> io::Result<()> {
                 }
             }
             crate::frame::MemberRef::Log { .. } => {}
+            crate::frame::MemberRef::Edit { id } => {
+                let _ = state.edits.snap(&id);
+                state.touch(&id);
+            }
         }
     }
     Ok(())
@@ -620,6 +667,16 @@ fn run_ask(
 }
 
 fn observe_hot_ptys(state: &State, session: &str) {
+    for name in state.edits.names() {
+        if let Ok(buf) = state.edits.snap(&name) {
+            let text = buf.observe_text();
+            if !text.trim().is_empty() {
+                let _ = state
+                    .root
+                    .append_event(session, EventBody::See { member: name, text });
+            }
+        }
+    }
     for name in state.ptys.names() {
         let Some(screen) = state.ptys.peek(&name) else {
             continue;
@@ -967,6 +1024,23 @@ mod tests {
             .expect("bash");
         assert_eq!(bash.kind, "pty");
         assert_eq!(bash.state, "hot");
+        c.shutdown().unwrap();
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn edit_inserts_and_persists() {
+        let (tmp, sock, handle) = boot();
+        let mut c = Client::connect(&sock).unwrap();
+        c.edit("notes", crate::serve::EditOp::Insert, "hello")
+            .unwrap();
+        c.edit("notes", crate::serve::EditOp::Enter, "").unwrap();
+        c.edit("notes", crate::serve::EditOp::Insert, "world")
+            .unwrap();
+        let buf = c.edit_snap("notes").unwrap();
+        assert_eq!(buf.text, "hello\nworld");
+        let path = tmp.path().join("root/edits/notes.txt");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "hello\nworld");
         c.shutdown().unwrap();
         let _ = handle.join();
     }

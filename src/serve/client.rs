@@ -120,7 +120,8 @@ impl Client {
                 | Msg::Inspect { .. }
                 | Msg::Mounted { .. }
                 | Msg::Unmounted { .. }
-                | Msg::PtyScreen { .. } => {}
+                | Msg::PtyScreen { .. }
+                | Msg::EditBuf { .. } => {}
             }
         }
     }
@@ -228,6 +229,41 @@ impl Client {
                 runs,
                 alive,
             }),
+            Msg::Error { text, .. } => Err(io::Error::other(text)),
+            other => Err(io::Error::other(format!("unexpected {other:?}"))),
+        }
+    }
+
+    pub fn edit_snap(&mut self, name: &str) -> io::Result<super::EditBuf> {
+        let id = self.next();
+        self.send(&Req::EditSnap {
+            id: id.clone(),
+            name: name.into(),
+        })?;
+        self.recv_edit(&id)
+    }
+
+    pub fn edit(
+        &mut self,
+        name: &str,
+        op: super::EditOp,
+        text: &str,
+    ) -> io::Result<super::EditBuf> {
+        let id = self.next();
+        self.send(&Req::Edit {
+            id: id.clone(),
+            name: name.into(),
+            edit_op: op,
+            text: text.into(),
+        })?;
+        self.recv_edit(&id)
+    }
+
+    fn recv_edit(&mut self, id: &str) -> io::Result<super::EditBuf> {
+        match self.recv_for(id)? {
+            Msg::EditBuf {
+                name, text, cursor, ..
+            } => Ok(super::EditBuf { name, text, cursor }),
             Msg::Error { text, .. } => Err(io::Error::other(text)),
             other => Err(io::Error::other(format!("unexpected {other:?}"))),
         }

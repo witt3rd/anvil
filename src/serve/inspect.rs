@@ -121,11 +121,43 @@ impl State {
                 state: if hot { "active" } else { "pending" }.into(),
             });
         }
+        let mut seen_edit = Vec::new();
+        for ws in self.root.list_workspaces().unwrap_or_default() {
+            for member in ws.members {
+                if !member.is_edit() {
+                    continue;
+                }
+                let name = member.id().to_string();
+                if seen_edit.iter().any(|n| n == &name) {
+                    continue;
+                }
+                seen_edit.push(name.clone());
+                let hot = self.edits.is_hot(&name);
+                services.push(Service {
+                    name: name.clone(),
+                    kind: "edit".into(),
+                    state: if hot { "hot".into() } else { "cold".into() },
+                    events: 0,
+                });
+                fibers.push(Fiber {
+                    name: format!("adapter/{name}"),
+                    kind: "edit".into(),
+                    state: if hot { "active" } else { "pending" }.into(),
+                });
+            }
+        }
         let front = self.live_front();
-        let front_text = front
-            .as_deref()
-            .and_then(|name| self.ptys.peek(name))
-            .and_then(|s| s.preview());
+        let front_text = front.as_deref().and_then(|name| {
+            self.ptys.peek(name).and_then(|s| s.preview()).or_else(|| {
+                self.edits.snap(name).ok().and_then(|b| {
+                    b.text
+                        .lines()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .map(str::to_string)
+                })
+            })
+        });
         let status = self.mounts.seat(SLOT_STATUS);
         let slots = vec![
             Slot {

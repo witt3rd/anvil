@@ -254,7 +254,8 @@ The next ask is a projection of the event log, not a paste of cards.
     `anvil workspace add <ws> bash --pty`. Rail `p` names one. Keys
     go to the PTY when that pane is focused; Ctrl+Q closes the casing.
     `anvil pty snap` / `anvil pty write` / inspect `casing.main` text
-    is the live screen. Every workspace member stacks in the casing.
+    is the live screen. `MemberRef::Edit` is a scratch buffer at
+    `edits/<id>.txt` (autosave). Every workspace member stacks.
     Web / promoted mounts still later. Textbook: Zellij. Not a host.
 
 ## Open

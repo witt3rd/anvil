@@ -38,7 +38,7 @@ use ratatui::Terminal;
 use crate::ask::{self, AskSink, HttpCompleter};
 use crate::config::{Config, Provider};
 use crate::frame::{self, Event as LogEvent, EventBody, FrameRoot};
-use crate::serve::{self, Client, PtyScreen, Spawn};
+use crate::serve::{self, Client, EditBuf, EditOp, PtyScreen, Spawn};
 use crate::{default_hammer, Anvil, StrikeReply};
 
 pub use picker::{at_span, insert_path, list_files, rank, FileHit};
@@ -162,6 +162,8 @@ struct App {
     other_logs: HashMap<String, Vec<LogEvent>>,
     pty_screen: Option<PtyScreen>,
     other_ptys: HashMap<String, PtyScreen>,
+    edit_buf: Option<EditBuf>,
+    other_edits: HashMap<String, EditBuf>,
     pty_cols: u16,
     pty_rows: u16,
 }
@@ -200,6 +202,16 @@ impl App {
         self.rail.as_ref().is_some_and(|r| r.member_is_log(id))
     }
 
+    fn focused_is_edit(&self) -> bool {
+        self.rail.as_ref().is_some_and(|r| r.focused_is_edit())
+    }
+
+    fn member_is_edit(&self, id: &str) -> bool {
+        self.rail
+            .as_ref()
+            .is_some_and(|r| r.edits.iter().any(|e| e == id))
+    }
+
     fn push_card(&mut self, card: Card) {
         // Serve appends the event log. The casing only projects.
         self.cards.push(card);
@@ -216,7 +228,7 @@ impl App {
                     }
                 }
             }
-        } else if !self.focused_is_pty() {
+        } else if !self.focused_is_pty() && !self.focused_is_edit() {
             self.reload_log();
             let start = self.log_events.len().saturating_sub(200);
             self.cards = self.log_events[start..]
@@ -227,6 +239,7 @@ impl App {
         self.load_others();
         self.stick_bottom = true;
         self.refresh_ptys();
+        self.refresh_edits();
     }
 
     fn other_ids(&self) -> Vec<String> {
@@ -244,7 +257,7 @@ impl App {
             return;
         };
         for id in self.other_ids() {
-            if self.member_is_pty(&id) {
+            if self.member_is_pty(&id) || self.member_is_edit(&id) {
                 continue;
             }
             if let Some(of) = self
@@ -302,6 +315,39 @@ impl App {
             }
         }
         self.other_ptys = ptys;
+    }
+
+    fn refresh_edits(&mut self) {
+        if self.focused_is_edit() {
+            let name = self.session_id();
+            match self.with_pty_client(|c| c.edit_snap(&name)) {
+                Ok(buf) => self.edit_buf = Some(buf),
+                Err(err) => self.status = err,
+            }
+        } else {
+            self.edit_buf = None;
+        }
+        let mut edits = HashMap::new();
+        for id in self.other_ids() {
+            if !self.member_is_edit(&id) {
+                continue;
+            }
+            match self.with_pty_client(|c| c.edit_snap(&id)) {
+                Ok(buf) => {
+                    edits.insert(id, buf);
+                }
+                Err(err) => self.status = err,
+            }
+        }
+        self.other_edits = edits;
+    }
+
+    fn send_edit(&mut self, op: EditOp, text: &str) {
+        let name = self.session_id();
+        match self.with_pty_client(|c| c.edit(&name, op, text)) {
+            Ok(buf) => self.edit_buf = Some(buf),
+            Err(err) => self.status = err,
+        }
     }
 
     fn send_pty(&mut self, data: &[u8]) {
@@ -633,6 +679,8 @@ pub fn run(launch: Launch) -> io::Result<()> {
         other_logs: HashMap::new(),
         pty_screen: None,
         other_ptys: HashMap::new(),
+        edit_buf: None,
+        other_edits: HashMap::new(),
         pty_cols: 80,
         pty_rows: 24,
     };
@@ -876,6 +924,9 @@ fn event_loop(
                 }
             }
         }
+        if app.focused_is_edit() || app.other_ids().iter().any(|id| app.member_is_edit(id)) {
+            app.refresh_edits();
+        }
         if app.focused_is_pty() || app.other_ids().iter().any(|id| app.member_is_pty(id)) {
             if let Ok(size) = terminal.size() {
                 let rail_w = if app.rail.is_some() { 24 } else { 0 };
@@ -990,7 +1041,7 @@ fn swap_pane(app: &mut App, delta: isize) {
 fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if let Some(naming) = app.rail.as_ref().and_then(|r| r.naming.clone()) {
         let buf = match naming {
-            Naming::Session(buf) | Naming::Pty(buf) => buf,
+            Naming::Session(buf) | Naming::Pty(buf) | Naming::Edit(buf) => buf,
         };
         return handle_naming(app, key, buf);
     }
@@ -1033,6 +1084,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
     if app.focused_is_pty() {
         return handle_pty_key(app, key);
+    }
+
+    if app.focused_is_edit() {
+        return handle_edit_key(app, key);
     }
 
     match (key.code, key.modifiers) {
@@ -1095,10 +1150,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
-    let is_pty = matches!(
-        app.rail.as_ref().and_then(|r| r.naming.as_ref()),
-        Some(Naming::Pty(_))
-    );
+    let kind = app.rail.as_ref().and_then(|r| r.naming.as_ref());
+    let is_pty = matches!(kind, Some(Naming::Pty(_)));
+    let is_edit = matches!(kind, Some(Naming::Edit(_)));
     match (key.code, key.modifiers) {
         (KeyCode::Esc, _) => {
             if let Some(rail) = app.rail.as_mut() {
@@ -1109,9 +1163,11 @@ fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
             let name = buf.trim().to_string();
             if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
                 rail.naming = None;
-                if !name.is_empty() {
+                if !name.is_empty() || is_edit {
                     let created = if is_pty {
                         rail.create_pty(root, &name)
+                    } else if is_edit {
+                        rail.create_edit(root, &name)
                     } else {
                         rail.create_session(root, &name)
                     };
@@ -1121,6 +1177,8 @@ fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
                             app.expose_live();
                             app.status = if is_pty {
                                 format!("pty {name}")
+                            } else if is_edit {
+                                format!("edit {}", app.session_id())
                             } else {
                                 format!("session {name}")
                             };
@@ -1135,6 +1193,8 @@ fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
             if let Some(rail) = app.rail.as_mut() {
                 rail.naming = Some(if is_pty {
                     Naming::Pty(buf)
+                } else if is_edit {
+                    Naming::Edit(buf)
                 } else {
                     Naming::Session(buf)
                 });
@@ -1145,12 +1205,56 @@ fn handle_naming(app: &mut App, key: KeyEvent, mut buf: String) -> bool {
             if let Some(rail) = app.rail.as_mut() {
                 rail.naming = Some(if is_pty {
                     Naming::Pty(buf)
+                } else if is_edit {
+                    Naming::Edit(buf)
                 } else {
                     Naming::Session(buf)
                 });
             }
         }
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
+        _ => {}
+    }
+    false
+}
+
+fn handle_edit_key(app: &mut App, key: KeyEvent) -> bool {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('q'), KeyModifiers::CONTROL)
+        | (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
+        (KeyCode::Char('m'), KeyModifiers::ALT) => app.mount("clock", None),
+        (KeyCode::Char('u'), KeyModifiers::ALT) => app.unmount(None),
+        (KeyCode::Char('l'), KeyModifiers::ALT) => {
+            app.view = match app.view {
+                MainView::Smith => MainView::Trajectory,
+                MainView::Trajectory => MainView::Smith,
+            };
+            if app.view == MainView::Trajectory {
+                app.reload_log();
+                app.stick_bottom = true;
+            }
+        }
+        (KeyCode::Char('['), KeyModifiers::ALT) => cycle_sash(app, -1),
+        (KeyCode::Char(']'), KeyModifiers::ALT) => cycle_sash(app, 1),
+        (KeyCode::Char('j'), KeyModifiers::ALT) => swap_pane(app, 1),
+        (KeyCode::Char('k'), KeyModifiers::ALT) => swap_pane(app, -1),
+        (KeyCode::Char('='), KeyModifiers::ALT) | (KeyCode::Char('+'), KeyModifiers::ALT) => {
+            bump_weight(app, 1);
+        }
+        (KeyCode::Char('-'), KeyModifiers::ALT) => bump_weight(app, -1),
+        (KeyCode::Enter, _) => app.send_edit(EditOp::Enter, ""),
+        (KeyCode::Backspace, _) => app.send_edit(EditOp::Backspace, ""),
+        (KeyCode::Delete, _) => app.send_edit(EditOp::Delete, ""),
+        (KeyCode::Left, _) => app.send_edit(EditOp::Left, ""),
+        (KeyCode::Right, _) => app.send_edit(EditOp::Right, ""),
+        (KeyCode::Up, _) => app.send_edit(EditOp::Up, ""),
+        (KeyCode::Down, _) => app.send_edit(EditOp::Down, ""),
+        (KeyCode::Home, _) => app.send_edit(EditOp::Home, ""),
+        (KeyCode::End, _) => app.send_edit(EditOp::End, ""),
+        (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            let mut tmp = [0u8; 4];
+            app.send_edit(EditOp::Insert, ch.encode_utf8(&mut tmp));
+        }
         _ => {}
     }
     false
@@ -1237,6 +1341,11 @@ fn handle_rail_key(app: &mut App, key: KeyEvent) -> bool {
                 rail.naming = Some(Naming::Pty(String::new()));
             }
         }
+        (KeyCode::Char('e'), KeyModifiers::NONE) => {
+            if let Some(rail) = app.rail.as_mut() {
+                rail.naming = Some(Naming::Edit(String::new()));
+            }
+        }
         (KeyCode::Char('c'), KeyModifiers::NONE) => {
             if let (Some(root), Some(rail)) = (&app.frame, app.rail.as_mut()) {
                 match rail.create_clock(root) {
@@ -1302,7 +1411,8 @@ fn draw(frame: &mut Frame, app: &App) {
         .as_ref()
         .map(|p| (p.hits.len() as u16 + 2).clamp(3, 10))
         .unwrap_or(0);
-    let pty_compose = app.focused_is_pty() && app.focus == Focus::Compose;
+    let pty_compose =
+        (app.focused_is_pty() || app.focused_is_edit()) && app.focus == Focus::Compose;
     let input_h = if pty_compose {
         1
     } else {
@@ -1365,6 +1475,14 @@ fn draw(frame: &mut Frame, app: &App) {
             let focused = id == &app.session_id();
             draw_member_pane(frame, panes[i], app, id, focused);
         }
+    } else if app.view == MainView::Smith && app.focused_is_edit() {
+        draw_edit_pane(
+            frame,
+            main,
+            &app.session_id(),
+            app.edit_buf.as_ref(),
+            app.focus == Focus::Compose,
+        );
     } else if app.view == MainView::Smith && app.focused_is_pty() {
         term::draw(
             frame,
@@ -1405,7 +1523,17 @@ fn draw(frame: &mut Frame, app: &App) {
     }
 
     if pty_compose {
-        frame.render_widget(Paragraph::new(term::hint()), compose_area);
+        let hint = if app.focused_is_edit() {
+            Line::from(Span::styled(
+                " edit · autosave · Tab rail · Ctrl+Q close ",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ))
+        } else {
+            term::hint()
+        };
+        frame.render_widget(Paragraph::new(hint), compose_area);
     } else {
         let compose = Paragraph::new(app.input.as_str())
             .block(Block::default().borders(Borders::ALL).title(" ask "));
@@ -1419,10 +1547,11 @@ fn draw(frame: &mut Frame, app: &App) {
     } else {
         "·"
     };
-    let focus = match (app.focus, app.focused_is_pty()) {
-        (Focus::Rail, _) => "rail",
-        (Focus::Compose, true) => "pty",
-        (Focus::Compose, false) => "ask",
+    let focus = match (app.focus, app.focused_is_pty(), app.focused_is_edit()) {
+        (Focus::Rail, _, _) => "rail",
+        (Focus::Compose, true, _) => "pty",
+        (Focus::Compose, _, true) => "edit",
+        (Focus::Compose, false, false) => "ask",
     };
     frame.render_widget(
         Paragraph::new(Line::from(format!(
@@ -1442,6 +1571,56 @@ fn draw(frame: &mut Frame, app: &App) {
         ))),
         status_area,
     );
+}
+
+fn draw_edit_pane(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    title: &str,
+    buf: Option<&EditBuf>,
+    focused: bool,
+) {
+    let text = buf.map(|b| b.text.as_str()).unwrap_or("");
+    let (row, col) = buf.map(|b| b.cursor_row_col()).unwrap_or((0, 0));
+    let mut lines: Vec<Line> = if text.is_empty() {
+        vec![Line::from(Span::styled(
+            " (empty) ",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        text.split('\n')
+            .map(|line| Line::from(Span::raw(line.to_string())))
+            .collect()
+    };
+    if let Some(line) = lines.get_mut(row as usize) {
+        if focused {
+            *line = Line::from(Span::styled(
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>(),
+                Style::default().bg(Color::DarkGray),
+            ));
+        }
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {title} · edit "))
+        .border_style(if focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        });
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+    if focused {
+        let x = area.x.saturating_add(1).saturating_add(col);
+        let y = area.y.saturating_add(1).saturating_add(row);
+        if x < area.x.saturating_add(area.width.saturating_sub(1))
+            && y < area.y.saturating_add(area.height.saturating_sub(1))
+        {
+            frame.set_cursor_position((x, y));
+        }
+    }
 }
 
 fn draw_member_pane(
@@ -1464,6 +1643,21 @@ fn draw_member_pane(
         };
         let lines = render_trajectory(events);
         draw_scroll_pane(frame, area, &format!(" {label} "), &lines, app);
+        return;
+    }
+    if app.member_is_edit(id) {
+        let buf = if focused {
+            app.edit_buf.as_ref()
+        } else {
+            app.other_edits.get(id)
+        };
+        draw_edit_pane(
+            frame,
+            area,
+            &label,
+            buf,
+            focused && app.focus == Focus::Compose,
+        );
         return;
     }
     if app.member_is_pty(id) {
@@ -1596,6 +1790,13 @@ fn draw_rail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 format!(" new pty: {buf}_"),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        Some(Naming::Edit(buf)) => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(" new edit: {buf}_"),
                 Style::default().fg(Color::Cyan),
             )));
         }

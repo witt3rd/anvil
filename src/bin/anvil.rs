@@ -129,6 +129,11 @@ enum Command {
         #[command(subcommand)]
         cmd: PtyCmd,
     },
+    /// Scratch text editors. Serve owns the buffer; file is edits/<id>.txt.
+    Edit {
+        #[command(subcommand)]
+        cmd: EditCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -170,6 +175,9 @@ enum WorkspaceCmd {
         /// Add a diagnose pane that projects this session's event log.
         #[arg(long)]
         log: bool,
+        /// Add a scratch text editor (edits/<name>.txt).
+        #[arg(long)]
+        edit: bool,
     },
     Rm {
         name: String,
@@ -196,6 +204,19 @@ enum PtyCmd {
         #[arg(long)]
         raw: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum EditCmd {
+    New {
+        name: String,
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Print the buffer. Serve if up, else the file on disk.
+    Snap { name: String },
+    /// Replace the buffer (or stdin). Needs serve to keep cursor; else writes the file.
+    Write { name: String, text: Vec<String> },
 }
 
 #[derive(Subcommand)]
@@ -231,6 +252,7 @@ fn main() -> ExitCode {
         Command::Mount { kind, slot } => return mount_cmd(kind, slot.as_deref()),
         Command::Unmount { id } => return unmount_cmd(id),
         Command::Pty { cmd } => return pty_cmd(cli.root.as_deref(), cmd),
+        Command::Edit { cmd } => return edit_cmd(cli.root.as_deref(), cmd),
         _ => {}
     }
 
@@ -313,7 +335,8 @@ fn main() -> ExitCode {
         | Command::Inspect { .. }
         | Command::Mount { .. }
         | Command::Unmount { .. }
-        | Command::Pty { .. } => unreachable!("handled above"),
+        | Command::Pty { .. }
+        | Command::Edit { .. } => unreachable!("handled above"),
     }
 }
 
@@ -709,8 +732,9 @@ fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode
             pty,
             clock,
             log,
+            edit,
         } => {
-            if !pty && !clock && !root.session_exists(session) {
+            if !pty && !clock && !edit && !root.session_exists(session) {
                 if let Err(err) = root.create_session(session) {
                     return fail(err);
                 }
@@ -731,6 +755,8 @@ fn workspace_cmd(root: Option<&std::path::Path>, cmd: &WorkspaceCmd) -> ExitCode
                 MemberRef::log(format!("{session}-log"), session)
             } else if *pty {
                 MemberRef::pty(session)
+            } else if *edit {
+                MemberRef::edit(session)
             } else {
                 MemberRef::session(session)
             };
@@ -869,6 +895,97 @@ fn pty_cmd(root: Option<&std::path::Path>, cmd: &PtyCmd) -> ExitCode {
 fn print_pty_screen(screen: &anvil::serve::PtyScreen) {
     for line in &screen.lines {
         println!("{}", line.trim_end());
+    }
+}
+
+fn edit_cmd(root: Option<&std::path::Path>, cmd: &EditCmd) -> ExitCode {
+    let root = match open_root(root) {
+        Ok(r) => r,
+        Err(err) => return fail(err),
+    };
+    match cmd {
+        EditCmd::New { name, workspace } => {
+            let workspace = workspace.as_deref().unwrap_or("default");
+            if !root.workspace_exists(workspace) {
+                if let Err(err) = root.create_workspace(workspace) {
+                    return fail(err);
+                }
+            }
+            let mut ws = match root.workspace(workspace) {
+                Ok(ws) => ws,
+                Err(err) => return fail(err),
+            };
+            ws.add_member(MemberRef::edit(name));
+            match root.save_workspace(&ws) {
+                Ok(()) => {
+                    println!("{workspace}\t{name} · edit");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => fail(err),
+            }
+        }
+        EditCmd::Snap { name } => {
+            if let Ok(mut c) = anvil::serve::Client::connect(anvil::serve::default_sock()) {
+                return match c.edit_snap(name) {
+                    Ok(buf) => {
+                        print!("{}", buf.text);
+                        if !buf.text.ends_with('\n') && !buf.text.is_empty() {
+                            println!();
+                        }
+                        ExitCode::SUCCESS
+                    }
+                    Err(err) => fail(err),
+                };
+            }
+            match root.edit_path(name) {
+                Ok(path) => match std::fs::read_to_string(path) {
+                    Ok(text) => {
+                        print!("{text}");
+                        ExitCode::SUCCESS
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => ExitCode::SUCCESS,
+                    Err(err) => fail(err),
+                },
+                Err(err) => fail(err),
+            }
+        }
+        EditCmd::Write { name, text } => {
+            let payload = if text.is_empty() {
+                let mut buf = String::new();
+                if let Err(err) = io::stdin().read_to_string(&mut buf) {
+                    return fail(err);
+                }
+                buf
+            } else {
+                let mut s = text.join(" ");
+                if !s.ends_with('\n') {
+                    s.push('\n');
+                }
+                s
+            };
+            if let Ok(mut c) = anvil::serve::Client::connect(anvil::serve::default_sock()) {
+                if let Err(err) = c.edit(name, anvil::serve::EditOp::Set, &payload) {
+                    return fail(err);
+                }
+                println!("{name}\t{} bytes", payload.len());
+                return ExitCode::SUCCESS;
+            }
+            match root.edit_path(name) {
+                Ok(path) => {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    match std::fs::write(&path, payload.as_bytes()) {
+                        Ok(()) => {
+                            println!("{name}\t{} bytes", payload.len());
+                            ExitCode::SUCCESS
+                        }
+                        Err(err) => fail(err),
+                    }
+                }
+                Err(err) => fail(err),
+            }
+        }
     }
 }
 

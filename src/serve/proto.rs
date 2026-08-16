@@ -73,6 +73,17 @@ pub enum Req {
         id: String,
         workspace: String,
     },
+    EditSnap {
+        id: String,
+        name: String,
+    },
+    Edit {
+        id: String,
+        name: String,
+        edit_op: super::edit::EditOp,
+        #[serde(default)]
+        text: String,
+    },
 }
 
 impl Req {
@@ -91,7 +102,9 @@ impl Req {
             | Self::PtyWrite { id, .. }
             | Self::PtyResize { id, .. }
             | Self::PtySnap { id, .. }
-            | Self::Warm { id, .. } => id,
+            | Self::Warm { id, .. }
+            | Self::EditSnap { id, .. }
+            | Self::Edit { id, .. } => id,
         }
     }
 }
@@ -163,6 +176,12 @@ pub enum Msg {
         runs: Vec<Vec<super::pty::PtyRun>>,
         alive: bool,
     },
+    EditBuf {
+        id: String,
+        name: String,
+        text: String,
+        cursor: usize,
+    },
 }
 
 impl Msg {
@@ -179,7 +198,8 @@ impl Msg {
             | Self::Inspect { id, .. }
             | Self::Mounted { id, .. }
             | Self::Unmounted { id, .. }
-            | Self::PtyScreen { id, .. } => id,
+            | Self::PtyScreen { id, .. }
+            | Self::EditBuf { id, .. } => id,
         }
     }
 }

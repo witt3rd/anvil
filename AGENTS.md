@@ -185,6 +185,9 @@ anvil workspace add fleet-os audit
 anvil workspace add fleet-os bash --pty
 anvil workspace add fleet-os clock --clock
 anvil workspace add fleet-os audit --log
+anvil workspace add fleet-os notes --edit
+anvil edit write notes hello
+anvil edit snap notes
 anvil pty new bash --workspace fleet-os
 anvil pty snap bash                  # live screen; warms $SHELL
 anvil pty write bash echo anvil-pty-ok

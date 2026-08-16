@@ -78,8 +78,9 @@ Other ops: `ping`, `reset` (drop namespace + pickle), `shutdown`.
   `$ANVIL_ROOT` (default `~/.anvil`). Destroying a workspace or catalog
   does not destroy its occupants.
 - smith without `--store` is a casing: Tab focuses the rail, `n` names
-  a session (empty Enter mints a word), `p` names a PTY, `c` adds a
-  clock member, `g` pins a diagnose log of the focused session. Enter
+  a session (empty Enter mints a word), `p` names a PTY, `e` names a
+  text editor, `c` adds a clock member, `g` pins a diagnose log of
+  the focused session. Enter
   exposes a member. First attach warms the front bench. Transcript is
   `sessions/<id>/transcript.jsonl`. `--store` is the old single-pane
   escape hatch.
