@@ -169,9 +169,11 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
     assert_eq!(view.windows[0].panes.len(), 2);
     let a = &view.windows[0].panes[0];
     let b = &view.windows[0].panes[1];
-    assert_eq!(a.cols + b.cols, 80);
-    assert_eq!(a.rows, 24);
-    assert_eq!(b.rows, 24);
+    // The default gap is 1: each pane keeps a margin, so the two
+    // tiled panes span 4 fewer cells than the tty.
+    assert_eq!(a.cols + b.cols, 76);
+    assert_eq!(a.rows, 22);
+    assert_eq!(b.rows, 22);
 
     // resize the tty: the panes relay out
     client.ok(|id| Request::Resize {
@@ -186,8 +188,8 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
     }) else {
         panic!("expected a session view")
     };
-    assert_eq!(view.windows[0].panes[0].cols + view.windows[0].panes[1].cols, 100);
-    assert_eq!(view.windows[0].panes[0].rows, 40);
+    assert_eq!(view.windows[0].panes[0].cols + view.windows[0].panes[1].cols, 96);
+    assert_eq!(view.windows[0].panes[0].rows, 38);
 
     // spawn a process in the focused pane, write to it, read its grid
     client.ok(|id| Request::Spawn {

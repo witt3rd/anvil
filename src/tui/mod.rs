@@ -338,11 +338,13 @@ impl Client {
         &self.theme
     }
 
-    /// Draw one frame: fill the base, the session list column, the
-    /// panes' grids, the status line, and the prefix popup.
+    /// Draw one frame: fill the ultimate background, the session list
+    /// column, the panes' grids, the status line, and the prefix
+    /// popup. The ultimate background (`bg.panel`) shows behind and
+    /// between the tiles; each tile's ground is `bg.base`.
     pub fn draw(&self, frame: &mut ratatui::Frame) {
         let area = frame.area();
-        frame.render_widget(Block::default().bg(self.c("bg.base")), area);
+        frame.render_widget(Block::default().bg(self.c("bg.panel")), area);
 
         let wide = area.width >= WIDE_MIN;
         if wide {
@@ -366,9 +368,9 @@ impl Client {
     }
 
     /// The session list: the attached session wears the accent border;
-    /// the rest are muted.
+    /// the rest are muted. The column's background is the frame's
+    /// ultimate background.
     fn draw_sidebar(&self, frame: &mut ratatui::Frame, area: Rect) {
-        frame.render_widget(Block::default().bg(self.c("bg.panel")), area);
         let mut y = area.y;
         let border = self.c("accent.primary");
         let selected = self.c("accent.primary");
@@ -444,8 +446,8 @@ impl Client {
         );
     }
 
-    /// A pane: its grid, styled by the runs the daemon kept. The
-    /// focused pane's cursor shows.
+    /// A pane: its `bg.base` ground, then its grid styled by the runs
+    /// the daemon kept. The focused pane's cursor shows.
     fn draw_pane(&self, frame: &mut ratatui::Frame, pane_id: &str, rect: Rect, focused: bool) {
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -453,6 +455,7 @@ impl Client {
         let Some(grid) = self.grids.get(pane_id) else {
             return;
         };
+        frame.render_widget(Block::default().bg(self.c("bg.base")), rect);
         let mut lines: Vec<Line> = Vec::new();
         for (i, runs) in grid.runs.iter().enumerate() {
             if i >= rect.height as usize {

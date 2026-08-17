@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use super::pane::{Grid, Pane};
+use super::tiling::Tiling;
 
 const FILE: &str = "session.json";
 const DEFAULT_COLS: u16 = 80;
@@ -86,6 +87,7 @@ pub struct Session {
     next_id: u64,
     tty_cols: u16,
     tty_rows: u16,
+    gap: u16,
     windows: Vec<Window>,
     focused: String,
     panes: HashMap<String, Arc<Pane>>,
@@ -94,14 +96,17 @@ pub struct Session {
 /// The sessions the daemon owns. Named, on disk under a root.
 pub struct Sessions {
     root: PathBuf,
+    tiling: Tiling,
     live: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
 }
 
 impl Sessions {
     pub fn open(root: PathBuf) -> io::Result<Sessions> {
         fs::create_dir_all(&root)?;
+        let tiling = Tiling::load(&root);
         Ok(Sessions {
             root,
+            tiling,
             live: Mutex::new(HashMap::new()),
         })
     }
@@ -148,6 +153,7 @@ impl Sessions {
             next_id: file.next_id,
             tty_cols: file.tty_cols,
             tty_rows: file.tty_rows,
+            gap: self.tiling.gap,
             windows: vec![Window {
                 id: "1".to_string(),
                 tree: Tree::Leaf {
@@ -187,6 +193,7 @@ impl Sessions {
             next_id: file.next_id,
             tty_cols: file.tty_cols,
             tty_rows: file.tty_rows,
+            gap: self.tiling.gap,
             windows: file
                 .windows
                 .into_iter()
@@ -247,7 +254,7 @@ impl Session {
         let mut windows = Vec::new();
         for window in &self.windows {
             let mut panes = Vec::new();
-            let rects = rects_of(&window.tree, self.tty_cols, self.tty_rows);
+            let rects = rects_of(&window.tree, self.tty_cols, self.tty_rows, self.gap);
             collect_panes(&window.tree, &mut panes);
             panes.sort();
             let panes = panes
@@ -296,7 +303,7 @@ impl Session {
             .position(|w| w.id == window_id)
             .ok_or_else(|| io::Error::other("no such window"))?;
         let tree = self.windows[idx].tree.clone();
-        let rects = rects_of(&tree, self.tty_cols, self.tty_rows);
+        let rects = rects_of(&tree, self.tty_cols, self.tty_rows, self.gap);
         if !rects.contains_key(&self.focused) {
             return Err(io::Error::other("no such pane"));
         }
@@ -373,7 +380,7 @@ impl Session {
     fn all_rects(&self) -> HashMap<String, (u16, u16, u16, u16)> {
         let mut rects = HashMap::new();
         for window in &self.windows {
-            layout(&window.tree, self.tty_cols, self.tty_rows, 0, 0, &mut rects);
+            layout(&window.tree, self.tty_cols, self.tty_rows, 0, 0, self.gap, &mut rects);
         }
         rects
     }
@@ -415,30 +422,41 @@ fn layout(
     rows: u16,
     x: u16,
     y: u16,
+    gap: u16,
     out: &mut HashMap<String, (u16, u16, u16, u16)>,
 ) {
     match tree {
         Tree::Leaf { id } => {
-            out.insert(id.clone(), (x, y, cols, rows));
+            let cols = cols.saturating_sub(2 * gap).max(1);
+            let rows = rows.saturating_sub(2 * gap).max(1);
+            out.insert(
+                id.clone(),
+                (x.saturating_add(gap), y.saturating_add(gap), cols, rows),
+            );
         }
         Tree::Split { dir, a, b } => match dir {
             Dir::Cols => {
                 let half = cols / 2;
-                layout(a, half, rows, x, y, out);
-                layout(b, cols - half, rows, x + half, y, out);
+                layout(a, half, rows, x, y, gap, out);
+                layout(b, cols - half, rows, x + half, y, gap, out);
             }
             Dir::Rows => {
                 let half = rows / 2;
-                layout(a, cols, half, x, y, out);
-                layout(b, cols, rows - half, x, y + half, out);
+                layout(a, cols, half, x, y, gap, out);
+                layout(b, cols, rows - half, x, y + half, gap, out);
             }
         },
     }
 }
 
-fn rects_of(tree: &Tree, cols: u16, rows: u16) -> HashMap<String, (u16, u16, u16, u16)> {
+fn rects_of(
+    tree: &Tree,
+    cols: u16,
+    rows: u16,
+    gap: u16,
+) -> HashMap<String, (u16, u16, u16, u16)> {
     let mut rects = HashMap::new();
-    layout(tree, cols, rows, 0, 0, &mut rects);
+    layout(tree, cols, rows, 0, 0, gap, &mut rects);
     rects
 }
 
@@ -549,9 +567,14 @@ mod tests {
         assert_eq!(view.windows[0].panes.len(), 2);
         let a = &view.windows[0].panes[0];
         let b = &view.windows[0].panes[1];
-        assert_eq!(a.cols + b.cols, 80, "{a:?} {b:?}");
-        assert_eq!(a.rows, 24);
-        assert_eq!(b.rows, 24);
+        // The default gap is 1: each pane keeps a margin from its
+        // neighbors and the canvas edge.
+        assert_eq!(a.x, 1);
+        assert_eq!(a.y, 1);
+        assert_eq!(b.x, 41, "{a:?} {b:?}");
+        assert_eq!(a.cols + b.cols, 76, "{a:?} {b:?}");
+        assert_eq!(a.rows, 22);
+        assert_eq!(b.rows, 22);
     }
 
     #[test]
@@ -580,8 +603,28 @@ mod tests {
         work.lock().unwrap().resize(100, 50).unwrap();
 
         let view = work.lock().unwrap().view();
-        assert_eq!(view.windows[0].panes[0].cols + view.windows[0].panes[1].cols, 100);
-        assert_eq!(view.windows[0].panes[0].rows, 50);
+        // Gap 1 shrinks each pane by 2 cols and 2 rows.
+        assert_eq!(view.windows[0].panes[0].cols + view.windows[0].panes[1].cols, 96);
+        assert_eq!(view.windows[0].panes[0].rows, 48);
+    }
+
+    #[test]
+    fn rects_keep_the_gap_from_neighbors_and_canvas() {
+        let tree = Tree::Split {
+            dir: Dir::Cols,
+            a: Box::new(Tree::Leaf { id: "1".into() }),
+            b: Box::new(Tree::Leaf { id: "2".into() }),
+        };
+        let rects = rects_of(&tree, 20, 10, 2);
+        // A margin of 2 on every side: 2 from the canvas edge, 4
+        // between the two panes.
+        assert_eq!(rects["1"], (2, 2, 6, 6));
+        assert_eq!(rects["2"], (12, 2, 6, 6));
+
+        // Gap 0 is the full-bleed layout from before gaps existed.
+        let rects = rects_of(&tree, 20, 10, 0);
+        assert_eq!(rects["1"], (0, 0, 10, 10));
+        assert_eq!(rects["2"], (10, 0, 10, 10));
     }
 
     #[test]

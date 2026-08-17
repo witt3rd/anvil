@@ -4,6 +4,7 @@
 
 pub mod pane;
 pub mod session;
+pub mod tiling;
 
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};

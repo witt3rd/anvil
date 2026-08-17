@@ -101,15 +101,15 @@ Two scopes control key routing:
 ### Actions
 
 Actions are the kernel-only subset — only operations that map to the
-six words. The full set in `src/tui/keymap.rs`:
+six words and the documented wire ops. The full set in
+`src/tui/keymap.rs`:
 
 | Kernel word | Actions |
 |---|---|
-| **client** | `Detach`, `Help`, `ReloadConfig` |
+| **client** | `Detach`, `Help` |
 | **session** | `NewSession`, `SwitchSession(1..9)` |
-| **window** | `NewWindow`, `CloseWindow`, `NextWindow`, `PrevWindow` |
-| **pane** | `SplitVertical`, `SplitHorizontal`, `ClosePane`, `FocusLeft/Down/Up/Right`, `SwapLeft/Down/Up/Right`, `CycleNext`, `Zoom`, `GrowPane`, `ShrinkPane` |
-| **process** | `PageUp`, `PageDown` |
+| **window** | `NewWindow` |
+| **pane** | `SplitVertical`, `SplitHorizontal` |
 
 ### Default keybinds
 
@@ -119,25 +119,11 @@ All binds are in prefix mode (`Ctrl+B` then...):
 |---|---|---|
 | `q` | Detach | Session |
 | `?` | Help | Session |
-| `r` | ReloadConfig | Session |
 | `n` | NewSession | Session |
 | `1..9` | SwitchSession(n) | Session |
 | `c` | NewWindow | Window |
-| `w` | CloseWindow | Window |
-| `]` | NextWindow | Window |
-| `[` | PrevWindow | Window |
 | `v` | SplitVertical | Pane |
 | `-` | SplitHorizontal | Pane |
-| `x` | ClosePane | Pane |
-| `h/j/k/l` | Focus pane | Pane |
-| `s` → `h/j/k/l` | Swap pane | Pane |
-| `Tab` | CycleNext | Pane |
-| `z` | Zoom | Pane |
-| `=` / `+` | Grow/Shrink pane | Pane |
-| `PageUp/Down` | Page scroll | Process |
-
-The `s` prefix shows a sub-group in the which-key popup: `sh` (swap
-left), `sj` (swap down), `sk` (swap up), `sl` (swap right).
 
 ### Event flow
 
@@ -145,9 +131,7 @@ left), `sj` (swap down), `sk` (swap up), `sl` (swap right).
 Ctrl+B  →  set_scope(Prefix), toggle popup
 Key      →  handle_key() resolves binding
            ↓ found: dispatch action, dismiss, return to Global
-           ↓ not found: dismiss (or catch_all)
 Escape   →  dismiss, return to Global
-Number   →  SwitchSession(n) (handled outside which-key)
 ```
 
 ### Rendering
@@ -170,23 +154,45 @@ left, the panes in the middle, one status line at the bottom.
   focused pane sit on the left; the key hints sit on the right, in the
   muted text.
 
-Chrome is quiet. Backgrounds step from the base to the panel; the
-attached session in the list wears the accent border and text; all
-other text is muted. The pane's grid fills its rectangle with its own
-content; the chrome stays in the gray steps and the accent.
+Chrome is quiet. The frame wears the **ultimate background**, the
+`bg.panel` token — the same color as the session list column. The
+ultimate background shows behind the tiles and in the gaps between
+them. Each tile's ground is `bg.base`; the pane's grid draws on that
+ground. The attached session in the list wears the accent border and
+text; all other text is muted. The chrome stays in the gray steps and
+the accent.
+
+## The gap
+
+The **gap** is a tiling value in the daemon (kernel: the daemon owns
+the layout). It is the margin each pane keeps from its neighbors and
+the canvas edge, in cells. The daemon threads it through every split
+and resize, so a pane's process sees a PTY sized to the tile, and the
+space between tiles is the ultimate background.
+
+Tiling values live in a config file at `<root>/tiling.json`, one JSON
+object per set, like the theme tokens. The first value is `gap`
+(default 1):
+
+    {"gap": 2}
+
+A `gap` of 0 is the full-bleed layout — tiles that abut one another.
 
 ## Theme integration
 
-The ratatui client uses the `opencode` builtin theme
-([opaline](https://github.com/hyperb1iss/opaline)): semantic tokens
-that resolve to colors. The client names tokens, never hex values.
+The ratatui client ships the `opencode` palette in `themes/opencode.toml`
+and embeds it at compile time, loading it through
+[opaline](https://github.com/hyperb1iss/opaline)'s public loader.
+Semantic tokens resolve to colors; the client names tokens, never hex
+values. opaline itself is untouched — a theme is a data file, loaded
+with the library's own API.
 
 The tokens the chrome uses:
 
 | token | use |
 |---|---|
-| `bg.base` | the whole frame |
-| `bg.panel` | the session list column |
+| `bg.base` | the tile's ground |
+| `bg.panel` | the ultimate background: the frame, the gaps, the session list |
 | `bg.elevated` | hovered and elevated surfaces |
 | `text.primary` | the session name, the focused pane |
 | `text.muted` | hints, other sessions |
