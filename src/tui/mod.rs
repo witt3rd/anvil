@@ -302,15 +302,19 @@ impl Client {
     }
 
     /// An action is a wire op. Every branch sends the op, then reads
-    /// the new state back.
+    /// the new state back. Help re-opens the prefix popup showing the
+    /// bindings; Escape leaves it.
     fn dispatch(&mut self, action: Action) -> io::Result<()> {
-        let keep_popup = matches!(action, Action::Help);
+        if matches!(action, Action::Help) {
+            self.which_key.set_scope(Scope::Prefix);
+            self.which_key.toggle();
+            return Ok(());
+        }
         let result = match action {
             Action::Detach => {
                 self.detached = true;
                 Ok(())
             }
-            Action::Help => Ok(()),
             Action::NewSession => self.new_session(),
             Action::SwitchSession(n) => self.switch_session(n),
             Action::NewWindow => {
@@ -329,12 +333,10 @@ impl Client {
                 }
                 self.refresh()
             }
+            Action::Help => unreachable!(),
         };
         self.which_key.set_scope(Scope::Global);
         self.which_key.dismiss();
-        if keep_popup {
-            self.which_key.toggle();
-        }
         result
     }
 
