@@ -211,9 +211,10 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
                 .map(|_| Value::Empty {})
         }),
         Request::Resize { cols, rows, .. } => attached_session(sessions, attached).and_then(|s| {
+            let gap = sessions.tiling().gap;
             s.lock()
                 .map_err(|_| io::Error::other("session busy"))?
-                .resize(cols, rows)
+                .resize(cols, rows, gap)
                 .map(|_| Value::Empty {})
         }),
         Request::Spawn { pane, program, .. } => {

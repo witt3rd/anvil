@@ -96,19 +96,22 @@ pub struct Session {
 /// The sessions the daemon owns. Named, on disk under a root.
 pub struct Sessions {
     root: PathBuf,
-    tiling: Tiling,
     live: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
 }
 
 impl Sessions {
     pub fn open(root: PathBuf) -> io::Result<Sessions> {
         fs::create_dir_all(&root)?;
-        let tiling = Tiling::load(&root);
         Ok(Sessions {
             root,
-            tiling,
             live: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The current tiling config, re-read from disk so a config
+    /// change applies to the next layout without a daemon restart.
+    pub fn tiling(&self) -> Tiling {
+        Tiling::load(&self.root)
     }
 
     /// Enumerate — name every session it owns.
@@ -153,7 +156,7 @@ impl Sessions {
             next_id: file.next_id,
             tty_cols: file.tty_cols,
             tty_rows: file.tty_rows,
-            gap: self.tiling.gap,
+            gap: self.tiling().gap,
             windows: vec![Window {
                 id: "1".to_string(),
                 tree: Tree::Leaf {
@@ -193,7 +196,7 @@ impl Sessions {
             next_id: file.next_id,
             tty_cols: file.tty_cols,
             tty_rows: file.tty_rows,
-            gap: self.tiling.gap,
+            gap: self.tiling().gap,
             windows: file
                 .windows
                 .into_iter()
@@ -315,7 +318,8 @@ impl Session {
     }
 
     /// Resize the tty: the panes relay out; the processes are told.
-    pub fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
+    pub fn resize(&mut self, cols: u16, rows: u16, gap: u16) -> io::Result<()> {
+        self.gap = gap;
         self.tty_cols = cols.max(2);
         self.tty_rows = rows.max(2);
         let rects = self.all_rects();
@@ -600,7 +604,7 @@ mod tests {
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
         work.lock().unwrap().split("1").unwrap();
-        work.lock().unwrap().resize(100, 50).unwrap();
+        work.lock().unwrap().resize(100, 50, 1).unwrap();
 
         let view = work.lock().unwrap().view();
         // Gap 1 shrinks each pane by 2 cols and 2 rows.
