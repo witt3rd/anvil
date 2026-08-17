@@ -23,9 +23,9 @@ use crate::proto::{Reply, Request, Value};
 
 use keymap::{Action, AppWhichKey, Scope, build_which_key_state};
 
-/// The opencode builtin theme (opaline): near-black step grays with a
-/// warm orange accent.
-const THEME_ID: &str = "opencode";
+/// The opencode palette, shipped with anvil and loaded through
+/// opaline's public loader — opaline itself stays untouched.
+const THEME_TOML: &str = include_str!("../../themes/opencode.toml");
 
 // The chrome geometry, in opencode's proportions.
 const SIDEBAR_COLS: u16 = 42; // the session list column
@@ -64,7 +64,8 @@ impl Client {
     pub fn connect(sock: &Path) -> io::Result<Client> {
         let stream = UnixStream::connect(sock)?;
         let reader = BufReader::new(stream.try_clone()?);
-        let theme = opaline::builtins::load_by_name(THEME_ID).expect("opencode builtin theme");
+        let theme = opaline::loader::load_from_str(THEME_TOML, None)
+            .expect("the embedded opencode theme is valid");
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let mut client = Client {
             stream,

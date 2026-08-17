@@ -1,0 +1,91 @@
+# Opencode — the opencode TUI palette (light)
+# https://github.com/anomalyco/opencode
+
+[meta]
+name = "Opencode Light"
+author = "Opencode"
+variant = "light"
+version = "1.0"
+description = "The opencode TUI palette, light: deep blue on near-white step grays"
+
+[palette]
+# Grayscale steps, light
+step1 = "#ffffff"   # background
+step2 = "#fafafa"   # panel
+step3 = "#f5f5f5"   # element
+step4 = "#ebebeb"   # active
+step5 = "#e1e1e1"   # selection
+step6 = "#d4d4d4"   # border subtle
+step7 = "#b8b8b8"   # border
+step8 = "#a0a0a0"   # border active
+step9 = "#3b7dd8"   # primary — deep blue
+step10 = "#2968c3"  # primary deep
+step11 = "#8a8a8a"  # text muted
+step12 = "#1a1a1a"  # text
+
+# Accents
+secondary = "#7b5bb6"  # violet
+accent = "#d68c27"     # orange
+red = "#d1383d"
+orange = "#d68c27"
+green = "#3d9a57"
+cyan = "#318795"
+yellow = "#b0851f"
+
+[tokens]
+"text.primary" = "step12"
+"text.secondary" = "step12"
+"text.muted" = "step11"
+"text.dim" = "step6"
+
+"bg.base" = "step1"
+"bg.panel" = "step2"
+"bg.code" = "step1"
+"bg.elevated" = "step3"
+"bg.highlight" = "step3"
+"bg.active" = "step4"
+"bg.selection" = "step5"
+
+"accent.primary" = "step9"
+"accent.secondary" = "secondary"
+"accent.tertiary" = "accent"
+"accent.deep" = "step10"
+
+success = "green"
+error = "red"
+warning = "orange"
+info = "cyan"
+
+"border.focused" = "step8"
+"border.unfocused" = "step7"
+"border.subtle" = "step6"
+
+"code.keyword" = "accent"
+"code.function" = "step9"
+"code.string" = "green"
+"code.number" = "orange"
+"code.comment" = "step11"
+"code.type" = "yellow"
+"code.line_number" = "step11"
+
+[styles]
+keyword = { fg = "accent.tertiary", bold = true }
+line_number = { fg = "code.line_number" }
+selected = { fg = "accent.primary", bg = "bg.selection" }
+active_selected = { fg = "accent.primary", bg = "bg.active", bold = true }
+muted = { fg = "text.muted" }
+dimmed = { fg = "text.dim" }
+focused_border = { fg = "border.focused" }
+unfocused_border = { fg = "border.unfocused" }
+success_style = { fg = "success" }
+error_style = { fg = "error" }
+warning_style = { fg = "warning" }
+info_style = { fg = "info" }
+inline_code = { fg = "success", bg = "bg.code" }
+
+[gradients]
+primary = ["step9", "step10"]
+warm = ["orange", "yellow"]
+success_gradient = ["green", "cyan"]
+error_gradient = ["red", "orange"]
+aurora = ["accent", "secondary", "cyan", "green", "orange"]

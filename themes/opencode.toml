@@ -1,0 +1,91 @@
+# Opencode — the opencode TUI palette (dark)
+# https://github.com/anomalyco/opencode
+
+[meta]
+name = "Opencode"
+author = "Opencode"
+variant = "dark"
+version = "1.0"
+description = "The opencode TUI palette: warm orange on near-black step grays"
+
+[palette]
+# Grayscale steps, dark
+step1 = "#0a0a0a"   # background
+step2 = "#141414"   # panel
+step3 = "#1e1e1e"   # element
+step4 = "#282828"   # active
+step5 = "#323232"   # selection
+step6 = "#3c3c3c"   # border subtle
+step7 = "#484848"   # border
+step8 = "#606060"   # border active
+step9 = "#fab283"   # primary — warm orange
+step10 = "#ffc09f"  # primary bright
+step11 = "#808080"  # text muted
+step12 = "#eeeeee"  # text
+
+# Accents
+secondary = "#5c9cf5"  # blue
+accent = "#9d7cd8"     # purple
+red = "#e06c75"
+orange = "#f5a742"
+green = "#7fd88f"
+cyan = "#56b6c2"
+yellow = "#e5c07b"
+
+[tokens]
+"text.primary" = "step12"
+"text.secondary" = "step12"
+"text.muted" = "step11"
+"text.dim" = "step6"
+
+"bg.base" = "step1"
+"bg.panel" = "step2"
+"bg.code" = "step1"
+"bg.elevated" = "step3"
+"bg.highlight" = "step3"
+"bg.active" = "step4"
+"bg.selection" = "step5"
+
+"accent.primary" = "step9"
+"accent.secondary" = "secondary"
+"accent.tertiary" = "accent"
+"accent.deep" = "step10"
+
+success = "green"
+error = "red"
+warning = "orange"
+info = "cyan"
+
+"border.focused" = "step8"
+"border.unfocused" = "step7"
+"border.subtle" = "step6"
+
+"code.keyword" = "accent"
+"code.function" = "step9"
+"code.string" = "green"
+"code.number" = "orange"
+"code.comment" = "step11"
+"code.type" = "yellow"
+"code.line_number" = "step11"
+
+[styles]
+keyword = { fg = "accent.tertiary", bold = true }
+line_number = { fg = "code.line_number" }
+selected = { fg = "accent.primary", bg = "bg.selection" }
+active_selected = { fg = "accent.primary", bg = "bg.active", bold = true }
+muted = { fg = "text.muted" }
+dimmed = { fg = "text.dim" }
+focused_border = { fg = "border.focused" }
+unfocused_border = { fg = "border.unfocused" }
+success_style = { fg = "success" }
+error_style = { fg = "error" }
+warning_style = { fg = "warning" }
+info_style = { fg = "info" }
+inline_code = { fg = "success", bg = "bg.code" }
+
+[gradients]
+primary = ["step9", "step10"]
+warm = ["orange", "yellow"]
+success_gradient = ["green", "cyan"]
+error_gradient = ["red", "orange"]
+aurora = ["accent", "secondary", "cyan", "green", "orange"]
