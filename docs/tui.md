@@ -27,9 +27,10 @@ prefix go to the focused pane’s process.
 
 ## What is not a word yet
 
-Status line, sidebar, transcript, prompt: ordinary English for pieces
-of chrome UI. They have not earned a place next to daemon and pane.
-Add them when we build them.
+The chrome section describes the status line and the sidebar as they
+exist. Transcript and prompt stay ordinary English until they are
+built. Chrome pieces keep their ordinary names; the kernel words in
+`docs/kernel.md` stay six.
 
 The library is whatever does immediate-mode cells (today that is
 ratatui, when we fault it in). Other multiplexers are still not
@@ -71,10 +72,131 @@ now modular rather than ad hoc.
 [component architecture]:
   https://github.com/ratatui/ratatui-website/blob/main/src/content/docs/concepts/application-patterns/component-architecture.md
 
-## Opaline theme integration
+## Which-key input handling
 
-The ratatui client can incorporate a theme engine like
-[opaline](https://github.com/hyperb1iss/opaline)
-for semantic color palettes. Themes define tokens (`bg.base`, `bg.selection`, etc.) that map to
-ANSI colors, enabling consistent theming across the application. The client draws immediate-mode
-widgets styled from these resolved colors — no widget tree, no retained state.
+The client uses [ratatui-which-key] for all keyboard input. It owns the
+event loop: every keypress goes through `handle_key`, which resolves
+bindings in the current scope and returns a typed `Action`.
+
+[ratatui-which-key]: https://docs.rs/ratatui-which-key
+
+### Prefix key
+
+`Ctrl+B` is the prefix key (kernel: "A prefix is a multiplexer
+command"). Pressing it arms prefix mode and shows the which-key popup.
+The next key dispatches the action. Escape cancels.
+
+Non-prefix keys go to the focused pane's process (kernel: "Anything
+else goes to the focused pane's process").
+
+### Scopes
+
+Two scopes control key routing:
+
+- **Global** — normal mode. No bindings. All keys pass through to the
+  focused pane.
+- **Prefix** — armed after `Ctrl+B`. Bindings here are multiplexer
+  commands. After dispatch, scope returns to Global.
+
+### Actions
+
+Actions are the kernel-only subset — only operations that map to the
+six words. The full set in `src/tui/keymap.rs`:
+
+| Kernel word | Actions |
+|---|---|
+| **client** | `Detach`, `Help`, `ReloadConfig` |
+| **session** | `NewSession`, `SwitchSession(1..9)` |
+| **window** | `NewWindow`, `CloseWindow`, `NextWindow`, `PrevWindow` |
+| **pane** | `SplitVertical`, `SplitHorizontal`, `ClosePane`, `FocusLeft/Down/Up/Right`, `SwapLeft/Down/Up/Right`, `CycleNext`, `Zoom`, `GrowPane`, `ShrinkPane` |
+| **process** | `PageUp`, `PageDown` |
+
+### Default keybinds
+
+All binds are in prefix mode (`Ctrl+B` then...):
+
+| Key | Action | Category |
+|---|---|---|
+| `q` | Detach | Session |
+| `?` | Help | Session |
+| `r` | ReloadConfig | Session |
+| `n` | NewSession | Session |
+| `1..9` | SwitchSession(n) | Session |
+| `c` | NewWindow | Window |
+| `w` | CloseWindow | Window |
+| `]` | NextWindow | Window |
+| `[` | PrevWindow | Window |
+| `v` | SplitVertical | Pane |
+| `-` | SplitHorizontal | Pane |
+| `x` | ClosePane | Pane |
+| `h/j/k/l` | Focus pane | Pane |
+| `s` → `h/j/k/l` | Swap pane | Pane |
+| `Tab` | CycleNext | Pane |
+| `z` | Zoom | Pane |
+| `=` / `+` | Grow/Shrink pane | Pane |
+| `PageUp/Down` | Page scroll | Process |
+
+The `s` prefix shows a sub-group in the which-key popup: `sh` (swap
+left), `sj` (swap down), `sk` (swap up), `sl` (swap right).
+
+### Event flow
+
+```
+Ctrl+B  →  set_scope(Prefix), toggle popup
+Key      →  handle_key() resolves binding
+           ↓ found: dispatch action, dismiss, return to Global
+           ↓ not found: dismiss (or catch_all)
+Escape   →  dismiss, return to Global
+Number   →  SwitchSession(n) (handled outside which-key)
+```
+
+### Rendering
+
+The which-key popup renders as an overlay on top of the chrome. The
+`WhichKey` widget writes directly to the frame's buffer, clearing and
+redrawing the popup area each frame. The popup is only visible when
+`active` is true or a partial key sequence is pending.
+
+## The chrome
+
+The client draws the opencode TUI proportions: a session list on the
+left, the panes in the middle, one status line at the bottom.
+
+- The **session list** is a column of 42 cells. It shows on terminals
+  of 120 cells and wider; narrower terminals show only the panes.
+- The **content** area has a 2-cell gutter on each side. Each pane's
+  grid sits at the geometry the daemon gave it.
+- The **status line** is the bottom row. The session name and its
+  focused pane sit on the left; the key hints sit on the right, in the
+  muted text.
+
+Chrome is quiet. Backgrounds step from the base to the panel; the
+attached session in the list wears the accent border and text; all
+other text is muted. The pane's grid fills its rectangle with its own
+content; the chrome stays in the gray steps and the accent.
+
+## Theme integration
+
+The ratatui client uses the `opencode` builtin theme
+([opaline](https://github.com/hyperb1iss/opaline)): semantic tokens
+that resolve to colors. The client names tokens, never hex values.
+
+The tokens the chrome uses:
+
+| token | use |
+|---|---|
+| `bg.base` | the whole frame |
+| `bg.panel` | the session list column |
+| `bg.elevated` | hovered and elevated surfaces |
+| `text.primary` | the session name, the focused pane |
+| `text.muted` | hints, other sessions |
+| `accent.primary` | the attached session's border and name |
+| `border.focused` | the prefix popup's border |
+
+The prefix (`ctrl-b`) arms the action list; the keys that follow are
+the documented wire ops. The prefix consumes its keys; every other key
+goes to the focused pane's process. `esc` detaches; the session stays.
+
+The client reads the panes' grids from the daemon and copies them at
+their geometry. The prefix popup is the one retained widget in the
+client — a transient overlay, immediate mode everywhere else.

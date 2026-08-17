@@ -4,3 +4,4 @@
 
 pub mod daemon;
 pub mod proto;
+pub mod tui;

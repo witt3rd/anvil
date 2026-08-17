@@ -70,6 +70,9 @@ fn pid_path(sock: &Path) -> PathBuf {
     sock.with_extension("pid")
 }
 
+/// Remove a socket file that is not a live listener. A live listener
+/// on the path — ours or a stranger's — stays; the stranger may be
+/// the real program still in service.
 fn reclaim_stale(sock: &Path) {
     if !sock.exists() {
         return;
@@ -79,6 +82,32 @@ fn reclaim_stale(sock: &Path) {
     }
     let _ = fs::remove_file(sock);
     let _ = fs::remove_file(pid_path(sock));
+}
+
+/// The wire probe: does the listener speak the anvil protocol? A
+/// connectable socket alone is not our daemon — a stranger on the
+/// path must not count as running.
+fn speaks_anvil(sock: &Path) -> bool {
+    let Ok(mut stream) = UnixStream::connect(sock) else {
+        return false;
+    };
+    if stream.set_read_timeout(Some(std::time::Duration::from_secs(1))).is_err() {
+        return false;
+    }
+    let mut line = match serde_json::to_string(&Request::Enumerate { id: "probe".into() }) {
+        Ok(line) => line,
+        Err(_) => return false,
+    };
+    line.push('\n');
+    if stream.write_all(line.as_bytes()).is_err() {
+        return false;
+    }
+    let mut reply = String::new();
+    let mut reader = BufReader::new(stream);
+    if reader.read_line(&mut reply).is_err() || serde_json::from_str::<Reply>(&reply).is_err() {
+        return false;
+    }
+    true
 }
 
 /// One client connection. Each request gets one reply. EOF is a
@@ -213,16 +242,26 @@ fn attached_session(
     sessions.get(name)
 }
 
-/// The socket: is the daemon running?
+/// The socket: is our daemon running?
 pub fn running(sock: &Path) -> bool {
-    UnixStream::connect(sock).is_ok()
+    speaks_anvil(sock)
 }
 
 /// The client starts the daemon when it is not running — the same
 /// binary, detached. Its output goes to a log under the state root.
+/// Returns only when the wire speaks the anvil protocol, so a caller
+/// that connects now talks to our daemon. A live listener that speaks
+/// another protocol stays: it may be the real program in service, and
+/// the caller runs against a separate socket instead.
 pub fn ensure_running(sock: &Path, root: &Path) -> io::Result<()> {
     if running(sock) {
         return Ok(());
+    }
+    if UnixStream::connect(sock).is_ok() {
+        return Err(io::Error::other(format!(
+            "the socket at {} speaks another protocol; set ANVIL_SOCK for a separate daemon",
+            sock.display()
+        )));
     }
     let exe = std::env::current_exe()?;
     if let Some(parent) = sock.parent() {
@@ -248,5 +287,15 @@ pub fn ensure_running(sock: &Path, root: &Path) -> io::Result<()> {
     let child = cmd.spawn()?;
     // Detached: the daemon stays up when the client goes.
     drop(child);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !speaks_anvil(sock) {
+        if std::time::Instant::now() > deadline {
+            return Err(io::Error::other(format!(
+                "the daemon at {} did not come up",
+                sock.display()
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     Ok(())
 }
