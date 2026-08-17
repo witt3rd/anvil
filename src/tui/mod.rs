@@ -34,6 +34,15 @@ const PAD: u16 = 2; // the content gutter on each side
 const GAP: u16 = 1; // between the sidebar and the content
 const STATUS_LINES: u16 = 1; // the status line height
 
+/// A direction of pane focus movement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusDir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 /// The pane canvas the session tty occupies: the terminal minus the
 /// chrome. The sidebar hides below `WIDE_MIN`.
 fn canvas(term_w: u16, term_h: u16) -> (u16, u16) {
@@ -254,6 +263,13 @@ impl Client {
         if key.kind != ratatui::crossterm::event::KeyEventKind::Press {
             return Ok(());
         }
+        if let Ok(dbg) = std::env::var("ANVIL_KEY_DEBUG") {
+            let _ = (|| -> std::io::Result<()> {
+                use std::io::Write as _;
+                let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&dbg)?;
+                writeln!(f, "key: code={:?} mods={:?} active={}", key.code, key.modifiers, self.which_key.active)
+            })();
+        }
         if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.which_key.set_scope(Scope::Prefix);
             self.which_key.toggle();
@@ -333,6 +349,10 @@ impl Client {
                 }
                 self.refresh()
             }
+            Action::FocusLeft => self.focus_dir(FocusDir::Left),
+            Action::FocusRight => self.focus_dir(FocusDir::Right),
+            Action::FocusUp => self.focus_dir(FocusDir::Up),
+            Action::FocusDown => self.focus_dir(FocusDir::Down),
             Action::ClosePane => {
                 if let Some(pane) = self.view.as_ref().map(|v| v.focused.clone()) {
                     self.call(Request::Close { id: String::new(), window: None, pane: Some(pane) })?;
@@ -350,6 +370,61 @@ impl Client {
         self.which_key.set_scope(Scope::Global);
         self.which_key.dismiss();
         result
+    }
+
+    /// Focus the neighboring pane in a direction, read from the view's
+    /// geometry. The client is a viewer — it picks the adjacent pane
+    /// and asks the daemon to focus it.
+    fn focus_dir(&mut self, dir: FocusDir) -> io::Result<()> {
+        let Some(target) = self.neighbor(dir) else {
+            return Ok(());
+        };
+        self.call(Request::Focus { id: String::new(), window: None, pane: Some(target) })?;
+        self.refresh()
+    }
+
+    /// The pane adjacent to the focused one in a direction, from the
+    /// view's geometry. Direction means the closest tile across the
+    /// shared edge that overlaps the focused tile.
+    fn neighbor(&self, dir: FocusDir) -> Option<String> {
+        let view = self.view.as_ref()?;
+        let current = view
+            .windows
+            .iter()
+            .find(|w| w.panes.iter().any(|p| p.pane == view.focused))?;
+        let panes = &current.panes;
+        let f = panes.iter().find(|p| p.pane == view.focused)?;
+        let (fx, fy, fc, fr) = (f.x as i32, f.y as i32, f.cols as i32, f.rows as i32);
+
+        let mut best: Option<(i32, &crate::daemon::session::PaneView)> = None;
+        for p in panes {
+            if p.pane == f.pane {
+                continue;
+            }
+            let (px, py, pc, pr) = (p.x as i32, p.y as i32, p.cols as i32, p.rows as i32);
+            // Rows (for left/right) or cols (for up/down) must overlap
+            // the focused tile's span.
+            let overlap = match dir {
+                FocusDir::Left | FocusDir::Right => py < fy + fr && py + pr > fy,
+                FocusDir::Up | FocusDir::Down => px < fx + fc && px + pc > fx,
+            };
+            if !overlap {
+                continue;
+            }
+            // The neighbor's near edge and the focused tile's far edge
+            // must face each other across the gap.
+            let dist = match dir {
+                FocusDir::Right if px >= fx + fc => px - (fx + fc),
+                FocusDir::Left if px + pc <= fx => fx - (px + pc),
+                FocusDir::Down if py >= fy + fr => py - (fy + fr),
+                FocusDir::Up if py + pr <= fy => fy - (py + pr),
+                _ => continue,
+            };
+            if best.as_ref().is_none_or(|(d, _)| dist < *d) {
+                best = Some((dist, p));
+            }
+        }
+        best.map(|(_, p)| p.pane.clone())
     }
 
     /// Focus the next or previous window, wrapping around.
@@ -370,7 +445,7 @@ impl Client {
             (idx + view.windows.len() - 1) % view.windows.len()
         };
         let window = view.windows[idx].window.clone();
-        self.call(Request::Focus { id: String::new(), window })?;
+        self.call(Request::Focus { id: String::new(), window: Some(window), pane: None })?;
         Ok(())
     }
 
@@ -489,19 +564,29 @@ impl Client {
     /// border. The gap itself is invisible (the frame is `bg.base`).
     fn draw_separators(&self, frame: &mut ratatui::Frame, inner: Rect, panes: &[crate::daemon::session::PaneView]) {
         let sep = Style::default().fg(self.c("border.subtle"));
+        let bottom = frame.area().height;
+        let right = frame.area().width;
         for pane in panes {
             // Beside a column: the gap column right of the tile.
             let gx = pane.x + pane.cols;
             if gx < inner.width && !cell_covered(panes, gx, pane.y) {
+                let x = inner.x + gx;
                 for dy in 0..pane.rows {
-                    frame.buffer_mut().set_stringn(inner.x + gx, inner.y + pane.y + dy, "│", 1, sep);
+                    let y = inner.y + pane.y + dy;
+                    if x < right && y < bottom {
+                        frame.buffer_mut().set_stringn(x, y, "│", 1, sep);
+                    }
                 }
             }
             // Below a row: the gap row under the tile.
             let gy = pane.y + pane.rows;
             if gy < inner.height && !cell_covered(panes, pane.x, gy) {
+                let y = inner.y + gy;
                 for dx in 0..pane.cols {
-                    frame.buffer_mut().set_stringn(inner.x + pane.x + dx, inner.y + gy, "─", 1, sep);
+                    let x = inner.x + pane.x + dx;
+                    if x < right && y < bottom {
+                        frame.buffer_mut().set_stringn(x, y, "─", 1, sep);
+                    }
                 }
             }
         }
@@ -723,7 +808,11 @@ impl Request {
                 pane,
             },
             Request::Split { window, .. } => Request::Split { id: id.into(), window },
-            Request::Focus { window, .. } => Request::Focus { id: id.into(), window },
+            Request::Focus { window, pane, .. } => Request::Focus {
+                id: id.into(),
+                window,
+                pane,
+            },
             Request::Close { window, pane, .. } => Request::Close {
                 id: id.into(),
                 window,
@@ -756,6 +845,7 @@ fn run_loop(
     use ratatui::crossterm::event;
     let size = terminal.size()?;
     client.resize_tty(size.width, size.height)?;
+    client.refresh()?;
     loop {
         terminal.draw(|frame| client.draw(frame))?;
         if !event::poll(Duration::from_millis(50))? {

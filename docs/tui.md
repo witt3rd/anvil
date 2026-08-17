@@ -109,7 +109,7 @@ six words and the documented wire ops. The full set in
 | **client** | `Detach`, `Help` |
 | **session** | `NewSession`, `SwitchSession(1..9)` |
 | **window** | `NewWindow`, `NextWindow`, `PrevWindow`, `CloseWindow` |
-| **pane** | `SplitVertical`, `SplitHorizontal`, `ClosePane` |
+| **pane** | `SplitVertical`, `SplitHorizontal`, `ClosePane`, `FocusLeft`, `FocusDown`, `FocusUp`, `FocusRight` |
 
 ### Default keybinds
 
@@ -128,6 +128,14 @@ All binds are in prefix mode (`Ctrl+B` then...):
 | `v` | SplitVertical | Pane |
 | `-` | SplitHorizontal | Pane |
 | `x` | ClosePane | Pane |
+| `h` | FocusLeft | Pane |
+| `j` | FocusDown | Pane |
+| `k` | FocusUp | Pane |
+| `l` | FocusRight | Pane |
+| `<Left>` | FocusLeft | Pane |
+| `<Down>` | FocusDown | Pane |
+| `<Up>` | FocusUp | Pane |
+| `<Right>` | FocusRight | Pane |
 
 ### Event flow
 

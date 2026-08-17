@@ -45,6 +45,7 @@ the args tell them apart.
 |---|---|---|
 | `split` | `window` | the window is now two panes, tiled |
 | `focus` | `window` | the window becomes the current one; its first pane is focused |
+| `focus` | `pane` | the pane becomes the focused pane; its window becomes current |
 | `close` | `pane` | the pane is gone; its process ends; the layout re-tiles |
 | `close` | `window` | the window is gone; its panes and their processes end |
 | `resize` | `cols`, `rows` | the panes relaid out to the new tty; the processes told (`SIGWINCH`) |

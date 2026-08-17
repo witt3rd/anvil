@@ -51,10 +51,14 @@ pub enum Request {
         id: String,
         window: String,
     },
-    /// Move the focus into a window: it becomes the current one.
+    /// Move the focus: a window becomes the current one, or a pane
+    /// becomes the focused pane.
     Focus {
         id: String,
-        window: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
     },
     /// The pane or window is gone; its processes end (SIGHUP).
     Close {
@@ -166,6 +170,7 @@ mod tests {
             (r#"{"op":"read","id":"h","pane":"1"}"#, "h"),
             (r#"{"op":"split","id":"i","window":"1"}"#, "i"),
             (r#"{"op":"focus","id":"j","window":"1"}"#, "j"),
+            (r#"{"op":"focus","id":"k","pane":"1"}"#, "k"),
             (r#"{"op":"resize","id":"j","cols":100,"rows":40}"#, "j"),
             (r#"{"op":"spawn","id":"k","pane":"1","program":"sh"}"#, "k"),
             (r#"{"op":"write","id":"l","data":"echo hi\n"}"#, "l"),

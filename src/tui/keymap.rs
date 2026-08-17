@@ -18,6 +18,10 @@ pub enum Action {
     SplitHorizontal,
     ClosePane,
     CloseWindow,
+    FocusLeft,
+    FocusDown,
+    FocusUp,
+    FocusRight,
 }
 
 impl std::fmt::Display for Action {
@@ -34,6 +38,10 @@ impl std::fmt::Display for Action {
             Action::SplitHorizontal => write!(f, "split down"),
             Action::ClosePane => write!(f, "close pane"),
             Action::CloseWindow => write!(f, "close window"),
+            Action::FocusLeft => write!(f, "focus left"),
+            Action::FocusDown => write!(f, "focus down"),
+            Action::FocusUp => write!(f, "focus up"),
+            Action::FocusRight => write!(f, "focus right"),
         }
     }
 }
@@ -81,6 +89,14 @@ pub fn build_keymap() -> AppKeymap {
         s.bind("v", Action::SplitVertical, Category::Pane);
         s.bind("-", Action::SplitHorizontal, Category::Pane);
         s.bind("x", Action::ClosePane, Category::Pane);
+        s.bind("h", Action::FocusLeft, Category::Pane);
+        s.bind("j", Action::FocusDown, Category::Pane);
+        s.bind("k", Action::FocusUp, Category::Pane);
+        s.bind("l", Action::FocusRight, Category::Pane);
+        s.bind("<Left>", Action::FocusLeft, Category::Pane);
+        s.bind("<Down>", Action::FocusDown, Category::Pane);
+        s.bind("<Up>", Action::FocusUp, Category::Pane);
+        s.bind("<Right>", Action::FocusRight, Category::Pane);
         s.bind("w", Action::CloseWindow, Category::Window);
     });
 
@@ -89,4 +105,47 @@ pub fn build_keymap() -> AppKeymap {
 
 pub fn build_which_key_state() -> AppWhichKey {
     WhichKeyState::new(build_keymap(), Scope::Global)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn prefixed() -> AppWhichKey {
+        let mut wk = build_which_key_state();
+        wk.set_scope(Scope::Prefix);
+        wk.toggle();
+        wk
+    }
+
+    #[test]
+    fn arrows_dispatch_focus() {
+        let cases = [
+            (KeyCode::Right, Action::FocusRight),
+            (KeyCode::Left, Action::FocusLeft),
+            (KeyCode::Up, Action::FocusUp),
+            (KeyCode::Down, Action::FocusDown),
+        ];
+        for (code, want) in cases {
+            let mut wk = prefixed();
+            let key = KeyEvent::new(code, KeyModifiers::NONE);
+            assert_eq!(wk.handle_key(key), Some(want), "arrow {code:?}");
+        }
+    }
+
+    #[test]
+    fn hjkl_dispatch_focus() {
+        let cases = [
+            ('h', Action::FocusLeft),
+            ('j', Action::FocusDown),
+            ('k', Action::FocusUp),
+            ('l', Action::FocusRight),
+        ];
+        for (c, want) in cases {
+            let mut wk = prefixed();
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            assert_eq!(wk.handle_key(key), Some(want), "key {c}");
+        }
+    }
 }

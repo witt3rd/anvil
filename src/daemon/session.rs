@@ -318,6 +318,19 @@ impl Session {
         self.persist()
     }
 
+    /// Move the focus to a pane: the pane becomes the focused pane.
+    pub fn focus_pane(&mut self, pane_id: &str) -> io::Result<()> {
+        if !self.windows.iter().any(|w| {
+            let mut panes = Vec::new();
+            collect_panes(&w.tree, &mut panes);
+            panes.contains(&pane_id.to_string())
+        }) {
+            return Err(io::Error::other("no such pane"));
+        }
+        self.focused = pane_id.to_string();
+        self.persist()
+    }
+
     /// Close a pane: its process ends; the pane leaves the window, and
     /// the layout re-tiles. A pane that was the window's only pane
     /// takes the window with it. If the closed pane was focused, focus
@@ -829,6 +842,23 @@ mod tests {
         // The dead pane takes a fresh process.
         work.lock().unwrap().spawn("1", "sh").unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
+    }
+
+    #[test]
+    fn focus_pane_moves_the_focused_pane() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().split("1").unwrap();
+        assert_eq!(work.lock().unwrap().view().focused, "1");
+
+        work.lock().unwrap().focus_pane("2").unwrap();
+        assert_eq!(work.lock().unwrap().view().focused, "2");
+        work.lock().unwrap().focus_pane("1").unwrap();
+        assert_eq!(work.lock().unwrap().view().focused, "1");
+
+        let err = work.lock().unwrap().focus_pane("99").unwrap_err();
+        assert!(err.to_string().contains("no such pane"));
     }
 
     #[test]
