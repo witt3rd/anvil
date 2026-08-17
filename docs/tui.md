@@ -158,13 +158,12 @@ left, the panes in the middle, one status line at the bottom.
   focused pane sit on the left; the key hints sit on the right, in the
   muted text.
 
-Chrome is quiet. The frame wears the **ultimate background**, the
-`bg.panel` token — the same color as the session list column. The
-ultimate background shows behind the tiles and in the gaps between
-them. Each tile's ground is `bg.base`; the pane's grid draws on that
-ground. The attached session in the list wears the accent border and
-text; all other text is muted. The chrome stays in the gray steps and
-the accent.
+Chrome is quiet. The frame and the tiles share `bg.base`, so the gap
+between tiles is invisible. The only mark of a boundary is a single
+thin separator line — `│` beside a column, `─` below a row — drawn in
+the subtle border token. The session list column is `bg.panel`. The
+attached session in the list wears the accent border and text; all
+other text is muted. The chrome stays in the gray steps and the accent.
 
 The **active tile** keeps full brightness and holds the cursor. Every
 other tile wears a dark veil: its cells are scaled toward black by a
@@ -176,10 +175,10 @@ active tile.
 
 The **gap** is a tiling value in the daemon (kernel: the daemon owns
 the layout). It is the distance between two adjacent tiles, in cells —
-one value, not doubled. The daemon threads it through every split and
-resize, so a pane's process sees a PTY sized to the tile, and the space
-between tiles is the ultimate background. The canvas edge keeps no
-margin; the client's content gutter holds it.
+one value, not doubled. It is the space the separator line draws in.
+The daemon threads it through every split and resize, so a pane's
+process sees a PTY sized to the tile. The canvas edge keeps no margin;
+the client's content gutter holds it.
 
 Tiling values live in a config file at `<root>/tiling.json`, one JSON
 object per set, like the theme tokens. The first value is `gap`
@@ -202,12 +201,13 @@ The tokens the chrome uses:
 
 | token | use |
 |---|---|
-| `bg.base` | the tile's ground |
-| `bg.panel` | the ultimate background: the frame, the gaps, the session list |
+| `bg.base` | the frame and each tile's ground |
+| `bg.panel` | the session list column |
 | `bg.elevated` | hovered and elevated surfaces |
 | `text.primary` | the session name, the focused pane |
 | `text.muted` | hints, other sessions |
 | `accent.primary` | the attached session's border and name |
+| `border.subtle` | the separator line between tiles |
 | `border.focused` | the prefix popup's border |
 
 The prefix (`ctrl-b`) arms the action list; the keys that follow are

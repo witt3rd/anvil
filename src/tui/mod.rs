@@ -377,13 +377,13 @@ impl Client {
         &self.theme
     }
 
-    /// Draw one frame: fill the ultimate background, the session list
-    /// column, the panes' grids, the status line, and the prefix
-    /// popup. The ultimate background (`bg.panel`) shows behind and
-    /// between the tiles; each tile's ground is `bg.base`.
+    /// Draw one frame: fill the base, the session list column, the
+    /// panes' grids, the status line, and the prefix popup. The frame
+    /// and the tiles share `bg.base`, so the gap between tiles is
+    /// invisible — a single thin separator line marks the boundary.
     pub fn draw(&self, frame: &mut ratatui::Frame) {
         let area = frame.area();
-        frame.render_widget(Block::default().bg(self.c("bg.panel")), area);
+        frame.render_widget(Block::default().bg(self.c("bg.base")), area);
 
         let wide = area.width >= WIDE_MIN;
         if wide {
@@ -407,9 +407,9 @@ impl Client {
     }
 
     /// The session list: the attached session wears the accent border;
-    /// the rest are muted. The column's background is the frame's
-    /// ultimate background.
+    /// the rest are muted. The column's background is `bg.panel`.
     fn draw_sidebar(&self, frame: &mut ratatui::Frame, area: Rect) {
+        frame.render_widget(Block::default().bg(self.c("bg.panel")), area);
         let mut y = area.y;
         let border = self.c("accent.primary");
         let selected = self.c("accent.primary");
@@ -468,6 +468,30 @@ impl Client {
                 height: pane.rows.min(inner.height.saturating_sub(pane.y)),
             };
             self.draw_pane(frame, &pane.pane, rect, pane.pane == view.focused);
+        }
+        self.draw_separators(frame, inner, &current.panes);
+    }
+
+    /// The separators: a single thin line where a gap separates two
+    /// tiles — `│` beside a column, `─` below a row, in the subtle
+    /// border. The gap itself is invisible (the frame is `bg.base`).
+    fn draw_separators(&self, frame: &mut ratatui::Frame, inner: Rect, panes: &[crate::daemon::session::PaneView]) {
+        let sep = Style::default().fg(self.c("border.subtle"));
+        for pane in panes {
+            // Beside a column: the gap column right of the tile.
+            let gx = pane.x + pane.cols;
+            if gx < inner.width && !cell_covered(panes, gx, pane.y) {
+                for dy in 0..pane.rows {
+                    frame.buffer_mut().set_stringn(inner.x + gx, inner.y + pane.y + dy, "│", 1, sep);
+                }
+            }
+            // Below a row: the gap row under the tile.
+            let gy = pane.y + pane.rows;
+            if gy < inner.height && !cell_covered(panes, pane.x, gy) {
+                for dx in 0..pane.cols {
+                    frame.buffer_mut().set_stringn(inner.x + pane.x + dx, inner.y + gy, "─", 1, sep);
+                }
+            }
         }
     }
 
@@ -617,6 +641,13 @@ impl Client {
         }
         style
     }
+}
+
+/// Whether a cell is inside any pane's rectangle, in canvas coords.
+fn cell_covered(panes: &[crate::daemon::session::PaneView], x: u16, y: u16) -> bool {
+    panes
+        .iter()
+        .any(|p| x >= p.x && x < p.x + p.cols && y >= p.y && y < p.y + p.rows)
 }
 
 /// Scale a color toward black. Indexed palette colors resolve to the
