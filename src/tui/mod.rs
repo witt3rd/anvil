@@ -333,6 +333,18 @@ impl Client {
                 }
                 self.refresh()
             }
+            Action::ClosePane => {
+                if let Some(pane) = self.view.as_ref().map(|v| v.focused.clone()) {
+                    self.call(Request::Close { id: String::new(), window: None, pane: Some(pane) })?;
+                }
+                self.refresh()
+            }
+            Action::CloseWindow => {
+                if let Some(window) = self.focused_window() {
+                    self.call(Request::Close { id: String::new(), window: Some(window), pane: None })?;
+                }
+                self.refresh()
+            }
             Action::Help => unreachable!(),
         };
         self.which_key.set_scope(Scope::Global);
@@ -712,6 +724,11 @@ impl Request {
             },
             Request::Split { window, .. } => Request::Split { id: id.into(), window },
             Request::Focus { window, .. } => Request::Focus { id: id.into(), window },
+            Request::Close { window, pane, .. } => Request::Close {
+                id: id.into(),
+                window,
+                pane,
+            },
             Request::Resize { cols, rows, .. } => Request::Resize { id: id.into(), cols, rows },
             Request::Spawn { pane, program, .. } => Request::Spawn {
                 id: id.into(),

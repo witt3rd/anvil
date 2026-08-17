@@ -56,6 +56,14 @@ pub enum Request {
         id: String,
         window: String,
     },
+    /// The pane or window is gone; its processes end (SIGHUP).
+    Close {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+    },
     /// The panes relaid out to the new tty; the processes told
     /// (`SIGWINCH`).
     Resize {
@@ -88,6 +96,7 @@ impl Request {
             | Self::Read { id, .. }
             | Self::Split { id, .. }
             | Self::Focus { id, .. }
+            | Self::Close { id, .. }
             | Self::Resize { id, .. }
             | Self::Spawn { id, .. }
             | Self::Write { id, .. } => id,

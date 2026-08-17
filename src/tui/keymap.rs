@@ -16,6 +16,8 @@ pub enum Action {
     PrevWindow,
     SplitVertical,
     SplitHorizontal,
+    ClosePane,
+    CloseWindow,
 }
 
 impl std::fmt::Display for Action {
@@ -30,6 +32,8 @@ impl std::fmt::Display for Action {
             Action::PrevWindow => write!(f, "previous window"),
             Action::SplitVertical => write!(f, "split right"),
             Action::SplitHorizontal => write!(f, "split down"),
+            Action::ClosePane => write!(f, "close pane"),
+            Action::CloseWindow => write!(f, "close window"),
         }
     }
 }
@@ -76,6 +80,8 @@ pub fn build_keymap() -> AppKeymap {
         // pane
         s.bind("v", Action::SplitVertical, Category::Pane);
         s.bind("-", Action::SplitHorizontal, Category::Pane);
+        s.bind("x", Action::ClosePane, Category::Pane);
+        s.bind("w", Action::CloseWindow, Category::Window);
     });
 
     km

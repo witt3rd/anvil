@@ -318,6 +318,77 @@ impl Session {
         self.persist()
     }
 
+    /// Close a pane: its process ends; the pane leaves the window, and
+    /// the layout re-tiles. A pane that was the window's only pane
+    /// takes the window with it. If the closed pane was focused, focus
+    /// moves to the window's first pane (or the next window's).
+    pub fn close_pane(&mut self, pane_id: &str) -> io::Result<()> {
+        let idx = self
+            .windows
+            .iter()
+            .position(|w| {
+                let mut panes = Vec::new();
+                collect_panes(&w.tree, &mut panes);
+                panes.contains(&pane_id.to_string())
+            })
+            .ok_or_else(|| io::Error::other("no such pane"))?;
+        if let Some(pane) = self.panes.remove(pane_id) {
+            pane.hangup();
+        }
+        let tree = self.windows[idx].tree.clone();
+        match remove_leaf(&tree, pane_id) {
+            Some(tree) => self.windows[idx].tree = tree,
+            None => {
+                self.windows.remove(idx);
+            }
+        }
+        self.refocus();
+        self.persist()
+    }
+
+    /// Close a window: its panes' processes end; the window leaves the
+    /// session. If the closed window was current, focus moves to
+    /// another window's first pane.
+    pub fn close_window(&mut self, window_id: &str) -> io::Result<()> {
+        let idx = self
+            .windows
+            .iter()
+            .position(|w| w.id == window_id)
+            .ok_or_else(|| io::Error::other("no such window"))?;
+        let mut panes = Vec::new();
+        collect_panes(&self.windows[idx].tree, &mut panes);
+        for pane_id in &panes {
+            if let Some(pane) = self.panes.remove(pane_id) {
+                pane.hangup();
+            }
+        }
+        self.windows.remove(idx);
+        self.refocus();
+        self.persist()
+    }
+
+    /// After a close, if the focused pane is gone, focus the first
+    /// pane of the first window; a windowless session focuses none.
+    fn refocus(&mut self) {
+        if self.windows.iter().any(|w| {
+            let mut panes = Vec::new();
+            collect_panes(&w.tree, &mut panes);
+            panes.contains(&self.focused)
+        }) {
+            return;
+        }
+        self.focused = self
+            .windows
+            .first()
+            .and_then(|w| {
+                let mut panes = Vec::new();
+                collect_panes(&w.tree, &mut panes);
+                panes.sort();
+                panes.first().cloned()
+            })
+            .unwrap_or_default();
+    }
+
     /// Split a window: its focused pane becomes two panes, tiled.
     pub fn split(&mut self, window_id: &str) -> io::Result<()> {
         let idx = self
@@ -440,6 +511,31 @@ fn collect_panes(tree: &Tree, out: &mut Vec<String>) {
             collect_panes(a, out);
             collect_panes(b, out);
         }
+    }
+}
+
+/// Remove a leaf from the tree. A split collapses to its other side
+/// when one side loses its last pane. Returns the new tree, or none
+/// when the removed leaf was the tree.
+fn remove_leaf(tree: &Tree, id: &str) -> Option<Tree> {
+    match tree {
+        Tree::Leaf { id: tid } => {
+            if tid == id {
+                None
+            } else {
+                Some(tree.clone())
+            }
+        }
+        Tree::Split { dir, a, b } => match (remove_leaf(a, id), remove_leaf(b, id)) {
+            (None, None) => None,
+            (None, Some(b)) => Some(b),
+            (Some(a), None) => Some(a),
+            (Some(a), Some(b)) => Some(Tree::Split {
+                dir: *dir,
+                a: Box::new(a),
+                b: Box::new(b),
+            }),
+        },
     }
 }
 
@@ -733,6 +829,66 @@ mod tests {
         // The dead pane takes a fresh process.
         work.lock().unwrap().spawn("1", "sh").unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
+    }
+
+    #[test]
+    fn close_pane_collapses_the_split_and_moves_focus() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().split("1").unwrap();
+        let view = work.lock().unwrap().view();
+        assert_eq!(view.windows[0].panes.len(), 2);
+
+        // Closing the focused pane (1) leaves pane 2 filling the window.
+        work.lock().unwrap().close_pane("1").unwrap();
+        let view = work.lock().unwrap().view();
+        assert_eq!(view.windows.len(), 1);
+        assert_eq!(view.windows[0].panes.len(), 1);
+        assert_eq!(view.windows[0].panes[0].pane, "2");
+        // Focus moved to the remaining pane.
+        assert_eq!(view.focused, "2");
+
+        let err = work.lock().unwrap().close_pane("99").unwrap_err();
+        assert!(err.to_string().contains("no such pane"));
+    }
+
+    #[test]
+    fn close_the_only_pane_closes_the_window() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().add_window().unwrap();
+        assert_eq!(work.lock().unwrap().view().windows.len(), 2);
+
+        // Window 2's only pane is its focused one; closing it closes
+        // the window.
+        work.lock().unwrap().close_pane("3").unwrap();
+        let view = work.lock().unwrap().view();
+        assert_eq!(view.windows.len(), 1);
+        assert_eq!(view.focused, "1");
+    }
+
+    #[test]
+    fn close_window_ends_its_panes_and_moves_focus() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().spawn("1", "sh").unwrap();
+        work.lock().unwrap().add_window().unwrap();
+        // Current window is 2 (focused pane 3); window 1 has pane 1.
+        work.lock().unwrap().focus("1").unwrap();
+
+        work.lock().unwrap().close_window("1").unwrap();
+        let view = work.lock().unwrap().view();
+        assert_eq!(view.windows.len(), 1);
+        // Pane 1's process ended.
+        assert!(!view.windows[0].panes.iter().any(|p| p.pane == "1"));
+        // Focus moved to the remaining window's pane.
+        assert_eq!(view.focused, "3");
+
+        let err = work.lock().unwrap().close_window("99").unwrap_err();
+        assert!(err.to_string().contains("no such window"));
     }
 
     #[test]

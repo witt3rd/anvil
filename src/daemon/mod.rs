@@ -216,6 +216,14 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
                 .focus(&window)
                 .map(|_| Value::Empty {})
         }),
+        Request::Close { window, pane, .. } => attached_session(sessions, attached).and_then(|s| {
+            let mut session = s.lock().map_err(|_| io::Error::other("session busy"))?;
+            match (window, pane) {
+                (None, Some(pane)) => session.close_pane(&pane).map(|_| Value::Empty {}),
+                (Some(window), None) => session.close_window(&window).map(|_| Value::Empty {}),
+                _ => Err(io::Error::other("close takes a window or a pane")),
+            }
+        }),
         Request::Resize { cols, rows, .. } => attached_session(sessions, attached).and_then(|s| {
             let gap = sessions.tiling().gap;
             s.lock()

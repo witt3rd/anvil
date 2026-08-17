@@ -108,8 +108,8 @@ six words and the documented wire ops. The full set in
 |---|---|
 | **client** | `Detach`, `Help` |
 | **session** | `NewSession`, `SwitchSession(1..9)` |
-| **window** | `NewWindow`, `NextWindow`, `PrevWindow` |
-| **pane** | `SplitVertical`, `SplitHorizontal` |
+| **window** | `NewWindow`, `NextWindow`, `PrevWindow`, `CloseWindow` |
+| **pane** | `SplitVertical`, `SplitHorizontal`, `ClosePane` |
 
 ### Default keybinds
 
@@ -124,8 +124,10 @@ All binds are in prefix mode (`Ctrl+B` then...):
 | `c` | NewWindow | Window |
 | `]` | NextWindow | Window |
 | `[` | PrevWindow | Window |
+| `w` | CloseWindow | Window |
 | `v` | SplitVertical | Pane |
 | `-` | SplitHorizontal | Pane |
+| `x` | ClosePane | Pane |
 
 ### Event flow
 
