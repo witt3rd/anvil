@@ -162,18 +162,20 @@ ground. The attached session in the list wears the accent border and
 text; all other text is muted. The chrome stays in the gray steps and
 the accent.
 
-The **active tile** wears a thin border in the gap around it, in the
-`border.focused` token; the gap is the space for a tile's frame. Every
-other tile draws its grid dimmed, so the eye lands on the active one.
-The cursor shows in the active tile.
+The **active tile** keeps full brightness and holds the cursor. Every
+other tile wears a dark veil: its cells are scaled toward black by a
+fixed factor, a plain brightness shift on the colors already in the
+buffer — it needs no knowledge of the theme. The eye lands on the
+active tile.
 
 ## The gap
 
 The **gap** is a tiling value in the daemon (kernel: the daemon owns
-the layout). It is the margin each pane keeps from its neighbors and
-the canvas edge, in cells. The daemon threads it through every split
-and resize, so a pane's process sees a PTY sized to the tile, and the
-space between tiles is the ultimate background.
+the layout). It is the distance between two adjacent tiles, in cells —
+one value, not doubled. The daemon threads it through every split and
+resize, so a pane's process sees a PTY sized to the tile, and the space
+between tiles is the ultimate background. The canvas edge keeps no
+margin; the client's content gutter holds it.
 
 Tiling values live in a config file at `<root>/tiling.json`, one JSON
 object per set, like the theme tokens. The first value is `gap`

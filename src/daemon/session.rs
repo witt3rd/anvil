@@ -434,23 +434,23 @@ fn layout(
 ) {
     match tree {
         Tree::Leaf { id } => {
-            let cols = cols.saturating_sub(2 * gap).max(1);
-            let rows = rows.saturating_sub(2 * gap).max(1);
-            out.insert(
-                id.clone(),
-                (x.saturating_add(gap), y.saturating_add(gap), cols, rows),
-            );
+            out.insert(id.clone(), (x, y, cols, rows));
         }
         Tree::Split { dir, a, b } => match dir {
             Dir::Cols => {
-                let half = cols / 2;
+                // The gap is the distance between the two tiles; the
+                // canvas edge keeps no margin (the client's gutter
+                // holds it).
+                let span = cols.saturating_sub(gap).max(1);
+                let half = span / 2;
                 layout(a, half, rows, x, y, gap, out);
-                layout(b, cols - half, rows, x + half, y, gap, out);
+                layout(b, span - half, rows, x + half + gap, y, gap, out);
             }
             Dir::Rows => {
-                let half = rows / 2;
+                let span = rows.saturating_sub(gap).max(1);
+                let half = span / 2;
                 layout(a, cols, half, x, y, gap, out);
-                layout(b, cols, rows - half, x, y + half, gap, out);
+                layout(b, cols, span - half, x, y + half + gap, gap, out);
             }
         },
     }
@@ -574,14 +574,14 @@ mod tests {
         assert_eq!(view.windows[0].panes.len(), 2);
         let a = &view.windows[0].panes[0];
         let b = &view.windows[0].panes[1];
-        // The default gap is 1: each pane keeps a margin from its
-        // neighbors and the canvas edge.
-        assert_eq!(a.x, 1);
-        assert_eq!(a.y, 1);
-        assert_eq!(b.x, 41, "{a:?} {b:?}");
-        assert_eq!(a.cols + b.cols, 76, "{a:?} {b:?}");
-        assert_eq!(a.rows, 22);
-        assert_eq!(b.rows, 22);
+        // The default gap is 1: exactly one cell between the two
+        // tiles; the canvas edges keep no margin.
+        assert_eq!(a.x, 0);
+        assert_eq!(a.y, 0);
+        assert_eq!(b.x, 40, "{a:?} {b:?}");
+        assert_eq!(a.cols + b.cols, 79, "{a:?} {b:?}");
+        assert_eq!(a.rows, 24);
+        assert_eq!(b.rows, 24);
     }
 
     #[test]
@@ -610,23 +610,23 @@ mod tests {
         work.lock().unwrap().resize(100, 50, 1).unwrap();
 
         let view = work.lock().unwrap().view();
-        // Gap 1 shrinks each pane by 2 cols and 2 rows.
-        assert_eq!(view.windows[0].panes[0].cols + view.windows[0].panes[1].cols, 96);
-        assert_eq!(view.windows[0].panes[0].rows, 48);
+        // Gap 1: exactly one cell between the two tiles.
+        assert_eq!(view.windows[0].panes[0].cols + view.windows[0].panes[1].cols, 99);
+        assert_eq!(view.windows[0].panes[0].rows, 50);
     }
 
     #[test]
-    fn rects_keep_the_gap_from_neighbors_and_canvas() {
+    fn rects_keep_the_gap_between_neighbors_only() {
         let tree = Tree::Split {
             dir: Dir::Cols,
             a: Box::new(Tree::Leaf { id: "1".into() }),
             b: Box::new(Tree::Leaf { id: "2".into() }),
         };
+        // The gap is the distance between the two tiles, and nothing
+        // more: the canvas edges keep no margin.
         let rects = rects_of(&tree, 20, 10, 2);
-        // A margin of 2 on every side: 2 from the canvas edge, 4
-        // between the two panes.
-        assert_eq!(rects["1"], (2, 2, 6, 6));
-        assert_eq!(rects["2"], (12, 2, 6, 6));
+        assert_eq!(rects["1"], (0, 0, 9, 10));
+        assert_eq!(rects["2"], (11, 0, 9, 10));
 
         // Gap 0 is the full-bleed layout from before gaps existed.
         let rects = rects_of(&tree, 20, 10, 0);

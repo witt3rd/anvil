@@ -14,7 +14,7 @@ use std::time::Duration;
 use opaline::Theme;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui_which_key::WhichKey;
 
 use crate::daemon::pane::Grid;
@@ -457,8 +457,8 @@ impl Client {
     }
 
     /// A pane: its `bg.base` ground, then its grid styled by the runs
-    /// the daemon kept. The focused pane wears a thin border in the
-    /// gap around it and keeps its cursor; the other panes are dimmed.
+    /// the daemon kept. The focused pane keeps full brightness and its
+    /// cursor; the other panes wear a dark veil over their cells.
     fn draw_pane(&self, frame: &mut ratatui::Frame, pane_id: &str, rect: Rect, focused: bool) {
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -466,20 +466,6 @@ impl Client {
         let Some(grid) = self.grids.get(pane_id) else {
             return;
         };
-        if focused && rect.x > 0 && rect.y > 0 {
-            let border_rect = Rect {
-                x: rect.x - 1,
-                y: rect.y - 1,
-                width: rect.width + 2,
-                height: rect.height + 2,
-            };
-            frame.render_widget(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.c("border.focused"))),
-                border_rect,
-            );
-        }
         frame.render_widget(Block::default().bg(self.c("bg.base")), rect);
         let mut lines: Vec<Line> = Vec::new();
         for (i, runs) in grid.runs.iter().enumerate() {
@@ -488,13 +474,7 @@ impl Client {
             }
             let spans: Vec<Span> = runs
                 .iter()
-                .map(|run| {
-                    let mut style = self.style(run);
-                    if !focused {
-                        style = style.add_modifier(Modifier::DIM);
-                    }
-                    Span::styled(run.text.clone(), style)
-                })
+                .map(|run| Span::styled(run.text.clone(), self.style(run)))
                 .collect();
             lines.push(Line::from(spans));
         }
@@ -505,11 +485,30 @@ impl Client {
             Paragraph::new(lines).wrap(Wrap { trim: false }),
             rect,
         );
+        if !focused {
+            self.darken_tile(frame, rect);
+        }
         if focused && grid.alive {
             let col = grid.cursor_col;
             let row = grid.cursor_row;
             if row < rect.height && col < rect.width {
                 frame.set_cursor_position((rect.x + col, rect.y + row));
+            }
+        }
+    }
+
+    /// Darken every cell in a tile: the inactive tile's veil. It is a
+    /// plain brightness shift on the colors already in the buffer, so
+    /// it needs no knowledge of the theme.
+    fn darken_tile(&self, frame: &mut ratatui::Frame, rect: Rect) {
+        const FG: f32 = 0.75;
+        const BG: f32 = 0.65;
+        for x in rect.left()..rect.right() {
+            for y in rect.top()..rect.bottom() {
+                if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+                    cell.fg = darken(cell.fg, FG);
+                    cell.bg = darken(cell.bg, BG);
+                }
             }
         }
     }
@@ -558,6 +557,10 @@ impl Client {
             style = style.fg(Color::Indexed(fg));
         } else if let Some([r, g, b]) = run.fg_rgb {
             style = style.fg(Color::Rgb(r, g, b));
+        } else {
+            // The client is the pane's terminal: default text is the
+            // theme's, so an inactive tile can darken it.
+            style = style.fg(self.c("text.primary"));
         }
         if let Some(bg) = run.bg {
             style = style.bg(Color::Indexed(bg));
@@ -577,6 +580,45 @@ impl Client {
             style = style.add_modifier(Modifier::REVERSED);
         }
         style
+    }
+}
+
+/// Scale a color toward black. Indexed palette colors resolve to the
+/// 256-color cube first, so the shift is the same for every cell.
+fn darken(color: Color, factor: f32) -> Color {
+    let [r, g, b] = match color {
+        Color::Rgb(r, g, b) => [r, g, b],
+        Color::Indexed(n) => indexed_rgb(n),
+        _ => return color,
+    };
+    let scale = |v: u8| ((v as f32) * factor).round() as u8;
+    Color::Rgb(scale(r), scale(g), scale(b))
+}
+
+/// The standard 256-color cube, as RGB.
+fn indexed_rgb(n: u8) -> [u8; 3] {
+    match n {
+        0..=15 => {
+            let base: [[u8; 3]; 16] = [
+                [0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0],
+                [0, 0, 128], [128, 0, 128], [0, 128, 128], [192, 192, 192],
+                [128, 128, 128], [255, 0, 0], [0, 255, 0], [255, 255, 0],
+                [0, 0, 255], [255, 0, 255], [0, 255, 255], [255, 255, 255],
+            ];
+            base[n as usize]
+        }
+        16..=231 => {
+            let i = n - 16;
+            let b = i % 6;
+            let g = (i / 6) % 6;
+            let r = i / 36;
+            let val = |x: u8| if x == 0 { 0 } else { x * 40 + 55 };
+            [val(r), val(g), val(b)]
+        }
+        232..=255 => {
+            let gray = (n - 232) * 10 + 8;
+            [gray, gray, gray]
+        }
     }
 }
 
