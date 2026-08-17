@@ -275,20 +275,30 @@ impl Client {
                 self.detached = true;
                 return Ok(());
             }
-            KeyCode::Enter => return self.write("\r"),
-            KeyCode::Backspace => return self.write("\u{7f}"),
-            KeyCode::Tab => return self.write("\t"),
-            KeyCode::Up => return self.write("\x1b[A"),
-            KeyCode::Down => return self.write("\x1b[B"),
-            KeyCode::Right => return self.write("\x1b[C"),
-            KeyCode::Left => return self.write("\x1b[D"),
+            KeyCode::Enter => self.forward("\r"),
+            KeyCode::Backspace => self.forward("\u{7f}"),
+            KeyCode::Tab => self.forward("\t"),
+            KeyCode::Up => self.forward("\x1b[A"),
+            KeyCode::Down => self.forward("\x1b[B"),
+            KeyCode::Right => self.forward("\x1b[C"),
+            KeyCode::Left => self.forward("\x1b[D"),
             KeyCode::Char(c) => {
                 let mut buf = [0u8; 4];
-                self.write(c.encode_utf8(&mut buf))?;
+                self.forward(c.encode_utf8(&mut buf));
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Send a key to the focused pane's process. A pane whose process
+    /// has ended is a normal state, not a client error: the client
+    /// reads the panes again — which respawns the dead ones — and the
+    /// key is dropped.
+    fn forward(&mut self, data: &str) {
+        if self.write(data).is_err() {
+            let _ = self.refresh();
+        }
     }
 
     /// An action is a wire op. Every branch sends the op, then reads

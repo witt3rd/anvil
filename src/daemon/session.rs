@@ -332,14 +332,17 @@ impl Session {
     }
 
     /// Spawn a process in a pane. The daemon holds the master PTY; the
-    /// process runs on the slave.
+    /// process runs on the slave. A pane whose process has ended takes
+    /// a fresh one; only a live process blocks the spawn.
     pub fn spawn(&mut self, pane_id: &str, program: &str) -> io::Result<()> {
+        if let Some(pane) = self.panes.get(pane_id) {
+            if pane.alive() {
+                return Err(io::Error::other("the pane already has a process"));
+            }
+        }
         let (_, _, cols, rows) = self
             .pane_geometry(pane_id)
             .ok_or_else(|| io::Error::other("no such pane"))?;
-        if self.panes.contains_key(pane_id) {
-            return Err(io::Error::other("the pane already has a process"));
-        }
         let pane = Pane::spawn(program, cols, rows)?;
         self.panes.insert(pane_id.to_string(), pane);
         Ok(())
@@ -667,6 +670,26 @@ mod tests {
         }
         let err = work.lock().unwrap().write("echo x\n").unwrap_err();
         assert!(err.to_string().contains("ended"), "{err}");
+    }
+
+    #[test]
+    fn a_dead_pane_respawns() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().spawn("1", "sh").unwrap();
+        work.lock().unwrap().write("exit 0\n").unwrap();
+        for _ in 0..100 {
+            if !work.lock().unwrap().read_pane("1").alive {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!work.lock().unwrap().read_pane("1").alive);
+
+        // The dead pane takes a fresh process.
+        work.lock().unwrap().spawn("1", "sh").unwrap();
+        assert!(work.lock().unwrap().read_pane("1").alive);
     }
 
     #[test]
