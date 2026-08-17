@@ -162,6 +162,11 @@ ground. The attached session in the list wears the accent border and
 text; all other text is muted. The chrome stays in the gray steps and
 the accent.
 
+The **active tile** wears a thin border in the gap around it, in the
+`border.focused` token; the gap is the space for a tile's frame. Every
+other tile draws its grid dimmed, so the eye lands on the active one.
+The cursor shows in the active tile.
+
 ## The gap
 
 The **gap** is a tiling value in the daemon (kernel: the daemon owns

@@ -14,7 +14,7 @@ use std::time::Duration;
 use opaline::Theme;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui_which_key::WhichKey;
 
 use crate::daemon::pane::Grid;
@@ -447,7 +447,8 @@ impl Client {
     }
 
     /// A pane: its `bg.base` ground, then its grid styled by the runs
-    /// the daemon kept. The focused pane's cursor shows.
+    /// the daemon kept. The focused pane wears a thin border in the
+    /// gap around it and keeps its cursor; the other panes are dimmed.
     fn draw_pane(&self, frame: &mut ratatui::Frame, pane_id: &str, rect: Rect, focused: bool) {
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -455,6 +456,20 @@ impl Client {
         let Some(grid) = self.grids.get(pane_id) else {
             return;
         };
+        if focused && rect.x > 0 && rect.y > 0 {
+            let border_rect = Rect {
+                x: rect.x - 1,
+                y: rect.y - 1,
+                width: rect.width + 2,
+                height: rect.height + 2,
+            };
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.c("border.focused"))),
+                border_rect,
+            );
+        }
         frame.render_widget(Block::default().bg(self.c("bg.base")), rect);
         let mut lines: Vec<Line> = Vec::new();
         for (i, runs) in grid.runs.iter().enumerate() {
@@ -463,7 +478,13 @@ impl Client {
             }
             let spans: Vec<Span> = runs
                 .iter()
-                .map(|run| Span::styled(run.text.clone(), self.style(run)))
+                .map(|run| {
+                    let mut style = self.style(run);
+                    if !focused {
+                        style = style.add_modifier(Modifier::DIM);
+                    }
+                    Span::styled(run.text.clone(), style)
+                })
                 .collect();
             lines.push(Line::from(spans));
         }
