@@ -6,6 +6,7 @@
 use std::io;
 
 use clap::Parser;
+use ratatui::Terminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::layout::{Layout, Constraint};
 use ratatui::widgets::{Block, BorderType};
