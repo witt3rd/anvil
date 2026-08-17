@@ -4,8 +4,10 @@
 // Each pane holds a PTY; the process runs on the slave PTY.
 // On reattach, the client repaints from the daemon's character grid.
 use std::io;
+use std::path::PathBuf;
 
-use clap::Parser;
+use anvil::daemon;
+use clap::{Parser, Subcommand};
 use ratatui::Terminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::layout::{Layout, Constraint};
@@ -16,15 +18,50 @@ use opaline::Theme;
 #[derive(Parser)]
 #[command(name = "anvil")]
 #[command(about = "Terminal multiplexer", long_about = None)]
-struct Cli;
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// The daemon: owns sessions, serves clients over a unix socket.
+    Daemon {
+        /// Override the socket path (`ANVIL_SOCK`).
+        #[arg(long)]
+        sock: Option<PathBuf>,
+        /// Override the state root (`~/.anvil` by default).
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+}
 
 fn main() -> io::Result<()> {
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
+    match cli.command {
+        Some(Command::Daemon { sock, root }) => {
+            let sock = sock.unwrap_or_else(daemon::default_sock);
+            let root = root.unwrap_or_else(|| std::env::var("ANVIL_ROOT").unwrap_or_else(|_| default_root()).into());
+            daemon::run(root, sock)
+        }
+        None => {
+            // The client: run `anvil` to become the client, attaching to
+            // a session. The session persists on disk (kernel: "Sessions,
+            // windows, and panes stay").
+            let sock = daemon::default_sock();
+            let root = std::env::var("ANVIL_ROOT").unwrap_or_else(|_| default_root());
+            daemon::ensure_running(&sock, std::path::Path::new(&root))?;
 
-    let mut terminal = ratatui::init();
-    let out = run(&mut terminal);
-    ratatui::restore();
-    out
+            let mut terminal = ratatui::init();
+            let out = run(&mut terminal);
+            ratatui::restore();
+            out
+        }
+    }
+}
+
+fn default_root() -> String {
+    std::env::var("HOME").map(|h| format!("{h}/.anvil")).unwrap_or_else(|_| ".anvil".into())
 }
 
 fn run(terminal: &mut Terminal<impl ratatui::backend::Backend>) -> io::Result<()> {
