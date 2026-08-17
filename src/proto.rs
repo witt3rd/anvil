@@ -51,6 +51,11 @@ pub enum Request {
         id: String,
         window: String,
     },
+    /// Move the focus into a window: it becomes the current one.
+    Focus {
+        id: String,
+        window: String,
+    },
     /// The panes relaid out to the new tty; the processes told
     /// (`SIGWINCH`).
     Resize {
@@ -82,6 +87,7 @@ impl Request {
             | Self::Destroy { id, .. }
             | Self::Read { id, .. }
             | Self::Split { id, .. }
+            | Self::Focus { id, .. }
             | Self::Resize { id, .. }
             | Self::Spawn { id, .. }
             | Self::Write { id, .. } => id,
@@ -150,6 +156,7 @@ mod tests {
             (r#"{"op":"read","id":"g","session":"work"}"#, "g"),
             (r#"{"op":"read","id":"h","pane":"1"}"#, "h"),
             (r#"{"op":"split","id":"i","window":"1"}"#, "i"),
+            (r#"{"op":"focus","id":"j","window":"1"}"#, "j"),
             (r#"{"op":"resize","id":"j","cols":100,"rows":40}"#, "j"),
             (r#"{"op":"spawn","id":"k","pane":"1","program":"sh"}"#, "k"),
             (r#"{"op":"write","id":"l","data":"echo hi\n"}"#, "l"),

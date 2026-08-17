@@ -317,6 +317,11 @@ impl Client {
                 self.add_window()?;
                 self.refresh()
             }
+            Action::NextWindow | Action::PrevWindow => {
+                let next = matches!(action, Action::NextWindow);
+                self.switch_window(next)?;
+                self.refresh()
+            }
             Action::SplitVertical | Action::SplitHorizontal => {
                 let window = self.focused_window();
                 if let Some(window) = window {
@@ -331,6 +336,28 @@ impl Client {
             self.which_key.toggle();
         }
         result
+    }
+
+    /// Focus the next or previous window, wrapping around.
+    fn switch_window(&mut self, next: bool) -> io::Result<()> {
+        let view = self.view.as_ref().ok_or_else(|| io::Error::other("no session"))?;
+        if view.windows.len() < 2 {
+            return Ok(());
+        }
+        let current = self.focused_window().unwrap_or_default();
+        let idx = view
+            .windows
+            .iter()
+            .position(|w| w.window == current)
+            .unwrap_or(0);
+        let idx = if next {
+            (idx + 1) % view.windows.len()
+        } else {
+            (idx + view.windows.len() - 1) % view.windows.len()
+        };
+        let window = view.windows[idx].window.clone();
+        self.call(Request::Focus { id: String::new(), window })?;
+        Ok(())
     }
 
     fn focused_window(&self) -> Option<String> {
@@ -422,16 +449,23 @@ impl Client {
             self.draw_home(frame, inner);
             return;
         };
-        for window in &view.windows {
-            for pane in &window.panes {
-                let rect = Rect {
-                    x: inner.x + pane.x,
-                    y: inner.y + pane.y,
-                    width: pane.cols.min(inner.width.saturating_sub(pane.x)),
-                    height: pane.rows.min(inner.height.saturating_sub(pane.y)),
-                };
-                self.draw_pane(frame, &pane.pane, rect, pane.pane == view.focused);
-            }
+        // A window is one screen: the current window — the one holding
+        // the focused pane — is the only one drawn.
+        let Some(current) = view
+            .windows
+            .iter()
+            .find(|w| w.panes.iter().any(|p| p.pane == view.focused))
+        else {
+            return;
+        };
+        for pane in &current.panes {
+            let rect = Rect {
+                x: inner.x + pane.x,
+                y: inner.y + pane.y,
+                width: pane.cols.min(inner.width.saturating_sub(pane.x)),
+                height: pane.rows.min(inner.height.saturating_sub(pane.y)),
+            };
+            self.draw_pane(frame, &pane.pane, rect, pane.pane == view.focused);
         }
     }
 
@@ -644,6 +678,7 @@ impl Request {
                 pane,
             },
             Request::Split { window, .. } => Request::Split { id: id.into(), window },
+            Request::Focus { window, .. } => Request::Focus { id: id.into(), window },
             Request::Resize { cols, rows, .. } => Request::Resize { id: id.into(), cols, rows },
             Request::Spawn { pane, program, .. } => Request::Spawn {
                 id: id.into(),

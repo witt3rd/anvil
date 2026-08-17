@@ -284,7 +284,8 @@ impl Session {
         }
     }
 
-    /// A new window in the session, with one pane.
+/// A new window in the session, with one pane. The new window
+    /// becomes the current one: the focus moves to its pane.
     pub fn add_window(&mut self) -> io::Result<String> {
         let window = self.next_id.to_string();
         self.next_id += 1;
@@ -292,10 +293,29 @@ impl Session {
         self.next_id += 1;
         self.windows.push(Window {
             id: window.clone(),
-            tree: Tree::Leaf { id: pane },
+            tree: Tree::Leaf { id: pane.clone() },
         });
+        self.focused = pane;
         self.persist()?;
         Ok(window)
+    }
+
+    /// Move the focus into a window: its first pane becomes the
+    /// focused pane, and the window becomes the current one.
+    pub fn focus(&mut self, window_id: &str) -> io::Result<()> {
+        let window = self
+            .windows
+            .iter()
+            .find(|w| w.id == window_id)
+            .ok_or_else(|| io::Error::other("no such window"))?;
+        let mut panes = Vec::new();
+        collect_panes(&window.tree, &mut panes);
+        panes.sort();
+        let pane = panes
+            .first()
+            .ok_or_else(|| io::Error::other("the window has no panes"))?;
+        self.focused = pane.clone();
+        self.persist()
     }
 
     /// Split a window: its focused pane becomes two panes, tiled.
@@ -670,6 +690,29 @@ mod tests {
         }
         let err = work.lock().unwrap().write("echo x\n").unwrap_err();
         assert!(err.to_string().contains("ended"), "{err}");
+    }
+
+    #[test]
+    fn a_new_window_becomes_current_and_focus_moves() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().split("1").unwrap();
+        assert_eq!(work.lock().unwrap().view().focused, "1");
+
+        work.lock().unwrap().add_window().unwrap();
+        let view = work.lock().unwrap().view();
+        // The new window is current: its pane is the focused one.
+        assert_eq!(view.windows.len(), 2);
+        assert_eq!(view.focused, "4");
+        assert!(view.windows[1].panes.iter().any(|p| p.pane == "4"));
+
+        // Focus moves back to the first window.
+        work.lock().unwrap().focus("1").unwrap();
+        assert_eq!(work.lock().unwrap().view().focused, "1");
+
+        let err = work.lock().unwrap().focus("99").unwrap_err();
+        assert!(err.to_string().contains("no such window"));
     }
 
     #[test]

@@ -12,6 +12,8 @@ pub enum Action {
     NewSession,
     SwitchSession(u8),
     NewWindow,
+    NextWindow,
+    PrevWindow,
     SplitVertical,
     SplitHorizontal,
 }
@@ -24,6 +26,8 @@ impl std::fmt::Display for Action {
             Action::NewSession => write!(f, "new session"),
             Action::SwitchSession(n) => write!(f, "session {n}"),
             Action::NewWindow => write!(f, "new window"),
+            Action::NextWindow => write!(f, "next window"),
+            Action::PrevWindow => write!(f, "previous window"),
             Action::SplitVertical => write!(f, "split right"),
             Action::SplitHorizontal => write!(f, "split down"),
         }
@@ -66,6 +70,8 @@ pub fn build_keymap() -> AppKeymap {
 
         // window
         s.bind("c", Action::NewWindow, Category::Window);
+        s.bind("]", Action::NextWindow, Category::Window);
+        s.bind("[", Action::PrevWindow, Category::Window);
 
         // pane
         s.bind("v", Action::SplitVertical, Category::Pane);

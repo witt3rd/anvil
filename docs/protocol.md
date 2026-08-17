@@ -44,6 +44,7 @@ the args tell them apart.
 | op | args | reply |
 |---|---|---|
 | `split` | `window` | the window is now two panes, tiled |
+| `focus` | `window` | the window becomes the current one; its first pane is focused |
 | `resize` | `cols`, `rows` | the panes relaid out to the new tty; the processes told (`SIGWINCH`) |
 | `spawn` | `pane`, `program` | a process runs on the pane's slave PTY; the daemon holds the master |
 | `write` | `data` | the data goes to the focused pane's process |

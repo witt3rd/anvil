@@ -108,7 +108,7 @@ six words and the documented wire ops. The full set in
 |---|---|
 | **client** | `Detach`, `Help` |
 | **session** | `NewSession`, `SwitchSession(1..9)` |
-| **window** | `NewWindow` |
+| **window** | `NewWindow`, `NextWindow`, `PrevWindow` |
 | **pane** | `SplitVertical`, `SplitHorizontal` |
 
 ### Default keybinds
@@ -122,6 +122,8 @@ All binds are in prefix mode (`Ctrl+B` then...):
 | `n` | NewSession | Session |
 | `1..9` | SwitchSession(n) | Session |
 | `c` | NewWindow | Window |
+| `]` | NextWindow | Window |
+| `[` | PrevWindow | Window |
 | `v` | SplitVertical | Pane |
 | `-` | SplitHorizontal | Pane |
 
@@ -149,7 +151,9 @@ left, the panes in the middle, one status line at the bottom.
 - The **session list** is a column of 42 cells. It shows on terminals
   of 120 cells and wider; narrower terminals show only the panes.
 - The **content** area has a 2-cell gutter on each side. Each pane's
-  grid sits at the geometry the daemon gave it.
+  grid sits at the geometry the daemon gave it. A window is one
+  screen: only the current window — the one holding the focused pane —
+  draws; the other windows keep their processes in the daemon.
 - The **status line** is the bottom row. The session name and its
   focused pane sit on the left; the key hints sit on the right, in the
   muted text.

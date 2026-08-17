@@ -210,6 +210,12 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
                 .split(&window)
                 .map(|_| Value::Empty {})
         }),
+        Request::Focus { window, .. } => attached_session(sessions, attached).and_then(|s| {
+            s.lock()
+                .map_err(|_| io::Error::other("session busy"))?
+                .focus(&window)
+                .map(|_| Value::Empty {})
+        }),
         Request::Resize { cols, rows, .. } => attached_session(sessions, attached).and_then(|s| {
             let gap = sessions.tiling().gap;
             s.lock()
