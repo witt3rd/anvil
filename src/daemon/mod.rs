@@ -3,7 +3,9 @@
 //! detach — the sessions, windows, and panes stay.
 
 pub mod acp;
+pub mod adopt;
 pub mod pane;
+pub mod sat;
 pub mod session;
 pub mod tiling;
 pub mod watch;
@@ -45,7 +47,12 @@ fn uid() -> u64 {
 
 /// The daemon is a command of `anvil`. Runs until it is stopped.
 pub fn run(root: PathBuf, sock: PathBuf) -> io::Result<()> {
-    let sessions = Arc::new(Sessions::open(root)?);
+    let sessions = Arc::new(Sessions::open(root.clone())?);
+    {
+        let sessions = sessions.clone();
+        let root = root.clone();
+        thread::spawn(move || sat::run(root, sessions));
+    }
     if let Some(parent) = sock.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -208,7 +215,7 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
         Request::Read { session, pane, .. } => match (session, pane) {
             (Some(name), None) => {
                 let session = sessions.get(&name)?;
-                let s = session.lock().map_err(|_| io::Error::other("session busy"))?;
+                let mut s = session.lock().map_err(|_| io::Error::other("session busy"))?;
                 Ok(Value::View(s.view()))
             }
             (None, Some(pane)) => attached_session(sessions, attached).and_then(|s| {
@@ -251,11 +258,12 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
             program,
             acp,
             watch,
+            name,
             ..
         } => attached_session(sessions, attached).and_then(|s| {
             s.lock()
                 .map_err(|_| io::Error::other("session busy"))?
-                .spawn(&pane, &program, acp, watch.as_deref())
+                .spawn(&pane, &program, acp, watch.as_deref(), name.as_deref())
                 .map(|_| Value::Empty {})
         }),
         Request::Write { data, .. } => attached_session(sessions, attached).and_then(|s| {

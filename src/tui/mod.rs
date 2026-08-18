@@ -5,6 +5,9 @@
 
 pub mod agents;
 pub mod keymap;
+pub mod sat;
+pub mod sessions;
+pub mod side;
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
@@ -13,9 +16,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use opaline::Theme;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui_which_key::WhichKey;
 
 use crate::daemon::acp::WindowState;
@@ -32,12 +35,13 @@ const THEME_TOML: &str = include_str!("../../themes/opencode.toml");
 
 // The chrome geometry.
 const RAIL_COLS: u16 = 3; // mark column
-const ROSTER_COLS: u16 = 42; // opened activity list
 const RAIL_MIN: u16 = 80; // rail shows from this width on
-const ROSTER_MIN: u16 = 120; // roster needs this width
+const SIDE_MIN: u16 = 80; // open sidebar on the same tty the rail does
 const PAD: u16 = 2; // the content gutter on each side
 const GAP: u16 = 1; // between the sidebar and the content
-const STATUS_LINES: u16 = 1; // the status line height
+const HEADER_LINES: u16 = 1; // session + host
+const STATUS_LINES: u16 = 1; // footer shortcuts
+const CHROME_ROWS: u16 = HEADER_LINES + STATUS_LINES;
 const MARK_IDLE: &str = "◇";
 const MARK_DEAD: &str = "◇";
 const MARK_NEED: &str = "◆";
@@ -48,12 +52,12 @@ const DOT_FRAMES: &[&str] = &["⋅", ":", "⸬", "⁙"];
 enum Side {
     Hidden,
     Rail,
-    Roster,
+    Open,
 }
 
-fn side(term_w: u16, roster_open: bool) -> Side {
-    if roster_open && term_w >= ROSTER_MIN {
-        Side::Roster
+fn side(term_w: u16, open: bool) -> Side {
+    if open && term_w >= SIDE_MIN {
+        Side::Open
     } else if term_w >= RAIL_MIN {
         Side::Rail
     } else {
@@ -61,11 +65,11 @@ fn side(term_w: u16, roster_open: bool) -> Side {
     }
 }
 
-fn side_width(side: Side) -> u16 {
+fn side_width(side: Side, cols: u16) -> u16 {
     match side {
         Side::Hidden => 0,
         Side::Rail => RAIL_COLS,
-        Side::Roster => ROSTER_COLS,
+        Side::Open => cols,
     }
 }
 
@@ -79,14 +83,23 @@ enum FocusDir {
 }
 
 /// The pane canvas the session tty occupies: the terminal minus the
-/// chrome. The rail shows from `RAIL_MIN`; the roster from `ROSTER_MIN`
-/// when it is open.
-fn canvas(term_w: u16, term_h: u16, roster_open: bool) -> (u16, u16) {
-    let chrome = match side(term_w, roster_open) {
+/// chrome. The rail shows from `RAIL_MIN`; the open sidebar from
+/// `SIDE_MIN`.
+fn canvas(term_w: u16, term_h: u16, open: bool, cols: u16) -> (u16, u16) {
+    let chrome = match side(term_w, open) {
         Side::Hidden => 2 * PAD,
-        other => side_width(other) + GAP + 2 * PAD,
+        other => side_width(other, cols) + GAP + 2 * PAD,
     };
-    (term_w.saturating_sub(chrome), term_h.saturating_sub(STATUS_LINES))
+    (term_w.saturating_sub(chrome), term_h.saturating_sub(CHROME_ROWS))
+}
+
+fn host_name() -> String {
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .unwrap_or_else(|| "localhost".into())
 }
 
 /// One client connection: views a session, sends keys, keeps the
@@ -103,19 +116,30 @@ pub struct Client {
     view: Option<SessionView>,
     grids: HashMap<String, Grid>,
     detached: bool,
-    roster_open: bool,
+    sidebar: side::Prefs,
+    drag: Option<Drag>,
     tty: (u16, u16),
-    /// Draft name: a new window, or the current window under a new name.
+    /// Draft name: a window or the session.
     naming: Option<Naming>,
     tick: u64,
     last_error: Option<String>,
     catalog: Agents,
     picking: Option<usize>,
+    sessions_pick: Option<usize>,
+    session_rows: Vec<sessions::Row>,
+    host: String,
+    sat: crate::daemon::sat::Snap,
+}
+
+enum Drag {
+    Width,
+    Split,
 }
 
 /// What the name draft is for.
 enum Naming {
-    Rename(String),
+    Window(String),
+    Session(String),
 }
 
 impl Client {
@@ -139,13 +163,18 @@ impl Client {
             view: None,
             grids: HashMap::new(),
             detached: false,
-            roster_open: false,
+            sidebar: side::Prefs::load(&agents::default_root()),
+            drag: None,
             tty: (80, 24),
             naming: None,
             tick: 0,
             last_error: None,
             catalog: Agents::load(&agents::default_root()),
             picking: None,
+            sessions_pick: None,
+            session_rows: Vec::new(),
+            host: host_name(),
+            sat: crate::daemon::sat::Snap::load(&agents::default_root()),
         };
         client.attach_first()?;
         Ok(client)
@@ -228,6 +257,19 @@ impl Client {
         Ok(())
     }
 
+    fn rename_session(&mut self, name: &str) -> io::Result<()> {
+        let session = self.attached.clone().ok_or_else(|| io::Error::other("no session"))?;
+        self.call(Request::Rename {
+            id: String::new(),
+            session,
+            name: name.into(),
+            window: None,
+        })?;
+        self.attached = Some(name.into());
+        self.enumerate()?;
+        Ok(())
+    }
+
     fn split(&mut self, window: &str) -> io::Result<()> {
         self.call(Request::Split { id: String::new(), window: window.into() })?;
         Ok(())
@@ -254,17 +296,25 @@ impl Client {
             program: self.shell.clone(),
             acp: false,
             watch: None,
+            name: None,
         })?;
         Ok(())
     }
 
-    fn spawn_tui(&mut self, pane: &str, program: &str, watch: Option<String>) -> io::Result<()> {
+    fn spawn_tui(
+        &mut self,
+        pane: &str,
+        program: &str,
+        watch: Option<String>,
+        name: &str,
+    ) -> io::Result<()> {
         self.call(Request::Spawn {
             id: String::new(),
             pane: pane.into(),
             program: program.into(),
             acp: false,
             watch,
+            name: Some(name.into()),
         })?;
         Ok(())
     }
@@ -285,7 +335,7 @@ impl Client {
         self.refresh()?;
         let pane = self.view.as_ref().map(|v| v.focused.clone());
         if let Some(pane) = pane {
-            match self.spawn_tui(&pane, &program, watch) {
+            match self.spawn_tui(&pane, &program, watch, &agent.name) {
                 Ok(()) => self.last_error = None,
                 Err(err) => self.last_error = Some(err.to_string()),
             }
@@ -315,29 +365,59 @@ impl Client {
     /// process.
     pub fn attach_first(&mut self) -> io::Result<()> {
         let sessions = self.enumerate()?;
-        let name = sessions.first().cloned().unwrap_or_else(|| "main".to_string());
-        if sessions.is_empty() {
-            self.create(&name)?;
+        if let Some(name) = sessions.first().cloned() {
+            self.attach(&name)?;
+            return self.refresh();
         }
+        for guess in ["1", "main"] {
+            if self.attach(guess).is_ok() {
+                let _ = self.enumerate();
+                return self.refresh();
+            }
+        }
+        let name = unused_session_name(&[]);
+        match self.create(&name) {
+            Ok(()) => {}
+            Err(err) if err.to_string().contains("already exists") => {}
+            Err(err) => return Err(err),
+        }
+        self.enumerate()?;
+        let name = self
+            .sessions
+            .first()
+            .cloned()
+            .unwrap_or(name);
         self.attach(&name)?;
         self.refresh()
     }
 
     /// A new session, and attach to it.
     pub fn new_session(&mut self) -> io::Result<()> {
-        let name = {
-            let mut n = self.sessions.len() + 1;
-            loop {
-                let candidate = format!("main-{n}");
-                if !self.sessions.contains(&candidate) {
-                    break candidate;
+        self.enumerate()?;
+        let mut name = unused_session_name(&self.sessions);
+        loop {
+            match self.create(&name) {
+                Ok(()) => break,
+                Err(err) if err.to_string().contains("already exists") => {
+                    self.enumerate()?;
+                    name = unused_session_name(&self.sessions);
                 }
-                n += 1;
+                Err(err) => return Err(err),
             }
-        };
-        self.create(&name)?;
+        }
+        self.enumerate()?;
         self.attach(&name)?;
-        self.refresh()
+        let (w, h) = self.tty;
+        self.resize_tty(w, h)?;
+        self.refresh()?;
+        // Name it now — a bare number is not a place you can recognize.
+        self.begin_naming(Naming::Session(String::new()));
+        Ok(())
+    }
+
+    fn begin_naming(&mut self, naming: Naming) {
+        self.last_error = None;
+        self.naming = Some(naming);
     }
 
     /// Attach to session `n` (1-based), wrapping around.
@@ -349,14 +429,80 @@ impl Client {
         let idx = (n as usize - 1) % sessions.len();
         let name = sessions[idx].clone();
         self.attach(&name)?;
+        let (w, h) = self.tty;
+        self.resize_tty(w, h)?;
         self.refresh()
+    }
+
+    fn read_session_view(&mut self, name: &str) -> io::Result<SessionView> {
+        match self.call(Request::Read {
+            id: String::new(),
+            session: Some(name.into()),
+            pane: None,
+        })? {
+            Value::View(view) => Ok(view),
+            _ => Err(io::Error::other("read replied with the wrong shape")),
+        }
+    }
+
+    fn load_session_rows(&mut self) -> io::Result<()> {
+        let names = self.enumerate()?;
+        let mut rows = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            let view = self.read_session_view(name)?;
+            rows.push(sessions::row(i + 1, name, &view));
+        }
+        self.session_rows = rows;
+        Ok(())
+    }
+
+    fn destroy_picked_session(&mut self) -> io::Result<()> {
+        let Some(idx) = self.sessions_pick else {
+            return Ok(());
+        };
+        let Some(name) = self.sessions.get(idx).cloned() else {
+            return Ok(());
+        };
+        if self.sessions.len() <= 1 {
+            return Ok(());
+        }
+        self.call(Request::Destroy {
+            id: String::new(),
+            session: name.clone(),
+        })?;
+        let was_current = self.attached.as_deref() == Some(name.as_str());
+        self.enumerate()?;
+        if was_current {
+            if let Some(next) = self.sessions.first().cloned() {
+                self.attach(&next)?;
+                let (w, h) = self.tty;
+                self.resize_tty(w, h)?;
+                self.refresh()?;
+            }
+        }
+        self.load_session_rows()?;
+        let n = self.session_rows.len();
+        if n == 0 {
+            self.sessions_pick = None;
+        } else {
+            self.sessions_pick = Some(idx.min(n - 1));
+        }
+        Ok(())
     }
 
     /// The tty changed size: the session relays out to the canvas.
     pub fn resize_tty(&mut self, cols: u16, rows: u16) -> io::Result<()> {
         self.tty = (cols, rows);
-        let (cols, rows) = canvas(cols, rows, self.roster_open);
+        let (cols, rows) = canvas(cols, rows, self.sidebar.open, self.sidebar_cols());
         self.resize(cols.max(2), rows.max(2))
+    }
+
+    fn sidebar_cols(&self) -> u16 {
+        self.sidebar.clamp_cols(self.tty.0)
+    }
+
+    fn save_sidebar(&self) {
+        self.sidebar.save(&agents::default_root());
     }
 
     /// Read the view and every visible pane's grid; spawn a process on
@@ -371,12 +517,15 @@ impl Client {
         }
         for id in ids {
             let grid = self.read_pane(&id)?;
+            // No process yet (a fresh split): start a shell.
+            // A process that already ended is reaped by the daemon.
             if !grid.alive && !grid.acp {
                 let _ = self.spawn(&id);
             }
             self.grids.insert(id, grid);
         }
         self.view = Some(view);
+        self.sat = crate::daemon::sat::Snap::load(&agents::default_root());
         Ok(())
     }
 
@@ -394,6 +543,50 @@ impl Client {
                 let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&dbg)?;
                 writeln!(f, "key: code={:?} mods={:?} active={}", key.code, key.modifiers, self.which_key.active)
             })();
+        }
+        if let Some(idx) = self.sessions_pick {
+            let n = self.sessions.len();
+            match key.code {
+                KeyCode::Esc => {
+                    self.sessions_pick = None;
+                    return Ok(());
+                }
+                KeyCode::Enter => {
+                    self.sessions_pick = None;
+                    if n > 0 {
+                        return self.switch_session((idx as u8) + 1);
+                    }
+                    return Ok(());
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if n > 0 {
+                        self.sessions_pick = Some((idx + 1) % n);
+                    }
+                    return Ok(());
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if n > 0 {
+                        self.sessions_pick = Some((idx + n - 1) % n);
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('n') => {
+                    self.sessions_pick = None;
+                    return self.new_session();
+                }
+                KeyCode::Char('$') => {
+                    self.sessions_pick = None;
+                    return self.dispatch(Action::RenameSession);
+                }
+                KeyCode::Char('x') => {
+                    return self.destroy_picked_session();
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                    self.sessions_pick = None;
+                    return self.switch_session(c as u8 - b'0');
+                }
+                _ => return Ok(()),
+            }
         }
         if let Some(idx) = self.picking {
             let n = self.catalog.agents.len();
@@ -440,50 +633,69 @@ impl Client {
                 _ => return Ok(()),
             }
         }
-        if let Some(naming) = self.naming.as_mut() {
-            let Naming::Rename(buf) = naming;
+        if let Some(naming) = self.naming.as_ref() {
+            let session = matches!(naming, Naming::Session(_));
+            let buf = match naming {
+                Naming::Window(buf) | Naming::Session(buf) => buf.clone(),
+            };
             match key.code {
                 KeyCode::Esc => {
                     self.naming = None;
+                    self.last_error = None;
                     return Ok(());
                 }
                 KeyCode::Enter => {
                     let name = buf.trim().to_string();
-                    self.naming = None;
                     if name.is_empty() {
+                        self.naming = None;
+                        self.last_error = None;
                         return Ok(());
                     }
-                    self.rename_window(&name)?;
-                    return self.refresh();
+                    let result = if session {
+                        self.rename_session(&name)
+                    } else {
+                        self.rename_window(&name)
+                    };
+                    match result {
+                        Ok(()) => {
+                            self.naming = None;
+                            self.last_error = None;
+                            return self.refresh();
+                        }
+                        Err(err) => {
+                            // Stay on the draft. Clearing naming here
+                            // leaves last_error on the footer, and the
+                            // next prefix-$ prompt eats keys while
+                            // remaining invisible.
+                            self.last_error = Some(err.to_string());
+                            return Ok(());
+                        }
+                    }
                 }
                 KeyCode::Backspace => {
-                    buf.pop();
+                    if let Some(naming) = self.naming.as_mut() {
+                        match naming {
+                            Naming::Window(b) | Naming::Session(b) => {
+                                b.pop();
+                            }
+                        }
+                    }
+                    self.last_error = None;
                     return Ok(());
                 }
                 KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if buf.len() < 32 && !c.is_control() && c != '/' {
-                        buf.push(c);
+                    if let Some(naming) = self.naming.as_mut() {
+                        let buf = match naming {
+                            Naming::Window(b) | Naming::Session(b) => b,
+                        };
+                        if buf.len() < 32 && !c.is_control() && c != '/' {
+                            buf.push(c);
+                        }
                     }
+                    self.last_error = None;
                     return Ok(());
                 }
                 _ => return Ok(()),
-            }
-        }
-        if self.roster_open && !self.which_key.active && !self.which_key.is_pending() {
-            match key.code {
-                KeyCode::Esc | KeyCode::Enter => return self.close_roster(),
-                KeyCode::Char('j') | KeyCode::Down | KeyCode::Char(']') => {
-                    self.switch_window(true)?;
-                    return self.refresh();
-                }
-                KeyCode::Char('k') | KeyCode::Up | KeyCode::Char('[') => {
-                    self.switch_window(false)?;
-                    return self.refresh();
-                }
-                KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
-                    return self.focus_window_at((c as u8 - b'1') as usize);
-                }
-                _ => {}
             }
         }
         if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -496,6 +708,22 @@ impl Client {
                 self.which_key.set_scope(Scope::Global);
                 self.which_key.dismiss();
                 return Ok(());
+            }
+            // `$` is prefix-$ (tmux rename-session). Terminals send
+            // Char('$') or Shift-4; which-key's bind string skips `$`.
+            if matches!(key.code, KeyCode::Char('$'))
+                || (key.code == KeyCode::Char('4')
+                    && key.modifiers.contains(KeyModifiers::SHIFT))
+            {
+                return self.dispatch(Action::RenameSession);
+            }
+            // `&` is prefix-& (tmux kill-window). Terminals send
+            // Char('&') or Shift-7.
+            if matches!(key.code, KeyCode::Char('&'))
+                || (key.code == KeyCode::Char('7')
+                    && key.modifiers.contains(KeyModifiers::SHIFT))
+            {
+                return self.dispatch(Action::CloseWindow);
             }
             if let Some(action) = self.which_key.handle_key(key) {
                 return self.dispatch(action);
@@ -524,9 +752,8 @@ impl Client {
     }
 
     /// Send a key to the focused pane's process. A pane whose process
-    /// has ended is a normal state, not a client error: the client
-    /// reads the panes again — which respawns the dead ones — and the
-    /// key is dropped.
+    /// has ended is a normal state: the daemon closes it, the client
+    /// reads the new view, and the key is dropped.
     fn forward(&mut self, data: &str) {
         if self.write(data).is_err() {
             let _ = self.refresh();
@@ -547,8 +774,9 @@ impl Client {
                 self.detached = true;
                 Ok(())
             }
-            Action::ToggleRoster => {
-                self.roster_open = !self.roster_open;
+            Action::ToggleSidebar => {
+                self.sidebar.open = !self.sidebar.open;
+                self.save_sidebar();
                 let (w, h) = self.tty;
                 self.resize_tty(w, h)?;
                 self.refresh()
@@ -564,11 +792,26 @@ impl Client {
                 self.picking = Some(0);
                 Ok(())
             }
+            Action::PickSession => {
+                self.load_session_rows()?;
+                let idx = self
+                    .attached
+                    .as_ref()
+                    .and_then(|n| self.sessions.iter().position(|s| s == n))
+                    .unwrap_or(0);
+                self.sessions_pick = Some(idx);
+                Ok(())
+            }
+            Action::RenameSession => {
+                self.begin_naming(Naming::Session(self.session_label()));
+                Ok(())
+            }
             Action::RenameWindow => {
                 let current = self.focused_window().unwrap_or_default();
-                self.naming = Some(Naming::Rename(current));
-                if !self.roster_open {
-                    self.roster_open = true;
+                self.begin_naming(Naming::Window(current));
+                if !self.sidebar.open {
+                    self.sidebar.open = true;
+                    self.save_sidebar();
                     let (w, h) = self.tty;
                     self.resize_tty(w, h)?;
                     self.refresh()?;
@@ -687,40 +930,21 @@ impl Client {
         Ok(())
     }
 
-    fn focus_window_at(&mut self, idx: usize) -> io::Result<()> {
-        let window = self
-            .view
-            .as_ref()
-            .and_then(|v| v.windows.get(idx))
-            .map(|w| w.window.clone());
-        if let Some(window) = window {
-            self.call(Request::Focus {
-                id: String::new(),
-                window: Some(window),
-                pane: None,
-            })?;
-            self.refresh()?;
-        }
-        Ok(())
-    }
-
-    fn close_roster(&mut self) -> io::Result<()> {
-        if !self.roster_open {
-            return Ok(());
-        }
-        self.roster_open = false;
-        let (w, h) = self.tty;
-        self.resize_tty(w, h)?;
-        self.refresh()
-    }
-
-    /// Left click: a rail/roster row focuses that window; a tile
+    /// Left click: a sidebar row focuses that window or agent; a tile
     /// focuses that pane.
     fn click(&mut self, col: u16, row: u16) -> io::Result<()> {
         let Some(view) = self.view.as_ref() else {
             return Ok(());
         };
-        match hit(self.tty, self.roster_open, col, row, view) {
+        match hit(
+            self.tty,
+            self.sidebar.open,
+            self.sidebar_cols(),
+            self.sidebar.split,
+            col,
+            row,
+            view,
+        ) {
             Some(Hit::Window(window)) => {
                 self.call(Request::Focus {
                     id: String::new(),
@@ -739,6 +963,137 @@ impl Client {
             }
             None => Ok(()),
         }
+    }
+
+    fn mouse(&mut self, ev: ratatui::crossterm::event::MouseEvent) -> io::Result<()> {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let (col, row, kind) = (ev.column, ev.row, ev.kind);
+        if self.drag.is_some() {
+            return match kind {
+                MouseEventKind::Drag(_) => self.mouse_drag(col, row),
+                MouseEventKind::Up(_) => self.mouse_up(),
+                _ => Ok(()),
+            };
+        }
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.chrome_down(col, row)? {
+                    return Ok(());
+                }
+                self.mouse_to_tile(col, row, kind)
+            }
+            MouseEventKind::Drag(_)
+            | MouseEventKind::Up(_)
+            | MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight
+            | MouseEventKind::Down(_) => self.mouse_to_tile(col, row, kind),
+            _ => Ok(()),
+        }
+    }
+
+    /// Sidebar chrome: drag handles and roster clicks. True if the
+    /// event stays with the multiplexer.
+    fn chrome_down(&mut self, col: u16, row: u16) -> io::Result<bool> {
+        let kind = side(self.tty.0, self.sidebar.open);
+        if kind == Side::Hidden {
+            return Ok(false);
+        }
+        let sw = side_width(kind, self.sidebar_cols());
+        let top = HEADER_LINES;
+        let bot = self.tty.1.saturating_sub(STATUS_LINES);
+        if row < top || row >= bot {
+            return Ok(false);
+        }
+        let area = Rect::new(0, top, sw, bot.saturating_sub(top));
+        if let Some(view) = self.view.as_ref() {
+            let lay = side::layout(area, kind == Side::Open, self.sidebar.split, view);
+            if lay.divider_y == Some(row) && col < sw {
+                self.drag = Some(Drag::Split);
+                return Ok(true);
+            }
+            if col < sw && lay.at(row).is_some() {
+                self.click(col, row)?;
+                return Ok(true);
+            }
+        }
+        if col + 1 == sw || col == sw {
+            self.drag = Some(Drag::Width);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Focus the tile under the cursor and write an SGR mouse
+    /// sequence into that pane, so the inner TUI can select and scroll.
+    fn mouse_to_tile(
+        &mut self,
+        col: u16,
+        row: u16,
+        kind: ratatui::crossterm::event::MouseEventKind,
+    ) -> io::Result<()> {
+        let Some(view) = self.view.as_ref() else {
+            return Ok(());
+        };
+        let Some(tile) = tile_at(
+            self.tty,
+            self.sidebar.open,
+            self.sidebar_cols(),
+            col,
+            row,
+            view,
+        ) else {
+            return Ok(());
+        };
+        let Some(seq) = sgr_mouse(kind, tile.x, tile.y) else {
+            return Ok(());
+        };
+        if self.view.as_ref().is_some_and(|v| v.focused != tile.pane) {
+            let pane = tile.pane.clone();
+            self.call(Request::Focus {
+                id: String::new(),
+                window: None,
+                pane: Some(pane),
+            })?;
+            self.refresh()?;
+        }
+        self.write(&seq)
+    }
+
+    fn mouse_drag(&mut self, col: u16, row: u16) -> io::Result<()> {
+        match self.drag {
+            Some(Drag::Width) => {
+                let cols = col.max(1);
+                if cols <= RAIL_COLS {
+                    if self.sidebar.open {
+                        self.sidebar.open = false;
+                    }
+                } else {
+                    self.sidebar.open = true;
+                    self.sidebar.cols = cols.clamp(side::MIN_COLS, side::MAX_COLS);
+                }
+                let (w, h) = self.tty;
+                self.resize_tty(w, h)
+            }
+            Some(Drag::Split) => {
+                let top = HEADER_LINES;
+                let h = self.tty.1.saturating_sub(CHROME_ROWS);
+                if h > 2 {
+                    let y = row.saturating_sub(top).min(h.saturating_sub(2));
+                    self.sidebar.split = ((y as f32) / (h as f32)).clamp(0.2, 0.8);
+                }
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn mouse_up(&mut self) -> io::Result<()> {
+        if self.drag.take().is_some() {
+            self.save_sidebar();
+        }
+        Ok(())
     }
 
     fn focused_window(&self) -> Option<String> {
@@ -760,28 +1115,38 @@ impl Client {
         self.tick = self.tick.wrapping_add(1);
     }
 
-    /// Draw one frame: fill the base, the rail or roster, the panes'
-    /// grids, the status line, and the prefix popup. The frame and the
+    /// Draw one frame: fill the base, the sidebar, the panes' grids,
+    /// the status line, and the prefix popup. The frame and the
     /// tiles share `bg.base`, so the gap between tiles is invisible —
     /// a single thin separator line marks the boundary.
     pub fn draw(&self, frame: &mut ratatui::Frame) {
         let area = frame.area();
         frame.render_widget(Block::default().bg(self.c("bg.base")), area);
 
-        match side(area.width, self.roster_open) {
-            Side::Hidden => self.draw_content(frame, area),
+        let body = Rect {
+            x: area.x,
+            y: area.y + HEADER_LINES,
+            width: area.width,
+            height: area.height.saturating_sub(CHROME_ROWS),
+        };
+        match side(area.width, self.sidebar.open) {
+            Side::Hidden => self.draw_content(frame, body),
             kind => {
                 let chunks = Layout::horizontal([
-                    Constraint::Length(side_width(kind)),
+                    Constraint::Length(side_width(kind, self.sidebar_cols())),
                     Constraint::Length(GAP),
                     Constraint::Fill(1),
                 ])
-                .split(area);
+                .split(body);
                 self.draw_side(frame, chunks[0], kind);
                 self.draw_content(frame, chunks[2]);
             }
         }
+        self.draw_header(frame, area);
         self.draw_status(frame, area);
+        if self.sessions_pick.is_some() {
+            self.draw_sessions_popup(frame, area);
+        }
 
         if self.which_key.active || !self.which_key.current_sequence.is_empty() {
             let popup = WhichKey::new().border_style(Style::default().fg(self.c("border.focused")));
@@ -789,57 +1154,149 @@ impl Client {
         }
     }
 
-    /// The rail or the roster: windows of the attached session, in
-    /// the order the operator laid them. The mark is idle or dead
-    /// until ACP feeds turning / needs-you.
+    /// Windows above, agent processes below. The open sidebar writes
+    /// two lines per entry: the name, then a clause.
     fn draw_side(&self, frame: &mut ratatui::Frame, area: Rect, kind: Side) {
-        let bg = match kind {
-            Side::Roster => "bg.panel",
-            _ => "bg.base",
-        };
+        let open = kind == Side::Open;
+        let bg = if open { "bg.panel" } else { "bg.base" };
         frame.render_widget(Block::default().bg(self.c(bg)), area);
         let Some(view) = &self.view else {
             return;
         };
-        let current = self.focused_window();
-        let accent = self.c("accent.primary");
-        let muted = self.c("text.muted");
-        let primary = self.c("text.primary");
-        for (y, window) in (area.y..area.bottom()).zip(view.windows.iter()) {
-            let here = current.as_deref() == Some(window.window.as_str());
-            let (mark, mark_style) = match window.state {
-                WindowState::NeedsYou => (MARK_NEED, Style::default().fg(self.c("error"))),
-                WindowState::Turning => {
-                    let frame = DOT_FRAMES[(self.tick / 4) as usize % DOT_FRAMES.len()];
-                    (frame, Style::default().fg(muted))
-                }
-                WindowState::Dead => (MARK_DEAD, Style::default().fg(muted)),
-                WindowState::Idle => (MARK_IDLE, Style::default().fg(muted)),
-            };
-            if here {
-                frame.buffer_mut().set_stringn(area.x, y, "┃", 1, Style::default().fg(accent));
-            }
+        let lay = side::layout(area, open, self.sidebar.split, view);
+        let label = Style::default().fg(self.c("text.dim"));
+        let border = Style::default().fg(self.c("border.subtle"));
+        if let Some(y) = lay.windows_header {
             frame.buffer_mut().set_stringn(
-                area.x + 2,
+                area.x + 1,
                 y,
-                mark,
-                1,
-                mark_style,
+                "windows",
+                area.width.saturating_sub(1) as usize,
+                label,
             );
-            if kind == Side::Roster {
-                let name_style = if here {
-                    Style::default().fg(primary)
-                } else {
-                    Style::default().fg(muted)
+        }
+        if let Some(y) = lay.agents_header {
+            frame.buffer_mut().set_stringn(
+                area.x + 1,
+                y,
+                "agents",
+                area.width.saturating_sub(1) as usize,
+                label,
+            );
+        }
+        if open {
+            if let Some(counters) = self.sat_session() {
+                let strip = Rect {
+                    x: lay.agent_area.x,
+                    y: lay.agent_area.y,
+                    width: 1,
+                    height: lay.agent_area.height,
                 };
-                frame.buffer_mut().set_stringn(
-                    area.x + 4,
-                    y,
-                    &window.window,
-                    area.width.saturating_sub(4) as usize,
-                    name_style,
+                let fill = Style::default().fg(self.c(sat::fill_token(counters.agents)));
+                sat::draw_strip(
+                    frame.buffer_mut(),
+                    strip,
+                    &counters,
+                    Style::default().fg(self.c(sat::track_token())),
+                    fill,
+                    Style::default().fg(self.c(sat::stain_token())),
                 );
             }
+        }
+        if let Some(y) = lay.divider_y {
+            let grip = matches!(self.drag, Some(Drag::Split));
+            let style = if grip { Style::default().fg(self.c("accent.primary")) } else { border };
+            let line = "─".repeat(area.width.max(1) as usize);
+            frame
+                .buffer_mut()
+                .set_stringn(area.x, y, &line, area.width as usize, style);
+        }
+        for (y, h, item) in &lay.hits {
+            self.draw_side_item(frame, area, *y, *h, item, open, view);
+        }
+    }
+
+    fn draw_side_item(
+        &self,
+        frame: &mut ratatui::Frame,
+        area: Rect,
+        y: u16,
+        h: u16,
+        item: &side::SideItem,
+        open: bool,
+        view: &SessionView,
+    ) {
+        let focused_window = self.focused_window();
+        let focused_pane = view.focused.as_str();
+        let (here, mark, mark_style, title, clause) = match item {
+            side::SideItem::Window(name) => {
+                let w = view.windows.iter().find(|w| w.window == *name);
+                let here = focused_window.as_deref() == Some(name.as_str());
+                let (mark, mark_style) = match w {
+                    Some(w) if side::window_has_agent(w) => self.state_mark(w.state),
+                    _ => ("·", Style::default().fg(self.c("text.muted"))),
+                };
+                let clause = w.map(side::window_clause).unwrap_or_default();
+                (here, mark, mark_style, name.clone(), clause)
+            }
+            side::SideItem::Agent { pane, window, name } => {
+                let here = focused_pane == pane;
+                let state = view
+                    .windows
+                    .iter()
+                    .flat_map(|w| w.panes.iter())
+                    .find(|p| p.pane == *pane)
+                    .map(|p| p.state)
+                    .unwrap_or(WindowState::Idle);
+                let (mark, mark_style) = self.state_mark(state);
+                (here, mark, mark_style, name.clone(), side::agent_clause(window, state))
+            }
+        };
+        let accent = Style::default().fg(self.c("accent.primary"));
+        let primary = Style::default().fg(self.c("text.primary"));
+        let muted = Style::default().fg(self.c("text.muted"));
+        let x = if open && matches!(item, side::SideItem::Agent { .. }) {
+            area.x + 1
+        } else {
+            area.x
+        };
+        if here {
+            frame.buffer_mut().set_stringn(x, y, "┃", 1, accent);
+        }
+        frame
+            .buffer_mut()
+            .set_stringn(x + 2, y, mark, 1, mark_style);
+        if open {
+            let title_style = if here { primary } else { muted };
+            frame.buffer_mut().set_stringn(
+                x + 4,
+                y,
+                &title,
+                area.width.saturating_sub((x + 4).saturating_sub(area.x)) as usize,
+                title_style,
+            );
+            if h > 1 && y + 1 < area.bottom() {
+                frame.buffer_mut().set_stringn(
+                    x + 4,
+                    y + 1,
+                    &clause,
+                    area.width.saturating_sub((x + 4).saturating_sub(area.x)) as usize,
+                    muted,
+                );
+            }
+        }
+    }
+
+    fn state_mark(&self, state: WindowState) -> (&'static str, Style) {
+        let muted = self.c("text.muted");
+        match state {
+            WindowState::NeedsYou => (MARK_NEED, Style::default().fg(self.c("error"))),
+            WindowState::Turning => {
+                let frame = DOT_FRAMES[(self.tick / 4) as usize % DOT_FRAMES.len()];
+                (frame, Style::default().fg(muted))
+            }
+            WindowState::Dead => (MARK_DEAD, Style::default().fg(muted)),
+            WindowState::Idle => (MARK_IDLE, Style::default().fg(muted)),
         }
     }
 
@@ -850,7 +1307,7 @@ impl Client {
             x: area.x + PAD,
             y: area.y,
             width: area.width.saturating_sub(2 * PAD),
-            height: area.height.saturating_sub(STATUS_LINES),
+            height: area.height,
         };
         let Some(view) = &self.view else {
             self.draw_home(frame, inner);
@@ -988,67 +1445,367 @@ impl Client {
         }
     }
 
-    /// The status line: the session and its focused pane on the left,
-    /// the key hints on the right.
-    fn draw_status(&self, frame: &mut ratatui::Frame, area: Rect) {
-        let y = area.bottom().saturating_sub(1);
-        let left = if let Some(err) = &self.last_error {
-            err.clone()
-        } else if let Some(idx) = self.picking {
-            let names: Vec<String> = self
-                .catalog
-                .agents
-                .iter()
-                .enumerate()
-                .map(|(i, a)| {
-                    if i == idx {
-                        format!("[{}]", a.name)
-                    } else {
-                        a.name.clone()
-                    }
-                })
-                .collect();
-            format!("agent {}", names.join("  "))
-        } else if let Some(naming) = &self.naming {
-            let Naming::Rename(draft) = naming;
-            format!("rename: {draft}_")
-        } else {
-            match &self.attached {
-                Some(name) => {
-                    let pane = self.view.as_ref().map(|v| v.focused.clone());
-                    match pane {
-                        Some(pane) => format!("{name} · {pane}"),
-                        None => name.clone(),
-                    }
-                }
-                None => "anvil".to_string(),
-            }
+    fn session_index(&self) -> usize {
+        self.attached
+            .as_ref()
+            .and_then(|n| self.sessions.iter().position(|s| s == n))
+            .unwrap_or(0)
+            + 1
+    }
+
+    /// The chip is the session's name, or its index when the name is
+    /// a leftover default (`main`).
+    fn session_label(&self) -> String {
+        let name = self.attached.as_deref().unwrap_or("");
+        display_session(name, self.session_index())
+    }
+
+    /// Session chip on the left, host on the right. No window name.
+    fn draw_header(&self, frame: &mut ratatui::Frame, area: Rect) {
+        let bar = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: HEADER_LINES,
         };
+        frame.render_widget(Block::default().bg(self.c("bg.panel")), bar);
+        let chip = format!(" {} ", self.session_label());
         frame.buffer_mut().set_stringn(
             area.x + PAD,
-            y,
-            &left,
-            (area.width.saturating_sub(2 * PAD)) as usize,
-            Style::default().fg(self.c("text.primary")),
+            bar.y,
+            &chip,
+            chip.len(),
+            Style::default()
+                .fg(self.c("bg.base"))
+                .bg(self.c("accent.primary")),
         );
-        let hints = if self.picking.is_some() {
-            "j/k · enter · d default · esc"
-        } else if self.naming.is_some() {
-            "enter · esc cancel"
-        } else if self.roster_open {
-            "j/k windows · 1-9 · enter close · click"
-        } else {
-            "ctrl-b a agent · c term · s roster · , rename"
-        };
-        let hints_w = hints.len() as u16;
-        if hints_w + 2 * PAD <= area.width {
+        let host = &self.host;
+        let hx = area.right().saturating_sub(PAD + host.len() as u16);
+        if hx + host.len() as u16 <= area.right() {
             frame.buffer_mut().set_stringn(
-                area.right().saturating_sub(hints_w + PAD),
-                y,
-                hints,
-                hints_w as usize,
-                Style::default().fg(self.c("text.muted")),
+                hx,
+                bar.y,
+                host,
+                host.len(),
+                Style::default().fg(self.c("text.dim")),
             );
+        }
+        let chip_end = area.x + PAD + chip.chars().count() as u16 + 2;
+        let host_start = hx.saturating_sub(2);
+        if let Some(track) = sat::header_rect(chip_end, host_start, bar.y) {
+            if let Some(counters) = self.sat_header() {
+                self.paint_sat_header(frame, track, &counters);
+            }
+        }
+    }
+
+    /// Instant from the live view when the file is empty or stale;
+    /// 24h stain still comes from the daemon file.
+    fn sat_header(&self) -> Option<crate::daemon::sat::Counters> {
+        let mut c = self.sat.all.clone();
+        let live = self.view.as_ref().map(crate::daemon::sat::count_view);
+        if let Some((busy, agents)) = live {
+            if let Some(prev) = self.attached.as_ref().and_then(|n| self.sat.session(n)) {
+                c.busy = c.busy.saturating_sub(prev.busy) + busy;
+                c.agents = c.agents.saturating_sub(prev.agents) + agents;
+            } else if c.agents == 0 {
+                c.busy = busy;
+                c.agents = agents;
+            }
+        }
+        (c.agents > 0).then_some(c)
+    }
+
+    fn sat_session(&self) -> Option<crate::daemon::sat::Counters> {
+        let view = self.view.as_ref()?;
+        let (busy, agents) = crate::daemon::sat::count_view(view);
+        if agents == 0 {
+            return None;
+        }
+        let mut c = self
+            .attached
+            .as_ref()
+            .and_then(|n| self.sat.session(n).cloned())
+            .unwrap_or_default();
+        c.busy = busy;
+        c.agents = agents;
+        Some(c)
+    }
+
+    fn paint_sat_header(
+        &self,
+        frame: &mut ratatui::Frame,
+        track: Rect,
+        counters: &crate::daemon::sat::Counters,
+    ) {
+        let fill = Style::default().fg(self.c(sat::fill_token(counters.agents)));
+        sat::draw_header(
+            frame.buffer_mut(),
+            track,
+            counters,
+            Style::default().fg(self.c(sat::track_token())),
+            fill,
+            Style::default().fg(self.c(sat::stain_token())),
+        );
+    }
+
+    fn focused_needs_you(&self) -> bool {
+        let Some(view) = &self.view else {
+            return false;
+        };
+        view.windows
+            .iter()
+            .flat_map(|w| w.panes.iter())
+            .find(|p| p.pane == view.focused)
+            .is_some_and(|p| p.state == WindowState::NeedsYou)
+    }
+
+    fn window_count(&self) -> usize {
+        self.view.as_ref().map(|v| v.windows.len()).unwrap_or(0)
+    }
+
+    fn pane_count(&self) -> usize {
+        let Some(view) = &self.view else {
+            return 0;
+        };
+        view.windows
+            .iter()
+            .find(|w| w.panes.iter().any(|p| p.pane == view.focused))
+            .map(|w| w.panes.len())
+            .unwrap_or(0)
+    }
+
+    /// Keys that apply right now — not a catalog.
+    fn footer_hints(&self) -> Vec<(&'static str, &'static str)> {
+        if self.which_key.active || self.which_key.is_pending() {
+            return vec![("esc", "cancel")];
+        }
+        if self.sessions_pick.is_some() {
+            return vec![
+                ("j/k", "move"),
+                ("enter", "switch"),
+                ("n", "new"),
+                ("x", "drop"),
+                ("esc", "cancel"),
+            ];
+        }
+        if self.picking.is_some() {
+            return vec![
+                ("j/k", "move"),
+                ("enter", "launch"),
+                ("d", "default"),
+                ("esc", "cancel"),
+            ];
+        }
+        if self.naming.is_some() {
+            return vec![("enter", "ok"), ("esc", "cancel")];
+        }
+        if matches!(self.drag, Some(Drag::Width)) {
+            return vec![("drag", "width")];
+        }
+        if matches!(self.drag, Some(Drag::Split)) {
+            return vec![("drag", "split")];
+        }
+        if self.focused_needs_you() {
+            return vec![("y", "allow"), ("n", "deny")];
+        }
+        let mut hints = Vec::new();
+        if self.sidebar.open {
+            hints.push(("ctrl-b w", "hide windows"));
+        } else {
+            hints.push(("ctrl-b w", "show windows"));
+        }
+        hints.push(("ctrl-b a", "new agent"));
+        hints.push(("ctrl-b c", "new shell"));
+        if self.window_count() > 1 {
+            hints.push(("ctrl-b ]", "next"));
+        }
+        if self.pane_count() > 1 {
+            hints.push(("ctrl-b h", "pane"));
+        }
+        if self.sessions.len() > 1 {
+            hints.push(("ctrl-b s", "sessions"));
+        }
+        hints
+    }
+
+    /// Footer: contextual key (bold) + `:desc` (muted), centered.
+    fn draw_status(&self, frame: &mut ratatui::Frame, area: Rect) {
+        let y = area.bottom().saturating_sub(1);
+        let bar = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        let asking = self.naming.is_some();
+        let bar_bg = if asking { "error" } else { "bg.panel" };
+        frame.render_widget(Block::default().bg(self.c(bar_bg)), bar);
+        if error_owns_footer(self.naming.as_ref(), self.last_error.as_deref()) {
+            if let Some(err) = &self.last_error {
+                frame.buffer_mut().set_stringn(
+                    area.x + PAD,
+                    y,
+                    err,
+                    (area.width.saturating_sub(2 * PAD)) as usize,
+                    Style::default().fg(self.c("error")),
+                );
+                return;
+            }
+        }
+        let key = if asking {
+            Style::default()
+                .fg(self.c("bg.base"))
+                .bg(self.c("error"))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(self.c("text.muted"))
+                .add_modifier(Modifier::BOLD)
+        };
+        let desc = if asking {
+            Style::default().fg(self.c("bg.base")).bg(self.c("error"))
+        } else {
+            Style::default().fg(self.c("text.dim"))
+        };
+        let pipe = if asking {
+            Style::default().fg(self.c("bg.base")).bg(self.c("error"))
+        } else {
+            Style::default().fg(self.c("text.dim"))
+        };
+        let mut spans: Vec<Span> = Vec::new();
+        if self.sessions_pick.is_some() {
+            // The popup is the list; the footer is only keys.
+        } else if let Some(idx) = self.picking {
+            for (i, agent) in self.catalog.agents.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::raw("  "));
+                }
+                let style = if i == idx { key } else { desc };
+                let label = if i == idx {
+                    format!("[{}]", agent.name)
+                } else {
+                    agent.name.clone()
+                };
+                spans.push(Span::styled(label, style));
+            }
+            spans.push(Span::styled("  |  ", pipe));
+        } else if let Some(naming) = &self.naming {
+            let draft = match naming {
+                Naming::Window(d) | Naming::Session(d) => d,
+            };
+            let kind = match naming {
+                Naming::Session(_) => "session",
+                Naming::Window(_) => "window",
+            };
+            spans.push(Span::styled(
+                format!("rename {kind}: {draft}_"),
+                key,
+            ));
+            if let Some(err) = &self.last_error {
+                spans.push(Span::styled("  |  ", pipe));
+                spans.push(Span::styled(err.clone(), key));
+            }
+            spans.push(Span::styled("  |  ", pipe));
+        }
+        for (i, (bind, label)) in self.footer_hints().iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(" | ", pipe));
+            }
+            spans.push(Span::styled(*bind, key));
+            spans.push(Span::styled(format!(":{label}"), desc));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
+            bar,
+        );
+    }
+
+    fn draw_sessions_popup(&self, frame: &mut ratatui::Frame, area: Rect) {
+        let Some(sel) = self.sessions_pick else {
+            return;
+        };
+        let rows = &self.session_rows;
+        let row_h: u16 = 2;
+        let max_h = area.height.saturating_sub(6).max(6);
+        let inner_h = ((rows.len() as u16).saturating_mul(row_h) + 1).min(max_h.saturating_sub(2));
+        let height = inner_h.saturating_add(2).min(max_h);
+        let width = (area.width * 2 / 3).clamp(36, 64);
+        let popup = Rect {
+            x: area.x + (area.width.saturating_sub(width)) / 2,
+            y: area.y + (area.height.saturating_sub(height)) / 2,
+            width,
+            height,
+        };
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Block::default()
+                .title(" sessions ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.c("border.focused")))
+                .bg(self.c("bg.panel")),
+            popup,
+        );
+        let inner = Rect {
+            x: popup.x + 1,
+            y: popup.y + 1,
+            width: popup.width.saturating_sub(2),
+            height: popup.height.saturating_sub(2),
+        };
+        let visible = (inner.height / row_h).max(1) as usize;
+        let scroll = sel.saturating_sub(visible.saturating_sub(1));
+        let current = self.attached.as_deref();
+        for (n, row) in rows.iter().enumerate().skip(scroll).take(visible) {
+            let y = inner.y + ((n - scroll) as u16) * row_h;
+            if y >= inner.bottom() {
+                break;
+            }
+            let here = current == Some(row.name.as_str());
+            let picked = n == sel;
+            let title_style = if picked {
+                Style::default()
+                    .fg(self.c("text.primary"))
+                    .add_modifier(Modifier::BOLD)
+            } else if here {
+                Style::default().fg(self.c("accent.primary"))
+            } else {
+                Style::default().fg(self.c("text.muted"))
+            };
+            if picked {
+                frame.render_widget(
+                    Block::default().bg(self.c("bg.elevated")),
+                    Rect {
+                        x: inner.x,
+                        y,
+                        width: inner.width,
+                        height: row_h.min(inner.bottom().saturating_sub(y)),
+                    },
+                );
+            }
+            let mark = if here { "┃" } else { " " };
+            frame.buffer_mut().set_stringn(
+                inner.x,
+                y,
+                mark,
+                1,
+                Style::default().fg(self.c("accent.primary")),
+            );
+            frame.buffer_mut().set_stringn(
+                inner.x + 2,
+                y,
+                &row.title,
+                inner.width.saturating_sub(2) as usize,
+                title_style,
+            );
+            if y + 1 < inner.bottom() {
+                frame.buffer_mut().set_stringn(
+                    inner.x + 2,
+                    y + 1,
+                    &row.clause,
+                    inner.width.saturating_sub(2) as usize,
+                    Style::default().fg(self.c("text.dim")),
+                );
+            }
         }
     }
 
@@ -1098,37 +1855,126 @@ enum Hit {
 /// Map a terminal cell to a window row or a pane tile.
 fn hit(
     tty: (u16, u16),
-    roster_open: bool,
+    open: bool,
+    cols: u16,
+    split: f32,
     col: u16,
     row: u16,
     view: &SessionView,
 ) -> Option<Hit> {
     let (tw, th) = tty;
-    if row >= th.saturating_sub(STATUS_LINES) {
+    if row < HEADER_LINES || row >= th.saturating_sub(STATUS_LINES) {
         return None;
     }
-    let kind = side(tw, roster_open);
-    let sw = side_width(kind);
+    let kind = side(tw, open);
+    let sw = side_width(kind, cols);
     if kind != Side::Hidden && col < sw {
-        return view
-            .windows
-            .get(row as usize)
-            .map(|w| Hit::Window(w.window.clone()));
+        let area = Rect::new(0, HEADER_LINES, sw, th.saturating_sub(CHROME_ROWS));
+        return match side::layout(area, kind == Side::Open, split, view).hit(row) {
+            Some(side::SideHit::Window(w)) => Some(Hit::Window(w)),
+            Some(side::SideHit::Pane(p)) => Some(Hit::Pane(p)),
+            None => None,
+        };
+    }
+    tile_at(tty, open, cols, col, row, view).map(|t| Hit::Pane(t.pane))
+}
+
+/// A cell inside a tile, in the pane's own 1-based coordinates.
+struct TileAt {
+    pane: String,
+    x: u16,
+    y: u16,
+}
+
+fn tile_at(
+    tty: (u16, u16),
+    open: bool,
+    cols: u16,
+    col: u16,
+    row: u16,
+    view: &SessionView,
+) -> Option<TileAt> {
+    let (tw, th) = tty;
+    if row < HEADER_LINES || row >= th.saturating_sub(STATUS_LINES) {
+        return None;
+    }
+    let kind = side(tw, open);
+    let sw = side_width(kind, cols);
+    if kind != Side::Hidden && col < sw {
+        return None;
     }
     let content_x = if kind == Side::Hidden { 0 } else { sw + GAP };
     let inner_x = content_x + PAD;
+    let inner_y = HEADER_LINES;
     let current = view
         .windows
         .iter()
         .find(|w| w.panes.iter().any(|p| p.pane == view.focused))?;
     for pane in &current.panes {
         let px = inner_x + pane.x;
-        let py = pane.y;
+        let py = inner_y + pane.y;
         if col >= px && col < px + pane.cols && row >= py && row < py + pane.rows {
-            return Some(Hit::Pane(pane.pane.clone()));
+            return Some(TileAt {
+                pane: pane.pane.clone(),
+                x: col - px + 1,
+                y: row - py + 1,
+            });
         }
     }
     None
+}
+
+/// xterm SGR mouse (`CSI < btn ; x ; y M/m`), 1-based, pane-local.
+fn sgr_mouse(
+    kind: ratatui::crossterm::event::MouseEventKind,
+    x: u16,
+    y: u16,
+) -> Option<String> {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let (btn, release) = match kind {
+        MouseEventKind::Down(MouseButton::Left) => (0, false),
+        MouseEventKind::Down(MouseButton::Middle) => (1, false),
+        MouseEventKind::Down(MouseButton::Right) => (2, false),
+        MouseEventKind::Up(MouseButton::Left) => (0, true),
+        MouseEventKind::Up(MouseButton::Middle) => (1, true),
+        MouseEventKind::Up(MouseButton::Right) => (2, true),
+        MouseEventKind::Drag(MouseButton::Left) => (32, false),
+        MouseEventKind::Drag(MouseButton::Middle) => (33, false),
+        MouseEventKind::Drag(MouseButton::Right) => (34, false),
+        MouseEventKind::ScrollUp => (64, false),
+        MouseEventKind::ScrollDown => (65, false),
+        MouseEventKind::ScrollLeft => (66, false),
+        MouseEventKind::ScrollRight => (67, false),
+        _ => return None,
+    };
+    let end = if release { 'm' } else { 'M' };
+    Some(format!("\x1b[<{btn};{x};{y}{end}"))
+}
+
+pub(crate) fn is_legacy_session(name: &str) -> bool {
+    name == "main"
+        || name
+            .strip_prefix("main-")
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn unused_session_name(taken: &[String]) -> String {
+    let mut n = 1u32;
+    loop {
+        let candidate = n.to_string();
+        if !taken.iter().any(|t| t == &candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+pub(crate) fn display_session(name: &str, index: usize) -> String {
+    if name.is_empty() || is_legacy_session(name) {
+        index.to_string()
+    } else {
+        name.to_string()
+    }
 }
 
 /// Whether a cell is inside any pane's rectangle, in canvas coords.
@@ -1221,6 +2067,7 @@ impl Request {
                 program,
                 acp,
                 watch,
+                name,
                 ..
             } => Request::Spawn {
                 id: id.into(),
@@ -1228,6 +2075,7 @@ impl Request {
                 program,
                 acp,
                 watch,
+                name,
             },
             Request::Write { data, .. } => Request::Write { id: id.into(), data },
         }
@@ -1247,6 +2095,12 @@ pub fn run(sock: &Path) -> io::Result<()> {
     out
 }
 
+/// An error owns the footer only when no name draft is live.
+/// Otherwise the prompt stays visible and the error sits next to it.
+fn error_owns_footer(naming: Option<&Naming>, last_error: Option<&str>) -> bool {
+    last_error.is_some() && naming.is_none()
+}
+
 fn run_loop(
     client: &mut Client,
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
@@ -1264,21 +2118,20 @@ fn run_loop(
         }
         match event::read()? {
             event::Event::Key(key) => {
-                client.key(key)?;
+                if let Err(err) = client.key(key) {
+                    client.last_error = Some(err.to_string());
+                }
                 if client.detached {
                     return Ok(());
                 }
             }
             event::Event::Resize(cols, rows) => {
-                client.resize_tty(cols, rows)?;
+                if let Err(err) = client.resize_tty(cols, rows) {
+                    client.last_error = Some(err.to_string());
+                }
             }
-            event::Event::Mouse(m)
-                if matches!(
-                    m.kind,
-                    event::MouseEventKind::Down(event::MouseButton::Left)
-                ) =>
-            {
-                client.click(m.column, m.row)?;
+            event::Event::Mouse(m) => {
+                client.mouse(m)?;
             }
             _ => {}
         }
@@ -1291,28 +2144,37 @@ mod tests {
 
     #[test]
     fn canvas_hides_chrome_on_a_narrow_tty() {
-        assert_eq!(canvas(79, 24, false), (75, 23));
-        assert_eq!(canvas(79, 24, true), (75, 23));
+        assert_eq!(canvas(79, 24, false, 21), (75, 22));
+        assert_eq!(canvas(79, 24, true, 21), (75, 22));
     }
 
     #[test]
-    fn canvas_rail_is_the_rest_state() {
-        assert_eq!(canvas(80, 24, false), (72, 23));
-        assert_eq!(canvas(119, 24, true), (111, 23));
+    fn canvas_rail_is_the_closed_sidebar() {
+        assert_eq!(canvas(80, 24, false, 21), (72, 22));
+        assert_eq!(canvas(117, 24, false, 21), (109, 22));
     }
 
     #[test]
-    fn canvas_roster_opens_on_a_wide_tty() {
-        assert_eq!(canvas(120, 24, false), (112, 23));
-        assert_eq!(canvas(120, 24, true), (73, 23));
+    fn canvas_sidebar_opens_at_half_width() {
+        assert_eq!(canvas(80, 24, true, 21), (54, 22));
+        assert_eq!(canvas(117, 24, true, 21), (91, 22));
+    }
+
+    #[test]
+    fn legacy_main_is_shown_as_an_index() {
+        assert!(is_legacy_session("main"));
+        assert!(is_legacy_session("main-2"));
+        assert!(!is_legacy_session("1"));
+        assert!(!is_legacy_session("personal"));
     }
 
     #[test]
     fn side_kind_follows_width_and_the_toggle() {
         assert_eq!(side(79, true), Side::Hidden);
         assert_eq!(side(80, false), Side::Rail);
-        assert_eq!(side(120, false), Side::Rail);
-        assert_eq!(side(120, true), Side::Roster);
+        assert_eq!(side(80, true), Side::Open);
+        assert_eq!(side(117, false), Side::Rail);
+        assert_eq!(side(117, true), Side::Open);
     }
 
     fn sample_view() -> SessionView {
@@ -1328,6 +2190,8 @@ mod tests {
                         y: 0,
                         cols: 40,
                         rows: 20,
+                        name: Some("oc".into()),
+                        state: WindowState::Idle,
                     }],
                 },
                 crate::daemon::session::WindowView {
@@ -1339,6 +2203,8 @@ mod tests {
                         y: 0,
                         cols: 40,
                         rows: 20,
+                        name: None,
+                        state: WindowState::Idle,
                     }],
                 },
             ],
@@ -1349,14 +2215,28 @@ mod tests {
     fn click_on_the_rail_selects_a_window() {
         let view = sample_view();
         assert_eq!(
-            hit((120, 24), false, 1, 0, &view),
+            hit((120, 24), false, 21, 0.5, 1, 4, &view),
             Some(Hit::Window("oc".into()))
         );
         assert_eq!(
-            hit((120, 24), true, 1, 1, &view),
+            hit((120, 24), true, 21, 0.5, 1, 4, &view),
+            Some(Hit::Window("oc".into()))
+        );
+        assert_eq!(
+            hit((120, 24), true, 21, 0.5, 1, 6, &view),
             Some(Hit::Window("grok".into()))
         );
-        assert_eq!(hit((120, 24), false, 1, 23, &view), None);
+        assert_eq!(hit((120, 24), false, 21, 0.5, 1, 23, &view), None);
+        assert_eq!(hit((120, 24), false, 21, 0.5, 1, 0, &view), None);
+    }
+
+    #[test]
+    fn a_name_collision_keeps_the_prompt() {
+        assert!(error_owns_footer(None, Some("a session by that name already exists")));
+        assert!(!error_owns_footer(
+            Some(&Naming::Session("spire".into())),
+            Some("a session by that name already exists"),
+        ));
     }
 
     #[test]
@@ -1364,8 +2244,34 @@ mod tests {
         let view = sample_view();
         // rail: 3 + gap 1 + pad 2 = content starts at col 6
         assert_eq!(
-            hit((120, 24), false, 6, 0, &view),
+            hit((120, 24), false, 21, 0.5, 6, 1, &view),
             Some(Hit::Pane("1".into()))
         );
+    }
+
+    #[test]
+    fn sgr_mouse_encodes_click_and_wheel() {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        assert_eq!(
+            sgr_mouse(MouseEventKind::Down(MouseButton::Left), 3, 5).as_deref(),
+            Some("\x1b[<0;3;5M")
+        );
+        assert_eq!(
+            sgr_mouse(MouseEventKind::Up(MouseButton::Left), 3, 5).as_deref(),
+            Some("\x1b[<0;3;5m")
+        );
+        assert_eq!(
+            sgr_mouse(MouseEventKind::ScrollDown, 1, 2).as_deref(),
+            Some("\x1b[<65;1;2M")
+        );
+    }
+
+    #[test]
+    fn tile_at_is_pane_local() {
+        let view = sample_view();
+        let t = tile_at((120, 24), false, 21, 8, 3, &view).unwrap();
+        assert_eq!(t.pane, "1");
+        assert_eq!(t.x, 3);
+        assert_eq!(t.y, 3);
     }
 }

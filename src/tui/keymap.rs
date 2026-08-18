@@ -4,14 +4,16 @@ use ratatui_which_key::{Keymap, WhichKeyState};
 const PREFIX_KEY: char = 'b';
 
 /// Actions are documented wire ops (`docs/protocol.md`), plus the
-/// client's own chrome (help, the rail/roster toggle).
+/// client's own chrome (help, the rail/sidebar toggle).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Action {
     Detach,
     Help,
-    ToggleRoster,
+    ToggleSidebar,
     RenameWindow,
+    RenameSession,
     NewSession,
+    PickSession,
     SwitchSession(u8),
     NewWindow,
     NewAgent,
@@ -33,9 +35,11 @@ impl std::fmt::Display for Action {
         match self {
             Action::Detach => write!(f, "detach"),
             Action::Help => write!(f, "help"),
-            Action::ToggleRoster => write!(f, "roster"),
+            Action::ToggleSidebar => write!(f, "windows"),
             Action::RenameWindow => write!(f, "rename window"),
+            Action::RenameSession => write!(f, "rename session"),
             Action::NewSession => write!(f, "new session"),
+            Action::PickSession => write!(f, "sessions"),
             Action::SwitchSession(n) => write!(f, "session {n}"),
             Action::NewWindow => write!(f, "new window"),
             Action::NewAgent => write!(f, "new agent"),
@@ -84,9 +88,10 @@ pub fn build_keymap() -> AppKeymap {
         s.bind("q", Action::Detach, Category::Session);
         s.bind("?", Action::Help, Category::Session);
         s.bind("n", Action::NewSession, Category::Session);
-        s.bind("s", Action::ToggleRoster, Category::Session);
+        s.bind("s", Action::PickSession, Category::Session);
+        s.bind("w", Action::ToggleSidebar, Category::Window);
+        s.bind("$", Action::RenameSession, Category::Session);
         s.bind(",", Action::RenameWindow, Category::Window);
-        s.bind("r", Action::RenameWindow, Category::Window);
         for n in 1..=9 {
             s.bind(&n.to_string(), Action::SwitchSession(n), Category::Session);
         }
@@ -110,7 +115,7 @@ pub fn build_keymap() -> AppKeymap {
         s.bind("<Down>", Action::FocusDown, Category::Pane);
         s.bind("<Up>", Action::FocusUp, Category::Pane);
         s.bind("<Right>", Action::FocusRight, Category::Pane);
-        s.bind("w", Action::CloseWindow, Category::Window);
+        s.bind("&", Action::CloseWindow, Category::Window);
     });
 
     km
@@ -148,12 +153,13 @@ mod tests {
     }
 
     #[test]
-    fn comma_and_r_rename_the_window() {
-        for c in [',', 'r'] {
-            let mut wk = prefixed();
-            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-            assert_eq!(wk.handle_key(key), Some(Action::RenameWindow), "key {c}");
-        }
+    fn comma_renames_the_window() {
+        let mut wk = prefixed();
+        let key = KeyEvent::new(KeyCode::Char(','), KeyModifiers::NONE);
+        assert_eq!(wk.handle_key(key), Some(Action::RenameWindow));
+        let mut wk = prefixed();
+        let r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert_eq!(wk.handle_key(r), None);
     }
 
     #[test]
@@ -173,10 +179,13 @@ mod tests {
     }
 
     #[test]
-    fn s_toggles_roster() {
+    fn s_picks_a_session_and_w_toggles_sidebar() {
         let mut wk = prefixed();
-        let key = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
-        assert_eq!(wk.handle_key(key), Some(Action::ToggleRoster));
+        let s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(wk.handle_key(s), Some(Action::PickSession));
+        let mut wk = prefixed();
+        let w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
+        assert_eq!(wk.handle_key(w), Some(Action::ToggleSidebar));
     }
 
     #[test]

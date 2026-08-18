@@ -4,7 +4,7 @@
 //! daemon restart. Windows and panes carry the identifiers the daemon
 //! issued when it made them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -44,6 +44,11 @@ pub struct PaneView {
     pub y: u16,
     pub cols: u16,
     pub rows: u16,
+    /// Catalog name when this process is an agent. Absent on a shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub state: WindowState,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -97,6 +102,10 @@ pub struct Session {
     panes: HashMap<String, Arc<Pane>>,
     acp: HashMap<String, Arc<AcpChild>>,
     watch: HashMap<String, Arc<HttpWatch>>,
+    /// pane id → catalog name for agent processes.
+    names: HashMap<String, String>,
+    /// panes whose name came from a shell that launched a catalog agent.
+    adopted: HashSet<String>,
 }
 
 /// The sessions the daemon owns. Named, on disk under a root.
@@ -147,7 +156,7 @@ impl Sessions {
             tty_cols: DEFAULT_COLS,
             tty_rows: DEFAULT_ROWS,
             windows: vec![WindowFile {
-                id: name.to_string(),
+                id: "sh".to_string(),
                 tree: Tree::Leaf {
                     id: "1".to_string(),
                 },
@@ -164,7 +173,7 @@ impl Sessions {
             tty_rows: file.tty_rows,
             gap: self.tiling().gap,
             windows: vec![Window {
-                id: name.to_string(),
+                id: "sh".to_string(),
                 tree: Tree::Leaf {
                     id: "1".to_string(),
                 },
@@ -173,6 +182,8 @@ impl Sessions {
             panes: HashMap::new(),
             acp: HashMap::new(),
             watch: HashMap::new(),
+            names: HashMap::new(),
+            adopted: HashSet::new(),
         }));
         self.live
             .lock()
@@ -214,6 +225,8 @@ impl Sessions {
             panes: HashMap::new(),
             acp: HashMap::new(),
             watch: HashMap::new(),
+            names: HashMap::new(),
+            adopted: HashSet::new(),
         }));
         self.live
             .lock()
@@ -258,12 +271,34 @@ impl Sessions {
             .remove(&name);
         Ok(())
     }
+
+    /// Views of sessions the daemon already holds. Disk-only names
+    /// stay unopened — they have no running agents to count.
+    pub fn each_live_view<F>(&self, mut f: F)
+    where
+        F: FnMut(&str, SessionView),
+    {
+        let pairs: Vec<(String, Arc<Mutex<Session>>)> = {
+            let Ok(live) = self.live.lock() else {
+                return;
+            };
+            live.iter().map(|(n, s)| (n.clone(), s.clone())).collect()
+        };
+        for (name, session) in pairs {
+            let Ok(mut s) = session.lock() else {
+                continue;
+            };
+            f(&name, s.view());
+        }
+    }
 }
 
 impl Session {
     /// Read a session: its windows, their panes, each pane's geometry,
     /// and the focused pane.
-    pub fn view(&self) -> SessionView {
+    pub fn view(&mut self) -> SessionView {
+        self.reap_dead_panes();
+        self.adopt_agents();
         let mut windows = Vec::new();
         for window in &self.windows {
             let mut panes = Vec::new();
@@ -275,11 +310,13 @@ impl Session {
                 .map(|id| {
                     let (x, y, cols, rows) = rects[&id];
                     PaneView {
-                        pane: id,
+                        pane: id.clone(),
                         x,
                         y,
                         cols,
                         rows,
+                        name: self.names.get(&id).cloned(),
+                        state: pane_state(&id, &self.panes, &self.acp, &self.watch),
                     }
                 })
                 .collect();
@@ -293,6 +330,40 @@ impl Session {
         SessionView {
             windows,
             focused: self.focused.clone(),
+        }
+    }
+
+    /// A shell that launched a catalog agent is named and watched the
+    /// same way as prefix-a.
+    fn adopt_agents(&mut self) {
+        let ids: Vec<String> = self.panes.keys().cloned().collect();
+        for id in ids {
+            if self.names.contains_key(&id) && !self.adopted.contains(&id) {
+                continue;
+            }
+            let Some(pid) = self.panes.get(&id).and_then(|p| p.pid()) else {
+                continue;
+            };
+            match super::adopt::detect(pid) {
+                Some(hit) => {
+                    self.names.insert(id.clone(), hit.name);
+                    self.adopted.insert(id.clone());
+                    if let Some(url) = hit.watch {
+                        if !self.watch.contains_key(&id) {
+                            self.watch
+                                .insert(id, super::watch::HttpWatch::start(&url));
+                        }
+                    }
+                }
+                None if self.adopted.contains(&id) => {
+                    self.names.remove(&id);
+                    self.adopted.remove(&id);
+                    if let Some(w) = self.watch.remove(&id) {
+                        w.stop();
+                    }
+                }
+                None => {}
+            }
         }
     }
 
@@ -373,6 +444,26 @@ impl Session {
         self.persist()
     }
 
+    /// A process that has ended takes its pane with it. `exit` in a
+    /// shell closes the pane; the last pane of a window takes the
+    /// window. A pane that never got a process is left for spawn.
+    fn reap_dead_panes(&mut self) {
+        let mut dead = Vec::new();
+        for (id, pane) in &self.panes {
+            if !pane.alive() {
+                dead.push(id.clone());
+            }
+        }
+        for (id, child) in &self.acp {
+            if !child.alive() {
+                dead.push(id.clone());
+            }
+        }
+        for id in dead {
+            let _ = self.close_pane(&id);
+        }
+    }
+
     /// Close a pane: its process ends; the pane leaves the window, and
     /// the layout re-tiles. A pane that was the window's only pane
     /// takes the window with it. If the closed pane was focused, focus
@@ -390,6 +481,7 @@ impl Session {
         if let Some(pane) = self.panes.remove(pane_id) {
             pane.hangup();
         }
+        self.drop_process(pane_id);
         let tree = self.windows[idx].tree.clone();
         match remove_leaf(&tree, pane_id) {
             Some(tree) => self.windows[idx].tree = tree,
@@ -416,6 +508,7 @@ impl Session {
             if let Some(pane) = self.panes.remove(pane_id) {
                 pane.hangup();
             }
+            self.drop_process(pane_id);
         }
         self.windows.remove(idx);
         self.refocus();
@@ -458,8 +551,10 @@ impl Session {
         }
         let (_, _, cols, rows) = rects[&self.focused];
         let dir = if cols >= rows { Dir::Cols } else { Dir::Rows };
+        let new_id = self.next_id.to_string();
         self.windows[idx].tree = split_into(&tree, &self.focused, dir, self.next_id);
         self.next_id += 1;
+        self.focused = new_id;
         self.persist()
     }
 
@@ -480,7 +575,14 @@ impl Session {
     /// Spawn a process in a pane. PTY by default; `acp` holds stdio
     /// and speaks ACP. The new process replaces whatever is already
     /// on the pane — a new window always has a shell first.
-    pub fn spawn(&mut self, pane_id: &str, program: &str, acp: bool, watch: Option<&str>) -> io::Result<()> {
+    pub fn spawn(
+        &mut self,
+        pane_id: &str,
+        program: &str,
+        acp: bool,
+        watch: Option<&str>,
+        name: Option<&str>,
+    ) -> io::Result<()> {
         if let Some(w) = self.watch.remove(pane_id) {
             w.stop();
         }
@@ -489,6 +591,10 @@ impl Session {
         }
         if let Some(child) = self.acp.remove(pane_id) {
             child.terminate();
+        }
+        self.names.remove(pane_id);
+        if let Some(name) = name.filter(|n| !n.is_empty()) {
+            self.names.insert(pane_id.to_string(), name.to_string());
         }
         if acp {
             let child = AcpChild::spawn(program)?;
@@ -505,6 +611,17 @@ impl Session {
                 .insert(pane_id.to_string(), HttpWatch::start(url));
         }
         Ok(())
+    }
+
+    fn drop_process(&mut self, pane_id: &str) {
+        if let Some(w) = self.watch.remove(pane_id) {
+            w.stop();
+        }
+        if let Some(child) = self.acp.remove(pane_id) {
+            child.terminate();
+        }
+        self.names.remove(pane_id);
+        self.adopted.remove(pane_id);
     }
 
     /// Write to the focused pane's process — the client's keys.
@@ -722,6 +839,35 @@ impl Grid {
     }
 }
 
+fn pane_state(
+    pane_id: &str,
+    pty: &HashMap<String, Arc<Pane>>,
+    acp: &HashMap<String, Arc<AcpChild>>,
+    watch: &HashMap<String, Arc<HttpWatch>>,
+) -> WindowState {
+    if let Some(w) = watch.get(pane_id) {
+        let s = w.state();
+        if s != WindowState::Idle && s != WindowState::Dead {
+            return s;
+        }
+    }
+    if let Some(child) = acp.get(pane_id) {
+        if !child.alive() {
+            return WindowState::Dead;
+        }
+        return child.state();
+    }
+    if let Some(pane) = pty.get(pane_id) {
+        if pane.alive() {
+            WindowState::Idle
+        } else {
+            WindowState::Dead
+        }
+    } else {
+        WindowState::Idle
+    }
+}
+
 fn window_state(
     panes: &[PaneView],
     pty: &HashMap<String, Arc<Pane>>,
@@ -785,7 +931,7 @@ mod tests {
         let work = sessions.get("work").unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows.len(), 1);
-        assert_eq!(view.windows[0].window, "work");
+        assert_eq!(view.windows[0].window, "sh");
         assert_eq!(view.windows[0].panes.len(), 1);
         assert_eq!(view.focused, "1");
 
@@ -811,7 +957,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("work").unwrap();
+        work.lock().unwrap().split("sh").unwrap();
 
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows[0].panes.len(), 2);
@@ -825,6 +971,7 @@ mod tests {
         assert_eq!(a.cols + b.cols, 79, "{a:?} {b:?}");
         assert_eq!(a.rows, 24);
         assert_eq!(b.rows, 24);
+        assert_eq!(view.focused, "2");
     }
 
     #[test]
@@ -832,7 +979,7 @@ mod tests {
         let (dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("work").unwrap();
+        work.lock().unwrap().split("sh").unwrap();
         drop(work);
 
         // The daemon restarts: a fresh Sessions over the same root.
@@ -841,7 +988,7 @@ mod tests {
         let work = restarted.get("work").unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows[0].panes.len(), 2);
-        assert_eq!(view.focused, "1");
+        assert_eq!(view.focused, "2");
     }
 
     #[test]
@@ -849,7 +996,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("work").unwrap();
+        work.lock().unwrap().split("sh").unwrap();
         work.lock().unwrap().resize(100, 50, 1).unwrap();
 
         let view = work.lock().unwrap().view();
@@ -882,7 +1029,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
         work.lock().unwrap().write("printf 'hello session'\n").unwrap();
         let mut grid = work.lock().unwrap().read_pane("1");
         for _ in 0..100 {
@@ -903,11 +1050,24 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
 
-        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
+    }
+
+    #[test]
+    fn an_agent_spawn_names_the_pane() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, Some("oc"))
+            .unwrap();
+        let view = work.lock().unwrap().view();
+        assert_eq!(view.windows[0].panes[0].name.as_deref(), Some("oc"));
     }
 
     #[test]
@@ -915,14 +1075,14 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
         assert!(!work.lock().unwrap().read_pane("1").acp);
 
         let (_keep, path) = crate::daemon::acp::tests::fake_agent();
         work.lock()
             .unwrap()
-            .spawn("1", &format!("python3 {path}"), true, None)
+            .spawn("1", &format!("python3 {path}"), true, None, None)
             .unwrap();
         let grid = work.lock().unwrap().read_pane("1");
         assert!(grid.acp, "{grid:?}");
@@ -934,7 +1094,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
         work.lock().unwrap().write("exit 0\n").unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
@@ -951,8 +1111,8 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("work").unwrap();
-        assert_eq!(work.lock().unwrap().view().focused, "1");
+        work.lock().unwrap().split("sh").unwrap();
+        assert_eq!(work.lock().unwrap().view().focused, "2");
 
         work.lock().unwrap().add_window("plugin").unwrap();
         let view = work.lock().unwrap().view();
@@ -963,7 +1123,7 @@ mod tests {
         assert!(view.windows[1].panes.iter().any(|p| p.pane == "3"));
 
         // Focus moves back to the first window.
-        work.lock().unwrap().focus("work").unwrap();
+        work.lock().unwrap().focus("sh").unwrap();
         assert_eq!(work.lock().unwrap().view().focused, "1");
 
         let err = work.lock().unwrap().focus("99").unwrap_err();
@@ -985,16 +1145,19 @@ mod tests {
         let view = work.lock().unwrap().view();
         assert!(view.windows.iter().any(|w| w.window == "plugin"));
         assert!(!view.windows.iter().any(|w| w.window == "1"));
-        let err = work.lock().unwrap().rename_window("plugin", "work").unwrap_err();
+        let err = work.lock().unwrap().rename_window("plugin", "sh").unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
     }
 
     #[test]
-    fn a_dead_pane_respawns() {
+    fn a_dead_pane_closes() {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
+        work.lock().unwrap().split("sh").unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
+        work.lock().unwrap().spawn("2", "sh", false, None, None).unwrap();
+        work.lock().unwrap().focus_pane("1").unwrap();
         work.lock().unwrap().write("exit 0\n").unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
@@ -1002,11 +1165,27 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(!work.lock().unwrap().read_pane("1").alive);
+        let view = work.lock().unwrap().view();
+        assert_eq!(view.windows[0].panes.len(), 1, "{view:?}");
+        assert_eq!(view.windows[0].panes[0].pane, "2");
+        assert_eq!(view.focused, "2");
+    }
 
-        // The dead pane takes a fresh process.
-        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
-        assert!(work.lock().unwrap().read_pane("1").alive);
+    #[test]
+    fn exit_of_the_last_pane_closes_the_window() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
+        work.lock().unwrap().write("exit 0\n").unwrap();
+        for _ in 0..100 {
+            if !work.lock().unwrap().read_pane("1").alive {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let view = work.lock().unwrap().view();
+        assert!(view.windows.is_empty(), "{view:?}");
     }
 
     #[test]
@@ -1014,13 +1193,13 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("work").unwrap();
-        assert_eq!(work.lock().unwrap().view().focused, "1");
-
-        work.lock().unwrap().focus_pane("2").unwrap();
+        work.lock().unwrap().split("sh").unwrap();
         assert_eq!(work.lock().unwrap().view().focused, "2");
+
         work.lock().unwrap().focus_pane("1").unwrap();
         assert_eq!(work.lock().unwrap().view().focused, "1");
+        work.lock().unwrap().focus_pane("2").unwrap();
+        assert_eq!(work.lock().unwrap().view().focused, "2");
 
         let err = work.lock().unwrap().focus_pane("99").unwrap_err();
         assert!(err.to_string().contains("no such pane"));
@@ -1031,11 +1210,11 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("work").unwrap();
+        work.lock().unwrap().split("sh").unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows[0].panes.len(), 2);
 
-        // Closing the focused pane (1) leaves pane 2 filling the window.
+        // Closing the original pane leaves the new one filling the window.
         work.lock().unwrap().close_pane("1").unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows.len(), 1);
@@ -1069,12 +1248,12 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
         work.lock().unwrap().add_window("plugin").unwrap();
         // Current window is plugin (focused pane 2); window work has pane 1.
-        work.lock().unwrap().focus("work").unwrap();
+        work.lock().unwrap().focus("sh").unwrap();
 
-        work.lock().unwrap().close_window("work").unwrap();
+        work.lock().unwrap().close_window("sh").unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows.len(), 1);
         assert_eq!(view.windows[0].window, "plugin");

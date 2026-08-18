@@ -157,7 +157,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
     // split the window: two panes, tiled to the tty
     client.ok(|id| Request::Split {
         id: id.into(),
-        window: "work".into(),
+        window: "sh".into(),
     });
     let Value::View(view) = client.ok(|id| Request::Read {
         id: id.into(),
@@ -197,6 +197,8 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         pane: "1".into(),
         program: "sh".into(),
         acp: false,
+        watch: None,
+        name: None,
     });
     client.ok(|id| Request::Write {
         id: id.into(),
@@ -284,6 +286,8 @@ fn detach_keeps_the_session() {
         pane: "1".into(),
         program: "sh".into(),
         acp: false,
+        watch: None,
+        name: None,
     });
     client.ok(|id| Request::Write {
         id: id.into(),
@@ -345,6 +349,8 @@ fn destroy_sighups_the_processes() {
         pane: "1".into(),
         program: "sh".into(),
         acp: false,
+        watch: None,
+        name: None,
     });
     client.ok(|id| Request::Write {
         id: id.into(),

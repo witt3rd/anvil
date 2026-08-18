@@ -2,7 +2,7 @@
 
 How the **client** draws. Kernel words stay in `docs/kernel.md`.
 
-Chrome is the roster and the tiles. ACP is how a process talks;
+Chrome is the sidebar and the tiles. ACP is how a process talks;
 the daemon is its parent. Their TUI is the place you type when
 that window is focused.
 
@@ -16,7 +16,7 @@ the pane's rectangle.
 A frame is:
 
 1. Measure the tty.
-2. Draw the roster (immediate).
+2. Draw the sidebar (immediate).
 3. Copy each visible pane's view (retained).
 4. Draw overlays (immediate).
 
@@ -25,16 +25,26 @@ to the focused pane's process.
 
 The library is whatever does immediate-mode cells (today, ratatui).
 
-## The roster
+## The sidebar
 
-The sidebar has two widths. The **rail** is the default: a few
-cells of marks, enough to see the fleet without taking the
-tiles. The **roster** is the same list opened out — names, a
-quiet clause of state — so a glance is enough.
+The sidebar has two widths. It **opens** by default: names and a
+clause of state, 21 cells (half the old full width). Drag the
+right edge to resize it. Prefix `s` closes it to the **rail**:
+three cells of marks. Prefix `s` again restores the last width.
 
-Both widths list the windows of the attached session, in the
-order the operator laid them. The list does not sort itself.
-The mark carries state.
+The sidebar is two lists, split the way herdr splits a rail.
+
+**Windows** sit above. Every window of the attached session, in
+the order the operator laid them. A window with no agent is a
+plain tmux window: a muted `·`, not a diamond. It does not
+appear in the list below.
+
+**Agents** sit below. Each entry is one pane whose process was
+spawned from the catalog (`oc`, `oc-work`, `grok`). A window
+may hold none, one, or several. Selecting an agent focuses
+that pane and brings its window forward.
+
+The list does not sort itself. The mark carries state.
 
 | state | mark | how the daemon knows |
 |---|---|---|
@@ -56,38 +66,58 @@ The host pushes `session_info_update` when the mark must change.
 The client does not poll. A PTY child has a thinner signal: alive
 or dead, and whatever the process writes to the title.
 
-The **rail** is three cells: the current window's `┃` (`accent.primary`)
-and one mark per window. The column is `bg.base` — no panel, no
-names. It shows on terminals of 80 cells and wider.
+The **rail** is three cells: `┃` on the current row, then the
+mark. Rail marks start on the same rows as the open names, so
+the list does not jump when it collapses. The sidebar keeps
+a blank row above the footer; the panes do not shrink.
+The `─` stays on the same split as the open list.
+Agents occupy the block below. The column is `bg.base` — no
+panel, no names.
 
-The **roster** is 42 cells, `bg.panel`. Each row is the mark and
-the window name. The mark is the state; the name is the activity.
-The current row wears the accent bar and `text.primary`. Other
-rows are muted.
-It shows on terminals of 120 cells and wider; narrower terminals
-keep the rail.
+The **open sidebar** is 21 cells by default, `bg.panel`, and
+lives in `<root>/sidebar.json`. Each entry is two lines.
+The first is the mark and the name. The second is a clause:
+on a window, what lives there (`oc · shell`, `shell`); on an
+agent, the window it sits in, plus turning or needs-you when
+that is true. Headers `windows` and `agents` sit above each
+list in `text.dim`, the same as the host. `windows` has a
+blank row above and below. `agents` sits on the row under
+the divider. The agents block is always there, even when empty.
+A `─` between them is a drag handle: pull it to give
+one list more of the column. The current row wears the
+accent bar and `text.primary`. Other rows are muted.
 
-Prefix then `s` toggles rail and roster. The tiles resize. The
-rail is the rest state. The roster is a look, then it goes back.
+Keys typed in the tiles go to the focused pane. The sidebar
+is clicked, or walked with prefix `]` / `[`.
 
-While the roster is open, keys stay with the list:
-
-| key | what it does |
+| gesture | what it does |
 |---|---|
-| `j` / `k` or arrows or `]` / `[` | next / previous window |
-| `1`–`9` | jump to that row |
-| enter or esc | close the roster |
-| click a row | focus that window |
+| click a window row | focus that window |
+| click an agent row | focus that pane |
+| drag the `─` | resize the window / agent split |
+| drag the right edge | resize the sidebar |
+| prefix `w` | show or hide the windows list |
+| prefix `s` | pick a session |
 
-A click on a tile focuses that pane. Prefix `]` / `[` walk
-windows when the roster is closed.
+`exit` in a shell ends the process and closes the pane. The
+last pane of a window takes the window with it.
+
+A click on a tile focuses that pane. Wheel, drag, and click
+inside a tile go to that pane's process (SGR mouse), so the
+inner TUI can select and scroll. Prefix `]` / `[` walk
+windows. Prefix `v` / `-` split the focused pane and move
+focus into the new one.
+
+A shell that launches a catalog program (`oc`, `oc-work`,
+`opencode`, `grok`) is adopted: the pane gets that name and,
+when a port is visible, the HTTP watch — the same as prefix `a`.
 
 Prefix `a` opens a new window on the default agent (`agents.json`).
 The catalog names the program (`oc`, `oc-work`, `grok`). An
 OpenCode wrapper stays argv0; `--hostname` / `--port` are appended
 so the daemon can watch `/session/status`. Prefix `A` picks from
-the catalog. Prefix `c` opens a shell. Prefix `,` (or `r`)
-renames the current window.
+the catalog. Prefix `c` opens a shell. Prefix `,` renames the current
+window.
 
 ## The tiles
 
@@ -99,7 +129,7 @@ their processes in the daemon.
 Chrome is quiet. The frame, the tiles, and the rail share
 `bg.base`. The only mark of a boundary is a single thin separator
 line — `│` beside a column, `─` below a row — drawn in the subtle
-border token. The open roster column is `bg.panel`.
+border token. The open sidebar column is `bg.panel`.
 
 The **active tile** keeps full brightness and holds the cursor.
 Every other tile wears a dark veil: its cells are scaled toward
@@ -139,8 +169,8 @@ and the documented wire. The set in `src/tui/keymap.rs`:
 
 | Kernel word | Actions |
 |---|---|
-| **client** | `Detach`, `Help`, toggle rail / roster |
-| **session** | `NewSession`, `SwitchSession(1..9)` |
+| **client** | `Detach`, `Help`, toggle rail / sidebar |
+| **session** | `NewSession`, `PickSession`, `SwitchSession(1..9)` |
 | **window** | `NewWindow`, `NextWindow`, `PrevWindow`, `CloseWindow` |
 | **pane** | `SplitVertical`, `SplitHorizontal`, `ClosePane`, `FocusLeft`, `FocusDown`, `FocusUp`, `FocusRight` |
 
@@ -150,16 +180,18 @@ Prefix, then:
 |---|---|
 | `q` | Detach |
 | `?` | Help |
-| `n` | NewSession |
-| `s` | Toggle the rail and the roster |
+| `n` | New session (then a loud name prompt) |
+| `s` | Pick a session |
+| `w` | Toggle the windows list |
+| `$` | Rename the session |
 | `1..9` | SwitchSession(n) |
 | `a` | New agent (default) |
 | `A` | Pick an agent |
 | `c` | New window (shell) |
-| `,` / `r` | Rename the current window |
+| `,` | Rename the current window |
 | `]` | NextWindow |
 | `[` | PrevWindow |
-| `w` | CloseWindow |
+| `&` | CloseWindow |
 | `v` | SplitVertical |
 | `-` | SplitHorizontal |
 | `x` | ClosePane |
@@ -204,7 +236,7 @@ is untouched.
 | token | use |
 |---|---|
 | `bg.base` | the frame and each tile's ground |
-| `bg.panel` | the open roster column |
+| `bg.panel` | the open sidebar column |
 | `bg.elevated` | hovered and elevated surfaces |
 | `text.primary` | the current window, the focused pane |
 | `text.muted` | hints, other rows |
@@ -213,8 +245,64 @@ is untouched.
 | `border.subtle` | the separator line between tiles |
 | `border.focused` | the prefix popup's border |
 
-## Status line
+## Header
 
-The bottom row. The session name and the current window sit on the
-left. The focused pane's process state sits next to them. Key hints
-sit on the right, in the muted text.
+The top row. `bg.panel`. A tmux-style chip on the left: the
+session number (or its name after prefix `$`), inverted —
+`bg.base` on `accent.primary`, one space of pad. Nothing
+else until the host, `text.dim`, on the right.
+
+## Footer
+
+The bottom row. `bg.panel`. Hints are only the keys that
+apply now: prefix armed, picker, rename, needs-you, a drag,
+sidebar open or closed. Each is a bold `text.muted` key
+and a `text.dim` `:desc`, centered. A spawn error takes the row
+instead. A name prompt paints the whole bar `error` with
+`bg.base` text so it cannot be missed. A name that already
+exists stays on the prompt and writes the error next to the
+draft; Escape cancels.
+
+Prefix `s` opens a centered session list: each row is the
+name and what is on it (agents, shells, dead). `j`/`k`
+move, enter switches, `n` makes a new one (and asks for a
+name), `x` drops the selected session.
+
+## Saturation
+
+How much of the named-agent fleet is turning. Chrome, not
+a kernel word. The hole is the product. Digits stay off
+the bar.
+
+**Now** is `turning / named panes`. Idle, needs-you, and
+dead sit in the denom and leave a hole. Shells do not
+count. Zero agents hides the track. Turning is a prompt
+in flight (HTTP watch or ACP), not a TUI that happens
+to redraw. The header track is `[····]` so a 0% fleet
+still reads.
+
+**Over time** is the time-weighted mean, sampled by the
+daemon every five seconds so detach does not reset it. The
+clock runs only while there is at least one agent. The
+stain on the track is the last 24 hours. Lifetime stays
+on disk.
+
+The **header** is every session. A hairline between the
+session chip and the host: fill is now (`text.primary`,
+then `warning` at the high bands), a `│` is the 24h
+stain, empty `·` in `text.muted` is unused capacity. A
+0% fleet is a full row of dots — the hole has to read.
+
+The **agents block** of the open sidebar is this session
+only. A one-cell thermometer on the left edge, fill from
+the bottom. The collapsed rail does not grow.
+
+**Bands** are fleet size, not saturation. One agent at
+100% is the nucleus: a thin `─`. Each doubling of agents
+is another shell — denser glyphs, then warmer — so one
+saturated agent and a hundred saturated agents do not
+read the same. Achievements and a board can hang off the
+band later; they are not chrome yet.
+
+The daemon writes `<root>/saturation.json`. The client
+reads it. No new proto op.

@@ -51,6 +51,7 @@ the args tell them apart.
 | `close` | `window` | the window is gone; its panes and their processes end |
 | `resize` | `cols`, `rows` | the panes relaid out to the new tty; the processes told (`SIGWINCH`) |
 | `spawn` | `pane`, `program` | a process on the pane's PTY |
+| `spawn` | `pane`, `program`, `name` | an agent process; the sidebar lists it |
 | `spawn` | `pane`, `program`, `acp` | the daemon holds stdio and speaks ACP |
 | `spawn` | `pane`, `program`, `acp` | a process runs on stdio; the daemon is its ACP client |
 | `write` | `data` | the data goes to the focused pane's process |

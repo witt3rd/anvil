@@ -175,6 +175,10 @@ impl Pane {
         Ok(pane)
     }
 
+    pub fn pid(&self) -> Option<u32> {
+        self.child.lock().ok()?.process_id()
+    }
+
     /// Write to the process. The client's keys go to the focused pane's
     /// process.
     pub fn write(&self, data: &[u8]) -> io::Result<()> {
