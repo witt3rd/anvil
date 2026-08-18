@@ -13,6 +13,10 @@ use clap::{Parser, Subcommand};
 #[command(name = "anvil")]
 #[command(about = "Terminal multiplexer", long_about = None)]
 struct Cli {
+    /// Stop the running daemon, start this binary, attach.
+    /// From a tree: `cargo run -- --restart`.
+    #[arg(long)]
+    restart: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -41,7 +45,11 @@ fn main() -> io::Result<()> {
         None => {
             let sock = daemon::default_sock();
             let root = std::env::var("ANVIL_ROOT").unwrap_or_else(|_| default_root());
-            daemon::ensure_running(&sock, std::path::Path::new(&root))?;
+            if cli.restart {
+                daemon::restart(&sock, std::path::Path::new(&root))?;
+            } else {
+                daemon::ensure_running(&sock, std::path::Path::new(&root))?;
+            }
             anvil::tui::run(&sock)
         }
     }

@@ -280,6 +280,44 @@ pub fn running(sock: &Path) -> bool {
     speaks_anvil(sock)
 }
 
+fn pid_of(sock: &Path) -> Option<i32> {
+    fs::read_to_string(pid_path(sock))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .filter(|&pid| pid > 1)
+}
+
+/// Stop the daemon at `sock`. Sessions stay on disk. Processes the
+/// daemon held end. The next `ensure_running` starts this binary.
+pub fn stop(sock: &Path) -> io::Result<()> {
+    if let Some(pid) = pid_of(sock) {
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while running(sock) || UnixStream::connect(sock).is_ok() {
+        if std::time::Instant::now() > deadline {
+            if let Some(pid) = pid_of(sock) {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = fs::remove_file(sock);
+    let _ = fs::remove_file(pid_path(sock));
+    Ok(())
+}
+
+/// Stop the daemon, then start this binary and wait until it speaks.
+pub fn restart(sock: &Path, root: &Path) -> io::Result<()> {
+    stop(sock)?;
+    ensure_running(sock, root)
+}
+
 /// The client starts the daemon when it is not running — the same
 /// binary, detached. Its output goes to a log under the state root.
 /// Returns only when the wire speaks the anvil protocol, so a caller

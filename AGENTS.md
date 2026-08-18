@@ -89,6 +89,7 @@ skills/dev/        how to build and how to fault in
 ```bash
 cargo test
 cargo build --release
+cargo run -- --restart    # this tree: stop daemon, start this binary, attach
 ```
 
 To read the old program: `quarantine/`. To run it: that tree has its

@@ -76,6 +76,10 @@ The daemon is a command of `anvil`. The operator can start it with
 `anvil daemon`; the client starts it when the socket is dead. One
 daemon per box. All state lives there.
 
+`anvil --restart` (from a tree: `cargo run -- --restart`) stops the
+running daemon and starts this binary, then attaches. Sessions stay
+on disk. Processes the old daemon held end.
+
 ## References
 
 - `docs/kernel.md` — the six kernel words and their ontology

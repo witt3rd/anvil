@@ -256,6 +256,15 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
 }
 
 #[test]
+fn stop_takes_the_daemon_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(dir.path());
+    assert!(anvil::daemon::running(&daemon.sock));
+    anvil::daemon::stop(&daemon.sock).unwrap();
+    assert!(!anvil::daemon::running(&daemon.sock));
+}
+
+#[test]
 fn detach_keeps_the_session() {
     let dir = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(dir.path());

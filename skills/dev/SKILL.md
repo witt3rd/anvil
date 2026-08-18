@@ -17,6 +17,7 @@ cargo build --release
 
 ```bash
 cargo run
+cargo run -- --restart    # this tree's daemon + client
 ```
 
 # Fault in
