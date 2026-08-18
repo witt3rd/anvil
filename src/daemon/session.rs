@@ -478,39 +478,22 @@ impl Session {
     }
 
     /// Spawn a process in a pane. PTY by default; `acp` holds stdio
-    /// and speaks ACP. An ACP spawn replaces whatever is already on
-    /// the pane. A PTY spawn leaves a live ACP child alone.
+    /// and speaks ACP. The new process replaces whatever is already
+    /// on the pane — a new window always has a shell first.
     pub fn spawn(&mut self, pane_id: &str, program: &str, acp: bool, watch: Option<&str>) -> io::Result<()> {
-        if acp {
-            if let Some(pane) = self.panes.remove(pane_id) {
-                pane.terminate();
-            }
-            if let Some(child) = self.acp.remove(pane_id) {
-                child.terminate();
-            }
-            let child = AcpChild::spawn(program)?;
-            self.acp.insert(pane_id.to_string(), child);
-            return Ok(());
-        }
         if let Some(w) = self.watch.remove(pane_id) {
             w.stop();
         }
-        if watch.is_some() {
-            if let Some(pane) = self.panes.remove(pane_id) {
-                pane.terminate();
-            }
-        } else if let Some(pane) = self.panes.get(pane_id) {
-            if pane.alive() {
-                return Err(io::Error::other("the pane already has a process"));
-            }
-        }
-        if let Some(child) = self.acp.get(pane_id) {
-            if child.alive() {
-                return Err(io::Error::other("the pane already has a process"));
-            }
+        if let Some(pane) = self.panes.remove(pane_id) {
+            pane.terminate();
         }
         if let Some(child) = self.acp.remove(pane_id) {
             child.terminate();
+        }
+        if acp {
+            let child = AcpChild::spawn(program)?;
+            self.acp.insert(pane_id.to_string(), child);
+            return Ok(());
         }
         let (_, _, cols, rows) = self
             .pane_geometry(pane_id)
@@ -913,6 +896,18 @@ mod tests {
             grid.lines.iter().any(|l| l.contains("hello session")),
             "{grid:?}"
         );
+    }
+
+    #[test]
+    fn pty_spawn_replaces_a_live_shell() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
+        assert!(work.lock().unwrap().read_pane("1").alive);
+
+        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
+        assert!(work.lock().unwrap().read_pane("1").alive);
     }
 
     #[test]

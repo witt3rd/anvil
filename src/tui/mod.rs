@@ -469,6 +469,23 @@ impl Client {
                 _ => return Ok(()),
             }
         }
+        if self.roster_open && !self.which_key.active && !self.which_key.is_pending() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => return self.close_roster(),
+                KeyCode::Char('j') | KeyCode::Down | KeyCode::Char(']') => {
+                    self.switch_window(true)?;
+                    return self.refresh();
+                }
+                KeyCode::Char('k') | KeyCode::Up | KeyCode::Char('[') => {
+                    self.switch_window(false)?;
+                    return self.refresh();
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                    return self.focus_window_at((c as u8 - b'1') as usize);
+                }
+                _ => {}
+            }
+        }
         if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.which_key.set_scope(Scope::Prefix);
             self.which_key.toggle();
@@ -538,7 +555,7 @@ impl Client {
             }
             Action::NewSession => self.new_session(),
             Action::SwitchSession(n) => self.switch_session(n),
-            Action::NewWindow | Action::NewTerminal => self.launch_terminal(),
+            Action::NewWindow => self.launch_terminal(),
             Action::NewAgent => {
                 let agent = self.catalog.default_agent();
                 self.launch_agent(&agent)
@@ -668,6 +685,60 @@ impl Client {
         let window = view.windows[idx].window.clone();
         self.call(Request::Focus { id: String::new(), window: Some(window), pane: None })?;
         Ok(())
+    }
+
+    fn focus_window_at(&mut self, idx: usize) -> io::Result<()> {
+        let window = self
+            .view
+            .as_ref()
+            .and_then(|v| v.windows.get(idx))
+            .map(|w| w.window.clone());
+        if let Some(window) = window {
+            self.call(Request::Focus {
+                id: String::new(),
+                window: Some(window),
+                pane: None,
+            })?;
+            self.refresh()?;
+        }
+        Ok(())
+    }
+
+    fn close_roster(&mut self) -> io::Result<()> {
+        if !self.roster_open {
+            return Ok(());
+        }
+        self.roster_open = false;
+        let (w, h) = self.tty;
+        self.resize_tty(w, h)?;
+        self.refresh()
+    }
+
+    /// Left click: a rail/roster row focuses that window; a tile
+    /// focuses that pane.
+    fn click(&mut self, col: u16, row: u16) -> io::Result<()> {
+        let Some(view) = self.view.as_ref() else {
+            return Ok(());
+        };
+        match hit(self.tty, self.roster_open, col, row, view) {
+            Some(Hit::Window(window)) => {
+                self.call(Request::Focus {
+                    id: String::new(),
+                    window: Some(window),
+                    pane: None,
+                })?;
+                self.refresh()
+            }
+            Some(Hit::Pane(pane)) => {
+                self.call(Request::Focus {
+                    id: String::new(),
+                    window: None,
+                    pane: Some(pane),
+                })?;
+                self.refresh()
+            }
+            None => Ok(()),
+        }
     }
 
     fn focused_window(&self) -> Option<String> {
@@ -964,8 +1035,10 @@ impl Client {
             "j/k · enter · d default · esc"
         } else if self.naming.is_some() {
             "enter · esc cancel"
+        } else if self.roster_open {
+            "j/k windows · 1-9 · enter close · click"
         } else {
-            "ctrl-b a agent · t term · s roster"
+            "ctrl-b a agent · c term · s roster · , rename"
         };
         let hints_w = hints.len() as u16;
         if hints_w + 2 * PAD <= area.width {
@@ -1013,6 +1086,49 @@ impl Client {
         }
         style
     }
+}
+
+/// A left-click target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Hit {
+    Window(String),
+    Pane(String),
+}
+
+/// Map a terminal cell to a window row or a pane tile.
+fn hit(
+    tty: (u16, u16),
+    roster_open: bool,
+    col: u16,
+    row: u16,
+    view: &SessionView,
+) -> Option<Hit> {
+    let (tw, th) = tty;
+    if row >= th.saturating_sub(STATUS_LINES) {
+        return None;
+    }
+    let kind = side(tw, roster_open);
+    let sw = side_width(kind);
+    if kind != Side::Hidden && col < sw {
+        return view
+            .windows
+            .get(row as usize)
+            .map(|w| Hit::Window(w.window.clone()));
+    }
+    let content_x = if kind == Side::Hidden { 0 } else { sw + GAP };
+    let inner_x = content_x + PAD;
+    let current = view
+        .windows
+        .iter()
+        .find(|w| w.panes.iter().any(|p| p.pane == view.focused))?;
+    for pane in &current.panes {
+        let px = inner_x + pane.x;
+        let py = pane.y;
+        if col >= px && col < px + pane.cols && row >= py && row < py + pane.rows {
+            return Some(Hit::Pane(pane.pane.clone()));
+        }
+    }
+    None
 }
 
 /// Whether a cell is inside any pane's rectangle, in canvas coords.
@@ -1120,9 +1236,13 @@ impl Request {
 
 /// The client seat: attach, draw, forward keys. `esc` detaches.
 pub fn run(sock: &Path) -> io::Result<()> {
+    use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+    use ratatui::crossterm::execute;
     let mut client = Client::connect(sock)?;
     let mut terminal = ratatui::init();
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     let out = run_loop(&mut client, &mut terminal);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     out
 }
@@ -1151,6 +1271,14 @@ fn run_loop(
             }
             event::Event::Resize(cols, rows) => {
                 client.resize_tty(cols, rows)?;
+            }
+            event::Event::Mouse(m)
+                if matches!(
+                    m.kind,
+                    event::MouseEventKind::Down(event::MouseButton::Left)
+                ) =>
+            {
+                client.click(m.column, m.row)?;
             }
             _ => {}
         }
@@ -1185,5 +1313,59 @@ mod tests {
         assert_eq!(side(80, false), Side::Rail);
         assert_eq!(side(120, false), Side::Rail);
         assert_eq!(side(120, true), Side::Roster);
+    }
+
+    fn sample_view() -> SessionView {
+        SessionView {
+            focused: "1".into(),
+            windows: vec![
+                crate::daemon::session::WindowView {
+                    window: "oc".into(),
+                    state: WindowState::Idle,
+                    panes: vec![crate::daemon::session::PaneView {
+                        pane: "1".into(),
+                        x: 0,
+                        y: 0,
+                        cols: 40,
+                        rows: 20,
+                    }],
+                },
+                crate::daemon::session::WindowView {
+                    window: "grok".into(),
+                    state: WindowState::Idle,
+                    panes: vec![crate::daemon::session::PaneView {
+                        pane: "2".into(),
+                        x: 0,
+                        y: 0,
+                        cols: 40,
+                        rows: 20,
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn click_on_the_rail_selects_a_window() {
+        let view = sample_view();
+        assert_eq!(
+            hit((120, 24), false, 1, 0, &view),
+            Some(Hit::Window("oc".into()))
+        );
+        assert_eq!(
+            hit((120, 24), true, 1, 1, &view),
+            Some(Hit::Window("grok".into()))
+        );
+        assert_eq!(hit((120, 24), false, 1, 23, &view), None);
+    }
+
+    #[test]
+    fn click_on_a_tile_selects_the_pane() {
+        let view = sample_view();
+        // rail: 3 + gap 1 + pad 2 = content starts at col 6
+        assert_eq!(
+            hit((120, 24), false, 6, 0, &view),
+            Some(Hit::Pane("1".into()))
+        );
     }
 }

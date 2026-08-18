@@ -70,25 +70,24 @@ keep the rail.
 Prefix then `s` toggles rail and roster. The tiles resize. The
 rail is the rest state. The roster is a look, then it goes back.
 
+While the roster is open, keys stay with the list:
+
+| key | what it does |
+|---|---|
+| `j` / `k` or arrows or `]` / `[` | next / previous window |
+| `1`–`9` | jump to that row |
+| enter or esc | close the roster |
+| click a row | focus that window |
+
+A click on a tile focuses that pane. Prefix `]` / `[` walk
+windows when the roster is closed.
+
 Prefix `a` opens a new window on the default agent (`agents.json`).
-The TUI runs on the PTY (`opencode --port N`). The daemon watches
-that HTTP door for the rail. Prefix `A` picks from the catalog.
-Prefix `t` opens a shell. The window is named after the agent.
-Rename (`r`) is later, not the start.
-
-Type a prompt, enter. The rail turns. A red diamond is needs-you:
-`y` allows, `n` denies. Prefix then `r` renames
-the current window. Prefix then `a` spawns an ACP process on the
-focused pane (`ANVIL_ACP`, default `opencode acp`). Enter in that
-pane sends `session/prompt`. The rail turns and goes red from
-that stream.
-
-The first list on the wire is still the sessions (the domains).
-The same column fills with windows once `read` carries each
-process and its state.
-
-Jump is a row: `]` / `[` walk windows. On the rail the marks
-are the rows. The eye goes where the light is.
+The catalog names the program (`oc`, `oc-work`, `grok`). An
+OpenCode wrapper stays argv0; `--hostname` / `--port` are appended
+so the daemon can watch `/session/status`. Prefix `A` picks from
+the catalog. Prefix `c` opens a shell. Prefix `,` (or `r`)
+renames the current window.
 
 ## The tiles
 
@@ -156,8 +155,8 @@ Prefix, then:
 | `1..9` | SwitchSession(n) |
 | `a` | New agent (default) |
 | `A` | Pick an agent |
-| `t` | New terminal |
-| `c` | New terminal |
+| `c` | New window (shell) |
+| `,` / `r` | Rename the current window |
 | `]` | NextWindow |
 | `[` | PrevWindow |
 | `w` | CloseWindow |

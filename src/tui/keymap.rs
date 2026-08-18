@@ -16,7 +16,6 @@ pub enum Action {
     NewWindow,
     NewAgent,
     PickAgent,
-    NewTerminal,
     NextWindow,
     PrevWindow,
     SplitVertical,
@@ -41,7 +40,6 @@ impl std::fmt::Display for Action {
             Action::NewWindow => write!(f, "new window"),
             Action::NewAgent => write!(f, "new agent"),
             Action::PickAgent => write!(f, "pick agent"),
-            Action::NewTerminal => write!(f, "new terminal"),
             Action::NextWindow => write!(f, "next window"),
             Action::PrevWindow => write!(f, "previous window"),
             Action::SplitVertical => write!(f, "split right"),
@@ -87,14 +85,14 @@ pub fn build_keymap() -> AppKeymap {
         s.bind("?", Action::Help, Category::Session);
         s.bind("n", Action::NewSession, Category::Session);
         s.bind("s", Action::ToggleRoster, Category::Session);
+        s.bind(",", Action::RenameWindow, Category::Window);
         s.bind("r", Action::RenameWindow, Category::Window);
         for n in 1..=9 {
             s.bind(&n.to_string(), Action::SwitchSession(n), Category::Session);
         }
 
         // window
-        s.bind("c", Action::NewTerminal, Category::Window);
-        s.bind("t", Action::NewTerminal, Category::Window);
+        s.bind("c", Action::NewWindow, Category::Window);
         s.bind("a", Action::NewAgent, Category::Window);
         s.bind("A", Action::PickAgent, Category::Window);
         s.bind("]", Action::NextWindow, Category::Window);
@@ -150,14 +148,16 @@ mod tests {
     }
 
     #[test]
-    fn r_renames_the_window() {
-        let mut wk = prefixed();
-        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
-        assert_eq!(wk.handle_key(key), Some(Action::RenameWindow));
+    fn comma_and_r_rename_the_window() {
+        for c in [',', 'r'] {
+            let mut wk = prefixed();
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            assert_eq!(wk.handle_key(key), Some(Action::RenameWindow), "key {c}");
+        }
     }
 
     #[test]
-    fn a_t_and_shift_a_launch() {
+    fn a_c_and_shift_a_launch() {
         let mut wk = prefixed();
         let a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         assert_eq!(wk.handle_key(a), Some(Action::NewAgent));
@@ -165,8 +165,11 @@ mod tests {
         let shift_a = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
         assert_eq!(wk.handle_key(shift_a), Some(Action::PickAgent));
         let mut wk = prefixed();
+        let c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(wk.handle_key(c), Some(Action::NewWindow));
+        let mut wk = prefixed();
         let t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE);
-        assert_eq!(wk.handle_key(t), Some(Action::NewTerminal));
+        assert_eq!(wk.handle_key(t), None);
     }
 
     #[test]

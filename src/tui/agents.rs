@@ -5,11 +5,15 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// One named ACP program.
+/// One named agent: the program to spawn, and how the rail watches it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Agent {
     pub name: String,
     pub program: String,
+    /// `"http"` — OpenCode's `/session/status` door. The TUI is launched
+    /// with `--hostname 127.0.0.1 --port N` so the wrapper stays argv0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<String>,
 }
 
 /// The catalog and which name is the default.
@@ -22,15 +26,22 @@ pub struct Agents {
 impl Default for Agents {
     fn default() -> Self {
         Agents {
-            default: "opencode".into(),
+            default: "oc".into(),
             agents: vec![
                 Agent {
-                    name: "opencode".into(),
-                    program: "opencode".into(),
+                    name: "oc".into(),
+                    program: "oc".into(),
+                    watch: Some("http".into()),
+                },
+                Agent {
+                    name: "oc-work".into(),
+                    program: "oc-work".into(),
+                    watch: Some("http".into()),
                 },
                 Agent {
                     name: "grok".into(),
                     program: "grok".into(),
+                    watch: None,
                 },
             ],
         }
@@ -85,35 +96,53 @@ impl Agents {
 impl Agents {
     fn fallback() -> Agent {
         Agent {
-            name: "opencode".into(),
-            program: "opencode".into(),
+            name: "oc".into(),
+            program: "oc".into(),
+            watch: Some("http".into()),
         }
     }
 }
 
 impl Agent {
     /// TUI command and optional HTTP door for the rail.
-    /// OpenCode: `opencode --hostname 127.0.0.1 --port N`.
+    /// `watch: "http"` (or a known OpenCode wrapper) keeps `program` as
+    /// argv0 and appends `--hostname 127.0.0.1 --port N`.
     pub fn tui_spawn(&self) -> (String, Option<String>) {
-        let first = self
-            .program
-            .split_whitespace()
-            .next()
-            .unwrap_or("opencode");
-        if first == "opencode" || self.name == "opencode" {
+        let mut words: Vec<&str> = self.program.split_whitespace().collect();
+        if words.last() == Some(&"acp") {
+            words.pop();
+        }
+        let first = words.first().copied().unwrap_or("oc");
+        if self.uses_http() {
             if let Ok(port) = free_port() {
+                let head = if words.is_empty() {
+                    first.to_string()
+                } else {
+                    words.join(" ")
+                };
                 return (
-                    format!("opencode --hostname 127.0.0.1 --port {port}"),
+                    format!("{head} --hostname 127.0.0.1 --port {port}"),
                     Some(format!("http://127.0.0.1:{port}")),
                 );
             }
         }
-        let program = if !self.program.contains(" acp") {
-            self.program.clone()
-        } else {
+        let program = if words.is_empty() {
             first.to_string()
+        } else {
+            words.join(" ")
         };
         (program, None)
+    }
+
+    fn uses_http(&self) -> bool {
+        if self.watch.as_deref() == Some("http") {
+            return true;
+        }
+        let first = self.program.split_whitespace().next().unwrap_or("");
+        matches!(
+            (self.name.as_str(), first),
+            ("opencode" | "oc" | "oc-work", _) | (_, "opencode" | "oc" | "oc-work")
+        )
     }
 }
 
@@ -169,8 +198,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let agents = Agents::load(&dir);
-        assert_eq!(agents.default, "opencode");
+        assert_eq!(agents.default, "oc");
         assert!(dir.join("agents.json").is_file());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tui_spawn_keeps_the_wrapper() {
+        let oc = Agent {
+            name: "oc".into(),
+            program: "oc".into(),
+            watch: Some("http".into()),
+        };
+        let (cmd, watch) = oc.tui_spawn();
+        assert!(cmd.starts_with("oc --hostname 127.0.0.1 --port "));
+        assert!(watch.unwrap().starts_with("http://127.0.0.1:"));
+
+        let work = Agent {
+            name: "oc-work".into(),
+            program: "oc-work".into(),
+            watch: Some("http".into()),
+        };
+        let (cmd, _) = work.tui_spawn();
+        assert!(cmd.starts_with("oc-work --hostname 127.0.0.1 --port "));
     }
 }
