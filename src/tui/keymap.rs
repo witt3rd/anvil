@@ -3,12 +3,13 @@ use ratatui_which_key::{Keymap, WhichKeyState};
 
 const PREFIX_KEY: char = 'b';
 
-/// Every action is a documented op on the wire (`docs/protocol.md`).
-/// An action that has no op has no place here.
+/// Actions are documented wire ops (`docs/protocol.md`), plus the
+/// client's own chrome (help, the rail/roster toggle).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Action {
     Detach,
     Help,
+    ToggleRoster,
     NewSession,
     SwitchSession(u8),
     NewWindow,
@@ -29,6 +30,7 @@ impl std::fmt::Display for Action {
         match self {
             Action::Detach => write!(f, "detach"),
             Action::Help => write!(f, "help"),
+            Action::ToggleRoster => write!(f, "roster"),
             Action::NewSession => write!(f, "new session"),
             Action::SwitchSession(n) => write!(f, "session {n}"),
             Action::NewWindow => write!(f, "new window"),
@@ -76,6 +78,7 @@ pub fn build_keymap() -> AppKeymap {
         s.bind("q", Action::Detach, Category::Session);
         s.bind("?", Action::Help, Category::Session);
         s.bind("n", Action::NewSession, Category::Session);
+        s.bind("s", Action::ToggleRoster, Category::Session);
         for n in 1..=9 {
             s.bind(&n.to_string(), Action::SwitchSession(n), Category::Session);
         }
@@ -132,6 +135,13 @@ mod tests {
             let key = KeyEvent::new(code, KeyModifiers::NONE);
             assert_eq!(wk.handle_key(key), Some(want), "arrow {code:?}");
         }
+    }
+
+    #[test]
+    fn s_toggles_roster() {
+        let mut wk = prefixed();
+        let key = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(wk.handle_key(key), Some(Action::ToggleRoster));
     }
 
     #[test]

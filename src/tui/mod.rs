@@ -27,12 +27,42 @@ use keymap::{Action, AppWhichKey, Scope, build_which_key_state};
 /// opaline's public loader — opaline itself stays untouched.
 const THEME_TOML: &str = include_str!("../../themes/opencode.toml");
 
-// The chrome geometry, in opencode's proportions.
-const SIDEBAR_COLS: u16 = 42; // the session list column
-const WIDE_MIN: u16 = 120; // the sidebar shows from this width on
+// The chrome geometry.
+const RAIL_COLS: u16 = 3; // mark column
+const ROSTER_COLS: u16 = 42; // opened activity list
+const RAIL_MIN: u16 = 80; // rail shows from this width on
+const ROSTER_MIN: u16 = 120; // roster needs this width
 const PAD: u16 = 2; // the content gutter on each side
 const GAP: u16 = 1; // between the sidebar and the content
 const STATUS_LINES: u16 = 1; // the status line height
+const MARK_IDLE: &str = "◇";
+const MARK_DEAD: &str = "◇";
+
+/// How the left chrome is drawn for this tty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Hidden,
+    Rail,
+    Roster,
+}
+
+fn side(term_w: u16, roster_open: bool) -> Side {
+    if roster_open && term_w >= ROSTER_MIN {
+        Side::Roster
+    } else if term_w >= RAIL_MIN {
+        Side::Rail
+    } else {
+        Side::Hidden
+    }
+}
+
+fn side_width(side: Side) -> u16 {
+    match side {
+        Side::Hidden => 0,
+        Side::Rail => RAIL_COLS,
+        Side::Roster => ROSTER_COLS,
+    }
+}
 
 /// A direction of pane focus movement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,11 +74,14 @@ enum FocusDir {
 }
 
 /// The pane canvas the session tty occupies: the terminal minus the
-/// chrome. The sidebar hides below `WIDE_MIN`.
-fn canvas(term_w: u16, term_h: u16) -> (u16, u16) {
-    let wide = term_w >= WIDE_MIN;
-    let side = if wide { SIDEBAR_COLS + GAP + 2 * PAD } else { 2 * PAD };
-    (term_w.saturating_sub(side), term_h.saturating_sub(STATUS_LINES))
+/// chrome. The rail shows from `RAIL_MIN`; the roster from `ROSTER_MIN`
+/// when it is open.
+fn canvas(term_w: u16, term_h: u16, roster_open: bool) -> (u16, u16) {
+    let chrome = match side(term_w, roster_open) {
+        Side::Hidden => 2 * PAD,
+        other => side_width(other) + GAP + 2 * PAD,
+    };
+    (term_w.saturating_sub(chrome), term_h.saturating_sub(STATUS_LINES))
 }
 
 /// One client connection: views a session, sends keys, keeps the
@@ -65,6 +98,8 @@ pub struct Client {
     view: Option<SessionView>,
     grids: HashMap<String, Grid>,
     detached: bool,
+    roster_open: bool,
+    tty: (u16, u16),
 }
 
 impl Client {
@@ -88,6 +123,8 @@ impl Client {
             view: None,
             grids: HashMap::new(),
             detached: false,
+            roster_open: false,
+            tty: (80, 24),
         };
         client.attach_first()?;
         Ok(client)
@@ -230,7 +267,8 @@ impl Client {
 
     /// The tty changed size: the session relays out to the canvas.
     pub fn resize_tty(&mut self, cols: u16, rows: u16) -> io::Result<()> {
-        let (cols, rows) = canvas(cols, rows);
+        self.tty = (cols, rows);
+        let (cols, rows) = canvas(cols, rows, self.roster_open);
         self.resize(cols.max(2), rows.max(2))
     }
 
@@ -330,6 +368,12 @@ impl Client {
             Action::Detach => {
                 self.detached = true;
                 Ok(())
+            }
+            Action::ToggleRoster => {
+                self.roster_open = !self.roster_open;
+                let (w, h) = self.tty;
+                self.resize_tty(w, h)?;
+                self.refresh()
             }
             Action::NewSession => self.new_session(),
             Action::SwitchSession(n) => self.switch_session(n),
@@ -464,26 +508,26 @@ impl Client {
         &self.theme
     }
 
-    /// Draw one frame: fill the base, the session list column, the
-    /// panes' grids, the status line, and the prefix popup. The frame
-    /// and the tiles share `bg.base`, so the gap between tiles is
-    /// invisible — a single thin separator line marks the boundary.
+    /// Draw one frame: fill the base, the rail or roster, the panes'
+    /// grids, the status line, and the prefix popup. The frame and the
+    /// tiles share `bg.base`, so the gap between tiles is invisible —
+    /// a single thin separator line marks the boundary.
     pub fn draw(&self, frame: &mut ratatui::Frame) {
         let area = frame.area();
         frame.render_widget(Block::default().bg(self.c("bg.base")), area);
 
-        let wide = area.width >= WIDE_MIN;
-        if wide {
-            let chunks = Layout::horizontal([
-                Constraint::Length(SIDEBAR_COLS),
-                Constraint::Length(GAP),
-                Constraint::Fill(1),
-            ])
-            .split(area);
-            self.draw_sidebar(frame, chunks[0]);
-            self.draw_content(frame, chunks[2]);
-        } else {
-            self.draw_content(frame, area);
+        match side(area.width, self.roster_open) {
+            Side::Hidden => self.draw_content(frame, area),
+            kind => {
+                let chunks = Layout::horizontal([
+                    Constraint::Length(side_width(kind)),
+                    Constraint::Length(GAP),
+                    Constraint::Fill(1),
+                ])
+                .split(area);
+                self.draw_side(frame, chunks[0], kind);
+                self.draw_content(frame, chunks[2]);
+            }
         }
         self.draw_status(frame, area);
 
@@ -493,36 +537,61 @@ impl Client {
         }
     }
 
-    /// The session list: the attached session wears the accent border;
-    /// the rest are muted. The column's background is `bg.panel`.
-    fn draw_sidebar(&self, frame: &mut ratatui::Frame, area: Rect) {
-        frame.render_widget(Block::default().bg(self.c("bg.panel")), area);
-        let mut y = area.y;
-        let border = self.c("accent.primary");
-        let selected = self.c("accent.primary");
+    /// The rail or the roster: windows of the attached session, in
+    /// the order the operator laid them. The mark is idle or dead
+    /// until ACP feeds turning / needs-you.
+    fn draw_side(&self, frame: &mut ratatui::Frame, area: Rect, kind: Side) {
+        let bg = match kind {
+            Side::Roster => "bg.panel",
+            _ => "bg.base",
+        };
+        frame.render_widget(Block::default().bg(self.c(bg)), area);
+        let Some(view) = &self.view else {
+            return;
+        };
+        let current = self.focused_window();
+        let accent = self.c("accent.primary");
         let muted = self.c("text.muted");
-        let text = self.c("text.primary");
-        for session in &self.sessions {
-            if y >= area.bottom() {
-                break;
+        let primary = self.c("text.primary");
+        for (y, window) in (area.y..area.bottom()).zip(view.windows.iter()) {
+            let here = current.as_deref() == Some(window.window.as_str());
+            let alive = self.window_alive(window);
+            let mark = if alive { MARK_IDLE } else { MARK_DEAD };
+            let mark_style = Style::default().fg(muted);
+            if here {
+                frame.buffer_mut().set_stringn(area.x, y, "┃", 1, Style::default().fg(accent));
             }
-            if self.attached.as_deref() == Some(session.as_str()) {
-                frame.buffer_mut().set_stringn(area.x, y, "┃", 1, Style::default().fg(border));
-                frame.buffer_mut().set_stringn(area.x + 2, y, session, (area.width.saturating_sub(3)) as usize, Style::default().fg(selected));
-            } else {
-                frame.buffer_mut().set_stringn(area.x + 2, y, session, (area.width.saturating_sub(3)) as usize, Style::default().fg(muted));
-            }
-            y += 1;
-        }
-        if y < area.bottom() {
             frame.buffer_mut().set_stringn(
                 area.x + 2,
                 y,
-                "ctrl-b n — new session",
-                (area.width.saturating_sub(3)) as usize,
-                Style::default().fg(text).add_modifier(Modifier::DIM),
+                mark,
+                1,
+                mark_style,
             );
+            if kind == Side::Roster {
+                let name_style = if here {
+                    Style::default().fg(primary)
+                } else {
+                    Style::default().fg(muted)
+                };
+                let clause = if alive { "idle" } else { "dead" };
+                let line = format!("{}  {clause}", window.window);
+                frame.buffer_mut().set_stringn(
+                    area.x + 4,
+                    y,
+                    &line,
+                    area.width.saturating_sub(4) as usize,
+                    name_style,
+                );
+            }
         }
+    }
+
+    /// A window is alive when any of its panes still has a process.
+    fn window_alive(&self, window: &crate::daemon::session::WindowView) -> bool {
+        window.panes.iter().any(|p| {
+            self.grids.get(&p.pane).is_none_or(|g| g.alive)
+        })
     }
 
     /// The content: each pane's retained grid at its geometry. Panes
@@ -691,7 +760,7 @@ impl Client {
             (area.width.saturating_sub(2 * PAD)) as usize,
             Style::default().fg(self.c("text.primary")),
         );
-        let hints = "ctrl-b prefix · esc detach";
+        let hints = "ctrl-b prefix · s roster · esc detach";
         let hints_w = hints.len() as u16;
         if hints_w + 2 * PAD <= area.width {
             frame.buffer_mut().set_stringn(
@@ -864,5 +933,36 @@ fn run_loop(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canvas_hides_chrome_on_a_narrow_tty() {
+        assert_eq!(canvas(79, 24, false), (75, 23));
+        assert_eq!(canvas(79, 24, true), (75, 23));
+    }
+
+    #[test]
+    fn canvas_rail_is_the_rest_state() {
+        assert_eq!(canvas(80, 24, false), (72, 23));
+        assert_eq!(canvas(119, 24, true), (111, 23));
+    }
+
+    #[test]
+    fn canvas_roster_opens_on_a_wide_tty() {
+        assert_eq!(canvas(120, 24, false), (112, 23));
+        assert_eq!(canvas(120, 24, true), (73, 23));
+    }
+
+    #[test]
+    fn side_kind_follows_width_and_the_toggle() {
+        assert_eq!(side(79, true), Side::Hidden);
+        assert_eq!(side(80, false), Side::Rail);
+        assert_eq!(side(120, false), Side::Rail);
+        assert_eq!(side(120, true), Side::Roster);
     }
 }
