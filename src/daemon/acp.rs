@@ -128,41 +128,45 @@ impl AcpChild {
         Ok(())
     }
 
-    /// The pane's view of this child: last lines, then the draft.
+    /// The pane's view: transcript above, composer on the last row.
     pub fn grid(&self, cols: u16, rows: u16) -> crate::daemon::pane::Grid {
         let cols = cols.max(1);
         let rows = rows.max(1);
         let draft = self.draft.lock().ok().map(|d| d.clone()).unwrap_or_default();
-        let mut lines = self.lines.lock().ok().map(|l| l.clone()).unwrap_or_default();
+        let mut body = self.lines.lock().ok().map(|l| l.clone()).unwrap_or_default();
         if self.state() == WindowState::NeedsYou {
-            lines.push("needs you — y allow · n deny".into());
+            body.push("needs you — y allow · n deny".into());
         }
-        lines.push(format!("> {draft}"));
-        while lines.len() < rows as usize {
-            lines.push(String::new());
+        let prompt = format!("> {draft}");
+        let body_rows = rows.saturating_sub(1) as usize;
+        if body.len() > body_rows {
+            body = body[body.len() - body_rows..].to_vec();
         }
-        if lines.len() > rows as usize {
-            let skip = lines.len() - rows as usize;
-            lines = lines[skip..].to_vec();
+        while body.len() < body_rows {
+            body.push(String::new());
         }
+        body.push(prompt.clone());
         let cursor_row = rows.saturating_sub(1);
         let cursor_col = (draft.chars().count() as u16 + 2).min(cols.saturating_sub(1));
-        let runs = lines
+        let last = body.len().saturating_sub(1);
+        let runs = body
             .iter()
-            .map(|line| {
+            .enumerate()
+            .map(|(i, line)| {
+                let text = if line.is_empty() {
+                    " ".repeat(cols as usize)
+                } else {
+                    line.clone()
+                };
                 vec![crate::daemon::pane::Run {
-                    text: if line.is_empty() {
-                        " ".repeat(cols as usize)
-                    } else {
-                        line.clone()
-                    },
+                    text,
                     fg: None,
                     fg_rgb: None,
                     bg: None,
                     bg_rgb: None,
                     bold: false,
                     italic: false,
-                    underline: false,
+                    underline: i == last,
                     inverse: false,
                 }]
             })
@@ -172,7 +176,7 @@ impl AcpChild {
             rows,
             cursor_col,
             cursor_row,
-            lines,
+            lines: body,
             runs,
             alive: self.alive(),
             acp: true,
@@ -206,12 +210,52 @@ impl AcpChild {
     }
 
     fn push_line(&self, line: &str) {
-        if let Ok(mut lines) = self.lines.lock() {
-            lines.push(line.to_string());
-            if lines.len() > 200 {
-                let drain = lines.len() - 200;
-                lines.drain(..drain);
+        self.push_text(line, true);
+    }
+
+    /// Append text to the transcript. `newline` starts a fresh row;
+    /// a stream chunk continues the last row.
+    fn push_text(&self, text: &str, newline: bool) {
+        if text.is_empty() {
+            return;
+        }
+        let Ok(mut lines) = self.lines.lock() else {
+            return;
+        };
+        if newline || lines.is_empty() {
+            lines.push(text.to_string());
+        } else if let Some(last) = lines.last_mut() {
+            last.push_str(text);
+        }
+        const WIDTH: usize = 80;
+        while let Some(last) = lines.last() {
+            if last.chars().count() <= WIDTH {
+                break;
             }
+            let s = lines.pop().unwrap();
+            let mut acc = String::new();
+            let mut n = 0;
+            let mut rest = String::new();
+            let mut overflow = false;
+            for c in s.chars() {
+                if !overflow && n >= WIDTH {
+                    overflow = true;
+                }
+                if overflow {
+                    rest.push(c);
+                } else {
+                    acc.push(c);
+                    n += 1;
+                }
+            }
+            lines.push(acc);
+            if !rest.is_empty() {
+                lines.push(rest);
+            }
+        }
+        if lines.len() > 200 {
+            let drain = lines.len() - 200;
+            lines.drain(..drain);
         }
     }
 
@@ -353,7 +397,7 @@ fn pump_stdout(acp: Arc<AcpChild>, stdout: impl std::io::Read) {
                 acp.push_line("needs you");
             } else if method == "session/update" {
                 if let Some(text) = update_text(&msg) {
-                    acp.push_line(&text);
+                    acp.push_text(&text, false);
                 }
             }
             continue;
@@ -495,6 +539,22 @@ while True:
             thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(acp.state(), WindowState::Idle);
+        let grid = acp.grid(40, 10);
+        assert_eq!(grid.cursor_row, 9);
+        assert!(grid.lines.last().unwrap().starts_with("> "), "{:?}", grid.lines.last());
+        assert!(grid.lines.iter().any(|l| l.contains("ok")), "{:?}", grid.lines);
+    }
+
+    #[test]
+    fn composer_sits_on_the_last_row() {
+        let (_keep, path) = fake_agent();
+        let acp = AcpChild::spawn(&format!("python3 {path}")).unwrap();
+        acp.write_keys("hi").unwrap();
+        let grid = acp.grid(20, 8);
+        assert_eq!(grid.lines.len(), 8);
+        assert_eq!(grid.lines[7], "> hi");
+        assert_eq!(grid.cursor_row, 7);
+        assert_eq!(grid.cursor_col, 4);
     }
 
     #[test]
