@@ -71,7 +71,8 @@ Prefix then `s` toggles rail and roster. The tiles resize. The
 rail is the rest state. The roster is a look, then it goes back.
 
 Prefix then `c` asks for a window name. Type `plugin`, enter. The
-name is the window. The roster shows it.
+name is the window. The roster shows it. Prefix then `r` renames
+the current window.
 
 The first list on the wire is still the sessions (the domains).
 The same column fills with windows once `read` carries each

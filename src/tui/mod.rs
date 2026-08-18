@@ -100,8 +100,14 @@ pub struct Client {
     detached: bool,
     roster_open: bool,
     tty: (u16, u16),
-    /// Draft name for a new window. Keys go here until enter or esc.
-    naming: Option<String>,
+    /// Draft name: a new window, or the current window under a new name.
+    naming: Option<Naming>,
+}
+
+/// What the name draft is for.
+enum Naming {
+    Create(String),
+    Rename(String),
 }
 
 impl Client {
@@ -192,6 +198,20 @@ impl Client {
             id: String::new(),
             session,
             window: Some(name.into()),
+        })?;
+        Ok(())
+    }
+
+    fn rename_window(&mut self, name: &str) -> io::Result<()> {
+        let session = self.attached.clone().ok_or_else(|| io::Error::other("no session"))?;
+        let window = self
+            .focused_window()
+            .ok_or_else(|| io::Error::other("no window"))?;
+        self.call(Request::Rename {
+            id: String::new(),
+            session,
+            name: name.into(),
+            window: Some(window),
         })?;
         Ok(())
     }
@@ -315,28 +335,36 @@ impl Client {
                 writeln!(f, "key: code={:?} mods={:?} active={}", key.code, key.modifiers, self.which_key.active)
             })();
         }
-        if let Some(name) = self.naming.as_mut() {
+        if let Some(naming) = self.naming.as_mut() {
+            let buf = match naming {
+                Naming::Create(s) | Naming::Rename(s) => s,
+            };
             match key.code {
                 KeyCode::Esc => {
                     self.naming = None;
                     return Ok(());
                 }
                 KeyCode::Enter => {
-                    let name = name.trim().to_string();
+                    let name = buf.trim().to_string();
+                    let create = matches!(self.naming, Some(Naming::Create(_)));
                     self.naming = None;
                     if name.is_empty() {
                         return Ok(());
                     }
-                    self.add_window(&name)?;
+                    if create {
+                        self.add_window(&name)?;
+                    } else {
+                        self.rename_window(&name)?;
+                    }
                     return self.refresh();
                 }
                 KeyCode::Backspace => {
-                    name.pop();
+                    buf.pop();
                     return Ok(());
                 }
                 KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if name.len() < 32 && !c.is_control() && c != '/' {
-                        name.push(c);
+                    if buf.len() < 32 && !c.is_control() && c != '/' {
+                        buf.push(c);
                     }
                     return Ok(());
                 }
@@ -413,7 +441,18 @@ impl Client {
             Action::NewSession => self.new_session(),
             Action::SwitchSession(n) => self.switch_session(n),
             Action::NewWindow => {
-                self.naming = Some(String::new());
+                self.naming = Some(Naming::Create(String::new()));
+                if !self.roster_open {
+                    self.roster_open = true;
+                    let (w, h) = self.tty;
+                    self.resize_tty(w, h)?;
+                    self.refresh()?;
+                }
+                Ok(())
+            }
+            Action::RenameWindow => {
+                let current = self.focused_window().unwrap_or_default();
+                self.naming = Some(Naming::Rename(current));
                 if !self.roster_open {
                     self.roster_open = true;
                     let (w, h) = self.tty;
@@ -782,8 +821,14 @@ impl Client {
     /// the key hints on the right.
     fn draw_status(&self, frame: &mut ratatui::Frame, area: Rect) {
         let y = area.bottom().saturating_sub(1);
-        let left = if let Some(draft) = &self.naming {
-            format!("window: {draft}_")
+        let left = if let Some(naming) = &self.naming {
+            let draft = match naming {
+                Naming::Create(s) | Naming::Rename(s) => s.as_str(),
+            };
+            match naming {
+                Naming::Create(_) => format!("window: {draft}_"),
+                Naming::Rename(_) => format!("rename: {draft}_"),
+            }
         } else {
             match &self.attached {
                 Some(name) => {
@@ -912,10 +957,16 @@ impl Request {
                 window,
             },
             Request::Attach { session, .. } => Request::Attach { id: id.into(), session },
-            Request::Rename { session, name, .. } => Request::Rename {
+            Request::Rename {
+                session,
+                name,
+                window,
+                ..
+            } => Request::Rename {
                 id: id.into(),
                 session,
                 name,
+                window,
             },
             Request::Destroy { session, .. } => Request::Destroy { id: id.into(), session },
             Request::Read { session, pane, .. } => Request::Read {

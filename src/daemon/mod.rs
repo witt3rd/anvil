@@ -172,15 +172,26 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
             Ok(Value::Empty {})
         }
         Request::Rename {
-            session, name, ..
-        } => {
-            let s = sessions.get(&session)?;
-            sessions.rename(&s, &name)?;
-            if attached.as_deref() == Some(session.as_str()) {
-                *attached = Some(name);
+            session,
+            name,
+            window,
+            ..
+        } => match window {
+            None => {
+                let s = sessions.get(&session)?;
+                sessions.rename(&s, &name)?;
+                if attached.as_deref() == Some(session.as_str()) {
+                    *attached = Some(name);
+                }
+                Ok(Value::Empty {})
             }
-            Ok(Value::Empty {})
-        }
+            Some(window) => attached_session(sessions, attached).and_then(|s| {
+                s.lock()
+                    .map_err(|_| io::Error::other("session busy"))?
+                    .rename_window(&window, &name)
+                    .map(|_| Value::Empty {})
+            }),
+        },
         Request::Destroy { session, .. } => {
             let s = sessions.get(&session)?;
             s.lock()

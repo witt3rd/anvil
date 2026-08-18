@@ -10,6 +10,7 @@ pub enum Action {
     Detach,
     Help,
     ToggleRoster,
+    RenameWindow,
     NewSession,
     SwitchSession(u8),
     NewWindow,
@@ -31,6 +32,7 @@ impl std::fmt::Display for Action {
             Action::Detach => write!(f, "detach"),
             Action::Help => write!(f, "help"),
             Action::ToggleRoster => write!(f, "roster"),
+            Action::RenameWindow => write!(f, "rename window"),
             Action::NewSession => write!(f, "new session"),
             Action::SwitchSession(n) => write!(f, "session {n}"),
             Action::NewWindow => write!(f, "new window"),
@@ -79,6 +81,7 @@ pub fn build_keymap() -> AppKeymap {
         s.bind("?", Action::Help, Category::Session);
         s.bind("n", Action::NewSession, Category::Session);
         s.bind("s", Action::ToggleRoster, Category::Session);
+        s.bind("r", Action::RenameWindow, Category::Window);
         for n in 1..=9 {
             s.bind(&n.to_string(), Action::SwitchSession(n), Category::Session);
         }
@@ -135,6 +138,13 @@ mod tests {
             let key = KeyEvent::new(code, KeyModifiers::NONE);
             assert_eq!(wk.handle_key(key), Some(want), "arrow {code:?}");
         }
+    }
+
+    #[test]
+    fn r_renames_the_window() {
+        let mut wk = prefixed();
+        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+        assert_eq!(wk.handle_key(key), Some(Action::RenameWindow));
     }
 
     #[test]

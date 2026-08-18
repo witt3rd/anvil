@@ -308,6 +308,28 @@ impl Session {
         Ok(name.to_string())
     }
 
+    /// The window under its new name. Panes stay. The name is the
+    /// window.
+    pub fn rename_window(&mut self, window: &str, name: &str) -> io::Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(io::Error::other("a window needs a name"));
+        }
+        if name.contains('/') || name.contains('\0') {
+            return Err(io::Error::other("a window name is a single word"));
+        }
+        if window != name && self.windows.iter().any(|w| w.id == name) {
+            return Err(io::Error::other("a window by that name already exists"));
+        }
+        let w = self
+            .windows
+            .iter_mut()
+            .find(|w| w.id == window)
+            .ok_or_else(|| io::Error::other("no such window"))?;
+        w.id = name.to_string();
+        self.persist()
+    }
+
     /// Move the focus into a window: its first pane becomes the
     /// focused pane, and the window becomes the current one.
     pub fn focus(&mut self, window_id: &str) -> io::Result<()> {
@@ -837,6 +859,20 @@ mod tests {
         assert!(err.to_string().contains("already exists"), "{err}");
         let err = work.lock().unwrap().add_window("  ").unwrap_err();
         assert!(err.to_string().contains("needs a name"), "{err}");
+    }
+
+    #[test]
+    fn rename_window_keeps_the_panes() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().add_window("1").unwrap();
+        work.lock().unwrap().rename_window("1", "plugin").unwrap();
+        let view = work.lock().unwrap().view();
+        assert!(view.windows.iter().any(|w| w.window == "plugin"));
+        assert!(!view.windows.iter().any(|w| w.window == "1"));
+        let err = work.lock().unwrap().rename_window("plugin", "work").unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
     }
 
     #[test]

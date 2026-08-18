@@ -26,11 +26,13 @@ pub enum Request {
         id: String,
         session: String,
     },
-    /// The session under its new name.
+    /// The session under its new name, or a window in that session.
     Rename {
         id: String,
         session: String,
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<String>,
     },
     /// The session is gone; its windows and panes with it.
     Destroy {
