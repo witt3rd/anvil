@@ -49,7 +49,7 @@ almost invisible. Turning breathes in the gray. Needs-you is the
 only loud row: the `error` token (red), not the warm accent. The
 accent is "you are here." Red is "this one is waiting on you."
 
-ACP keeps the rail alive. The host already holds each child's
+ACP keeps the rail alive (`docs/acp.md`). The host already holds each child's
 stdio. `session/update` is turning. `session/prompt` returning is
 idle. `session/request_permission` and elicitation are needs-you.
 The host pushes `session_info_update` when the mark must change.

@@ -77,8 +77,9 @@ earns its place after that write is in use.
 ```
 src/               daemon, proto, client
 docs/kernel.md     the six words
-docs/tui.md        chrome: roster, tiles, immediate mode
-docs/protocol.md   the wire
+docs/tui.md        chrome: rail, roster, tiles
+docs/acp.md        ACP: the host, the children, the viewers
+docs/protocol.md   the mux wire
 quarantine/        mothballed previous tree (do not grow)
 skills/dev/        how to build and how to fault in
 ```
@@ -108,8 +109,8 @@ earned it. `skills/dev/` is the lived how-to.
 
 **Say what a thing is.** Positive statements. Kernel docs
 (`docs/kernel.md` and the docs it owns) use only the six words.
-ACP, roster, and write live here and in `docs/tui.md` until a word
-earns the kernel page.
+ACP, roster, and write live here, in `docs/acp.md`, and in
+`docs/tui.md` until a word earns the kernel page.
 
 ## Scope
 

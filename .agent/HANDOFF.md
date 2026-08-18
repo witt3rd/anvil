@@ -1,37 +1,25 @@
 # HANDOFF — anvil, primary
 
-_State: charter landed on `main`. Clean. One worktree (primary on
-`main`), one branch (`main`)._
+_State: `docs/acp.md` is in this repo. After land, `main` is
+clean._
 
 ## State
 
-- `main` holds the ACP-parent charter. Primary clone clean after
-  this land.
-- Code unchanged. Tests were green on `f9bda9b`.
-- `write { pane }` is documented, not implemented.
-- Rail / roster is specified, not drawn.
+- Charter plus ACP host spec live in-tree.
+- Code unchanged. Rail / roster specified, not drawn.
+- `write { pane }` documented, not implemented.
 
 ## What changed
 
-Anvil is the multiplexer for ACP agents and shells. The daemon is
-the parent. The sidebar is a rail of marks that opens into a
-roster. Write is the courier.
-
-- `AGENTS.md` — the charter.
-- `docs/kernel.md` — parent, view, write may name a pane.
-- `docs/tui.md` — rail (`◇` / dot pulse / `◆` in `error` red),
-  roster on prefix `s`, ACP feeds the marks.
-- `docs/daemon.md`, `docs/client.md`, `docs/protocol.md` — aligned.
-
-A2A-on-ACP is specified in the ACP tree (not this repo):
-`/home/dt/src/ext/agent-client-protocol.wt/docs--a2a/a2a.md`
-on branch `docs/a2a`. Local only; not pushed to upstream ACP.
+`docs/acp.md` is the host: ACP used twice, children on stdio,
+viewers on the unix socket, roster via `session/list`, rail fed
+by `session_info_update`. Pulled across from the leftover ACP
+worktree and named ACP.
 
 ## Where to pick up
 
-Draw the rail. `read` carries each window's process and a state
-the daemon can see. ACP parent (exclusive attach) is how that
-state exists for an agent. Named-pane `write` is the courier.
+Draw the rail. `read` carries process and state. Exclusive ACP
+attach is how that state exists for an agent.
 
 ## Gotchas
 
@@ -39,9 +27,7 @@ state exists for an agent. Named-pane `write` is the courier.
 - **`anvil`** is the stable release via `~/.local/bin/anvil` →
   `scripts/launch`.
 - **opaline** path dep: `/home/dt/src/ext/opaline` at `v0.4.1`.
-- **PATH**: bash tool lacks `~/.local/bin`.
-- Kernel pages stay six words. ACP, roster, rail live in
-  `AGENTS.md` and `docs/tui.md`.
+- Kernel pages stay six words. ACP lives in `docs/acp.md`.
 
 ## Next (single most important)
 
