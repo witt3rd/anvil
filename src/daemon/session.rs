@@ -284,20 +284,28 @@ impl Session {
         }
     }
 
-/// A new window in the session, with one pane. The new window
-    /// becomes the current one: the focus moves to its pane.
-    pub fn add_window(&mut self) -> io::Result<String> {
-        let window = self.next_id.to_string();
-        self.next_id += 1;
+/// A new window in the session, with one pane. The name is the
+    /// window. The new window becomes current: focus moves to its pane.
+    pub fn add_window(&mut self, name: &str) -> io::Result<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(io::Error::other("a window needs a name"));
+        }
+        if name.contains('/') || name.contains('\0') {
+            return Err(io::Error::other("a window name is a single word"));
+        }
+        if self.windows.iter().any(|w| w.id == name) {
+            return Err(io::Error::other("a window by that name already exists"));
+        }
         let pane = self.next_id.to_string();
         self.next_id += 1;
         self.windows.push(Window {
-            id: window.clone(),
+            id: name.to_string(),
             tree: Tree::Leaf { id: pane.clone() },
         });
         self.focused = pane;
         self.persist()?;
-        Ok(window)
+        Ok(name.to_string())
     }
 
     /// Move the focus into a window: its first pane becomes the
@@ -809,12 +817,13 @@ mod tests {
         work.lock().unwrap().split("1").unwrap();
         assert_eq!(work.lock().unwrap().view().focused, "1");
 
-        work.lock().unwrap().add_window().unwrap();
+        work.lock().unwrap().add_window("plugin").unwrap();
         let view = work.lock().unwrap().view();
         // The new window is current: its pane is the focused one.
         assert_eq!(view.windows.len(), 2);
-        assert_eq!(view.focused, "4");
-        assert!(view.windows[1].panes.iter().any(|p| p.pane == "4"));
+        assert_eq!(view.windows[1].window, "plugin");
+        assert_eq!(view.focused, "3");
+        assert!(view.windows[1].panes.iter().any(|p| p.pane == "3"));
 
         // Focus moves back to the first window.
         work.lock().unwrap().focus("1").unwrap();
@@ -822,6 +831,11 @@ mod tests {
 
         let err = work.lock().unwrap().focus("99").unwrap_err();
         assert!(err.to_string().contains("no such window"));
+
+        let err = work.lock().unwrap().add_window("plugin").unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+        let err = work.lock().unwrap().add_window("  ").unwrap_err();
+        assert!(err.to_string().contains("needs a name"), "{err}");
     }
 
     #[test]
@@ -888,12 +902,12 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().add_window().unwrap();
+        work.lock().unwrap().add_window("plugin").unwrap();
         assert_eq!(work.lock().unwrap().view().windows.len(), 2);
 
-        // Window 2's only pane is its focused one; closing it closes
+        // The new window's only pane is focused; closing it closes
         // the window.
-        work.lock().unwrap().close_pane("3").unwrap();
+        work.lock().unwrap().close_pane("2").unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows.len(), 1);
         assert_eq!(view.focused, "1");
@@ -905,17 +919,18 @@ mod tests {
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
         work.lock().unwrap().spawn("1", "sh").unwrap();
-        work.lock().unwrap().add_window().unwrap();
-        // Current window is 2 (focused pane 3); window 1 has pane 1.
+        work.lock().unwrap().add_window("plugin").unwrap();
+        // Current window is plugin (focused pane 2); window 1 has pane 1.
         work.lock().unwrap().focus("1").unwrap();
 
         work.lock().unwrap().close_window("1").unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows.len(), 1);
+        assert_eq!(view.windows[0].window, "plugin");
         // Pane 1's process ended.
         assert!(!view.windows[0].panes.iter().any(|p| p.pane == "1"));
         // Focus moved to the remaining window's pane.
-        assert_eq!(view.focused, "3");
+        assert_eq!(view.focused, "2");
 
         let err = work.lock().unwrap().close_window("99").unwrap_err();
         assert!(err.to_string().contains("no such window"));

@@ -159,10 +159,10 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
                 .create(&session)
                 .map(|_| Value::Empty {})
                 .map_err(io::Error::other),
-            Some(_) => attached_session(sessions, attached).and_then(|s| {
+            Some(name) => attached_session(sessions, attached).and_then(|s| {
                 s.lock()
                     .map_err(|_| io::Error::other("session busy"))?
-                    .add_window()
+                    .add_window(&name)
                     .map(|_| Value::Empty {})
             }),
         },

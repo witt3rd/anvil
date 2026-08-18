@@ -100,6 +100,8 @@ pub struct Client {
     detached: bool,
     roster_open: bool,
     tty: (u16, u16),
+    /// Draft name for a new window. Keys go here until enter or esc.
+    naming: Option<String>,
 }
 
 impl Client {
@@ -125,6 +127,7 @@ impl Client {
             detached: false,
             roster_open: false,
             tty: (80, 24),
+            naming: None,
         };
         client.attach_first()?;
         Ok(client)
@@ -183,9 +186,13 @@ impl Client {
         Ok(())
     }
 
-    fn add_window(&mut self) -> io::Result<()> {
+    fn add_window(&mut self, name: &str) -> io::Result<()> {
         let session = self.attached.clone().ok_or_else(|| io::Error::other("no session"))?;
-        self.call(Request::Create { id: String::new(), session, window: Some("1".into()) })?;
+        self.call(Request::Create {
+            id: String::new(),
+            session,
+            window: Some(name.into()),
+        })?;
         Ok(())
     }
 
@@ -308,6 +315,34 @@ impl Client {
                 writeln!(f, "key: code={:?} mods={:?} active={}", key.code, key.modifiers, self.which_key.active)
             })();
         }
+        if let Some(name) = self.naming.as_mut() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.naming = None;
+                    return Ok(());
+                }
+                KeyCode::Enter => {
+                    let name = name.trim().to_string();
+                    self.naming = None;
+                    if name.is_empty() {
+                        return Ok(());
+                    }
+                    self.add_window(&name)?;
+                    return self.refresh();
+                }
+                KeyCode::Backspace => {
+                    name.pop();
+                    return Ok(());
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if name.len() < 32 && !c.is_control() && c != '/' {
+                        name.push(c);
+                    }
+                    return Ok(());
+                }
+                _ => return Ok(()),
+            }
+        }
         if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.which_key.set_scope(Scope::Prefix);
             self.which_key.toggle();
@@ -378,8 +413,14 @@ impl Client {
             Action::NewSession => self.new_session(),
             Action::SwitchSession(n) => self.switch_session(n),
             Action::NewWindow => {
-                self.add_window()?;
-                self.refresh()
+                self.naming = Some(String::new());
+                if !self.roster_open {
+                    self.roster_open = true;
+                    let (w, h) = self.tty;
+                    self.resize_tty(w, h)?;
+                    self.refresh()?;
+                }
+                Ok(())
             }
             Action::NextWindow | Action::PrevWindow => {
                 let next = matches!(action, Action::NextWindow);
@@ -743,15 +784,19 @@ impl Client {
     /// the key hints on the right.
     fn draw_status(&self, frame: &mut ratatui::Frame, area: Rect) {
         let y = area.bottom().saturating_sub(1);
-        let left = match &self.attached {
-            Some(name) => {
-                let pane = self.view.as_ref().map(|v| v.focused.clone());
-                match pane {
-                    Some(pane) => format!("{name} · {pane}"),
-                    None => name.clone(),
+        let left = if let Some(draft) = &self.naming {
+            format!("window: {draft}_")
+        } else {
+            match &self.attached {
+                Some(name) => {
+                    let pane = self.view.as_ref().map(|v| v.focused.clone());
+                    match pane {
+                        Some(pane) => format!("{name} · {pane}"),
+                        None => name.clone(),
+                    }
                 }
+                None => "anvil".to_string(),
             }
-            None => "anvil".to_string(),
         };
         frame.buffer_mut().set_stringn(
             area.x + PAD,
@@ -760,7 +805,11 @@ impl Client {
             (area.width.saturating_sub(2 * PAD)) as usize,
             Style::default().fg(self.c("text.primary")),
         );
-        let hints = "ctrl-b prefix · s roster · esc detach";
+        let hints = if self.naming.is_some() {
+            "enter create · esc cancel"
+        } else {
+            "ctrl-b prefix · s roster · esc detach"
+        };
         let hints_w = hints.len() as u16;
         if hints_w + 2 * PAD <= area.width {
             frame.buffer_mut().set_stringn(

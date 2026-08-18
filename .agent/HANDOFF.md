@@ -6,6 +6,8 @@ _State: rail and roster are drawn. After land, `main` is clean._
 
 - Charter + `docs/acp.md` + rail chrome.
 - Prefix `s` toggles rail (3 cells) and roster (42 cells).
+- Prefix `c` names a window (`plugin`, `ui`). The name is the
+  window. Roster shows it.
 - Marks are idle / dead from `grid.alive`. Turning and needs-you
   wait on ACP parent.
 

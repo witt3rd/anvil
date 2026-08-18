@@ -33,7 +33,7 @@ the args tell them apart.
 |---|---|---|
 | `enumerate` | — | the names of the sessions the daemon owns |
 | `create` | `session` — a name | a new session with one window |
-| `create` | `session`, `window` | a new window in the session |
+| `create` | `session`, `window` — a name | a new window in the session |
 | `attach` | `session` | the client now views this session |
 | `rename` | `session`, `name` | the session under its new name |
 | `destroy` | `session` | the session is gone; its windows and panes with it |
@@ -56,9 +56,9 @@ the args tell them apart.
 
 ## Identifiers
 
-Sessions are named. Windows and panes carry the identifier the daemon
-issued when it made them; `read` returns them; the other ops address
-them by it.
+Sessions are named. Windows are named. Panes carry the identifier
+the daemon issued when it made them. `read` returns them; the other
+ops address them by those names.
 
 `write` without a pane is today's wire: the focused process. `write`
 with a pane is the same verb.
