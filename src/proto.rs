@@ -77,12 +77,13 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
-    /// A process runs on the pane's slave PTY; the daemon holds the
-    /// master.
+    /// A process runs on the pane. PTY by default; `acp` holds stdio.
     Spawn {
         id: String,
         pane: String,
         program: String,
+        #[serde(default)]
+        acp: bool,
     },
     /// The data goes to the focused pane's process.
     Write {

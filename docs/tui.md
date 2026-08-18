@@ -72,7 +72,10 @@ rail is the rest state. The roster is a look, then it goes back.
 
 Prefix then `c` asks for a window name. Type `plugin`, enter. The
 name is the window. The roster shows it. Prefix then `r` renames
-the current window.
+the current window. Prefix then `a` spawns an ACP process on the
+focused pane (`ANVIL_ACP`, default `opencode acp`). Enter in that
+pane sends `session/prompt`. The rail turns and goes red from
+that stream.
 
 The first list on the wire is still the sessions (the domains).
 The same column fills with windows once `read` carries each

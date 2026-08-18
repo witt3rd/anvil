@@ -24,6 +24,7 @@ pub enum Action {
     FocusDown,
     FocusUp,
     FocusRight,
+    SpawnAcp,
 }
 
 impl std::fmt::Display for Action {
@@ -46,6 +47,7 @@ impl std::fmt::Display for Action {
             Action::FocusDown => write!(f, "focus down"),
             Action::FocusUp => write!(f, "focus up"),
             Action::FocusRight => write!(f, "focus right"),
+            Action::SpawnAcp => write!(f, "spawn acp"),
         }
     }
 }
@@ -104,6 +106,7 @@ pub fn build_keymap() -> AppKeymap {
         s.bind("<Up>", Action::FocusUp, Category::Pane);
         s.bind("<Right>", Action::FocusRight, Category::Pane);
         s.bind("w", Action::CloseWindow, Category::Window);
+        s.bind("a", Action::SpawnAcp, Category::Pane);
     });
 
     km

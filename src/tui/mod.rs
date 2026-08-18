@@ -17,6 +17,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui_which_key::WhichKey;
 
+use crate::daemon::acp::WindowState;
 use crate::daemon::pane::Grid;
 use crate::daemon::session::SessionView;
 use crate::proto::{Reply, Request, Value};
@@ -37,6 +38,8 @@ const GAP: u16 = 1; // between the sidebar and the content
 const STATUS_LINES: u16 = 1; // the status line height
 const MARK_IDLE: &str = "◇";
 const MARK_DEAD: &str = "◇";
+const MARK_NEED: &str = "◆";
+const DOT_FRAMES: &[&str] = &["⋅", ":", "⸬", "⁙"];
 
 /// How the left chrome is drawn for this tty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +105,7 @@ pub struct Client {
     tty: (u16, u16),
     /// Draft name: a new window, or the current window under a new name.
     naming: Option<Naming>,
+    tick: u64,
 }
 
 /// What the name draft is for.
@@ -134,6 +138,7 @@ impl Client {
             roster_open: false,
             tty: (80, 24),
             naming: None,
+            tick: 0,
         };
         client.attach_first()?;
         Ok(client)
@@ -236,7 +241,23 @@ impl Client {
     }
 
     fn spawn(&mut self, pane: &str) -> io::Result<()> {
-        self.call(Request::Spawn { id: String::new(), pane: pane.into(), program: self.shell.clone() })?;
+        self.call(Request::Spawn {
+            id: String::new(),
+            pane: pane.into(),
+            program: self.shell.clone(),
+            acp: false,
+        })?;
+        Ok(())
+    }
+
+    fn spawn_acp(&mut self, pane: &str) -> io::Result<()> {
+        let program = std::env::var("ANVIL_ACP").unwrap_or_else(|_| "opencode acp".into());
+        self.call(Request::Spawn {
+            id: String::new(),
+            pane: pane.into(),
+            program,
+            acp: true,
+        })?;
         Ok(())
     }
 
@@ -450,6 +471,12 @@ impl Client {
                 }
                 Ok(())
             }
+            Action::SpawnAcp => {
+                if let Some(pane) = self.view.as_ref().map(|v| v.focused.clone()) {
+                    self.spawn_acp(&pane)?;
+                }
+                self.refresh()
+            }
             Action::RenameWindow => {
                 let current = self.focused_window().unwrap_or_default();
                 self.naming = Some(Naming::Rename(current));
@@ -588,6 +615,10 @@ impl Client {
         &self.theme
     }
 
+    pub fn bump_tick(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+    }
+
     /// Draw one frame: fill the base, the rail or roster, the panes'
     /// grids, the status line, and the prefix popup. The frame and the
     /// tiles share `bg.base`, so the gap between tiles is invisible —
@@ -635,9 +666,15 @@ impl Client {
         let primary = self.c("text.primary");
         for (y, window) in (area.y..area.bottom()).zip(view.windows.iter()) {
             let here = current.as_deref() == Some(window.window.as_str());
-            let alive = self.window_alive(window);
-            let mark = if alive { MARK_IDLE } else { MARK_DEAD };
-            let mark_style = Style::default().fg(muted);
+            let (mark, mark_style) = match window.state {
+                WindowState::NeedsYou => (MARK_NEED, Style::default().fg(self.c("error"))),
+                WindowState::Turning => {
+                    let frame = DOT_FRAMES[(self.tick / 4) as usize % DOT_FRAMES.len()];
+                    (frame, Style::default().fg(muted))
+                }
+                WindowState::Dead => (MARK_DEAD, Style::default().fg(muted)),
+                WindowState::Idle => (MARK_IDLE, Style::default().fg(muted)),
+            };
             if here {
                 frame.buffer_mut().set_stringn(area.x, y, "┃", 1, Style::default().fg(accent));
             }
@@ -663,13 +700,6 @@ impl Client {
                 );
             }
         }
-    }
-
-    /// A window is alive when any of its panes still has a process.
-    fn window_alive(&self, window: &crate::daemon::session::WindowView) -> bool {
-        window.panes.iter().any(|p| {
-            self.grids.get(&p.pane).is_none_or(|g| g.alive)
-        })
     }
 
     /// The content: each pane's retained grid at its geometry. Panes
@@ -986,10 +1016,16 @@ impl Request {
                 pane,
             },
             Request::Resize { cols, rows, .. } => Request::Resize { id: id.into(), cols, rows },
-            Request::Spawn { pane, program, .. } => Request::Spawn {
+            Request::Spawn {
+                pane,
+                program,
+                acp,
+                ..
+            } => Request::Spawn {
                 id: id.into(),
                 pane,
                 program,
+                acp,
             },
             Request::Write { data, .. } => Request::Write { id: id.into(), data },
         }
@@ -1014,6 +1050,7 @@ fn run_loop(
     client.resize_tty(size.width, size.height)?;
     client.refresh()?;
     loop {
+        client.bump_tick();
         terminal.draw(|frame| client.draw(frame))?;
         if !event::poll(Duration::from_millis(50))? {
             let _ = client.refresh();

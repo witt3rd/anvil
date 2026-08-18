@@ -196,6 +196,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         id: id.into(),
         pane: "1".into(),
         program: "sh".into(),
+        acp: false,
     });
     client.ok(|id| Request::Write {
         id: id.into(),
@@ -273,6 +274,7 @@ fn detach_keeps_the_session() {
         id: id.into(),
         pane: "1".into(),
         program: "sh".into(),
+        acp: false,
     });
     client.ok(|id| Request::Write {
         id: id.into(),
@@ -333,6 +335,7 @@ fn destroy_sighups_the_processes() {
         id: id.into(),
         pane: "1".into(),
         program: "sh".into(),
+        acp: false,
     });
     client.ok(|id| Request::Write {
         id: id.into(),

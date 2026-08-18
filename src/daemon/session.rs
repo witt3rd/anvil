@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use super::acp::{AcpChild, WindowState};
 use super::pane::{Grid, Pane};
 use super::tiling::Tiling;
 
@@ -31,6 +32,8 @@ pub struct SessionView {
 pub struct WindowView {
     pub window: String,
     pub panes: Vec<PaneView>,
+    #[serde(default)]
+    pub state: WindowState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -91,6 +94,7 @@ pub struct Session {
     windows: Vec<Window>,
     focused: String,
     panes: HashMap<String, Arc<Pane>>,
+    acp: HashMap<String, Arc<AcpChild>>,
 }
 
 /// The sessions the daemon owns. Named, on disk under a root.
@@ -165,6 +169,7 @@ impl Sessions {
             }],
             focused: file.focused,
             panes: HashMap::new(),
+            acp: HashMap::new(),
         }));
         self.live
             .lock()
@@ -204,6 +209,7 @@ impl Sessions {
                 .collect(),
             focused: file.focused,
             panes: HashMap::new(),
+            acp: HashMap::new(),
         }));
         self.live
             .lock()
@@ -260,7 +266,7 @@ impl Session {
             let rects = rects_of(&window.tree, self.tty_cols, self.tty_rows, self.gap);
             collect_panes(&window.tree, &mut panes);
             panes.sort();
-            let panes = panes
+            let panes: Vec<PaneView> = panes
                 .into_iter()
                 .map(|id| {
                     let (x, y, cols, rows) = rects[&id];
@@ -273,9 +279,11 @@ impl Session {
                     }
                 })
                 .collect();
+            let state = window_state(&panes, &self.panes, &self.acp);
             windows.push(WindowView {
                 window: window.id.clone(),
                 panes,
+                state,
             });
         }
         SessionView {
@@ -465,14 +473,39 @@ impl Session {
         self.persist()
     }
 
-    /// Spawn a process in a pane. The daemon holds the master PTY; the
-    /// process runs on the slave. A pane whose process has ended takes
-    /// a fresh one; only a live process blocks the spawn.
-    pub fn spawn(&mut self, pane_id: &str, program: &str) -> io::Result<()> {
+    /// Spawn a process in a pane. PTY by default; `acp` holds stdio
+    /// and speaks ACP. A live process on the pane blocks the spawn.
+    pub fn spawn(&mut self, pane_id: &str, program: &str, acp: bool) -> io::Result<()> {
+        if acp {
+            if let Some(pane) = self.panes.get(pane_id) {
+                if pane.alive() {
+                    return Err(io::Error::other("the pane already has a process"));
+                }
+            }
+            if let Some(child) = self.acp.get(pane_id) {
+                if child.alive() {
+                    return Err(io::Error::other("the pane already has a process"));
+                }
+            }
+            if let Some(pane) = self.panes.remove(pane_id) {
+                pane.terminate();
+            }
+            let child = AcpChild::spawn(program)?;
+            self.acp.insert(pane_id.to_string(), child);
+            return Ok(());
+        }
+        if let Some(child) = self.acp.get(pane_id) {
+            if child.alive() {
+                return Err(io::Error::other("the pane already has a process"));
+            }
+        }
         if let Some(pane) = self.panes.get(pane_id) {
             if pane.alive() {
                 return Err(io::Error::other("the pane already has a process"));
             }
+        }
+        if let Some(child) = self.acp.remove(pane_id) {
+            child.terminate();
         }
         let (_, _, cols, rows) = self
             .pane_geometry(pane_id)
@@ -484,6 +517,9 @@ impl Session {
 
     /// Write to the focused pane's process — the client's keys.
     pub fn write(&self, data: &str) -> io::Result<()> {
+        if let Some(acp) = self.acp.get(&self.focused) {
+            return acp.write_keys(data);
+        }
         let pane = self
             .panes
             .get(&self.focused)
@@ -492,12 +528,18 @@ impl Session {
         pane.write(data.as_bytes())
     }
 
-    /// Read a pane's grid.
-    pub fn read_pane(&self, pane_id: &str) -> Grid {        let grid = self
-            .panes
-            .get(pane_id)
-            .cloned()
-            .map(|pane| pane.grid());
+    /// Read a pane's grid. An ACP pane has no grid; it is alive while
+    /// the child is.
+    pub fn read_pane(&self, pane_id: &str) -> Grid {
+        if let Some(acp) = self.acp.get(pane_id) {
+            let (_, _, cols, rows) = self
+                .pane_geometry(pane_id)
+                .unwrap_or((0, 0, DEFAULT_COLS, DEFAULT_ROWS));
+            let mut grid = Grid::blank(cols, rows);
+            grid.alive = acp.alive();
+            return grid;
+        }
+        let grid = self.panes.get(pane_id).cloned().map(|pane| pane.grid());
         if let Some(grid) = grid {
             return grid;
         }
@@ -511,6 +553,9 @@ impl Session {
     pub fn terminate(&self) {
         for pane in self.panes.values() {
             pane.hangup();
+        }
+        for acp in self.acp.values() {
+            acp.hangup();
         }
     }
 
@@ -683,6 +728,42 @@ impl Grid {
     }
 }
 
+fn window_state(
+    panes: &[PaneView],
+    pty: &HashMap<String, Arc<Pane>>,
+    acp: &HashMap<String, Arc<AcpChild>>,
+) -> WindowState {
+    let mut any_live = false;
+    let mut any_process = false;
+    let mut turning = false;
+    for p in panes {
+        if let Some(child) = acp.get(&p.pane) {
+            any_process = true;
+            match child.state() {
+                WindowState::NeedsYou => return WindowState::NeedsYou,
+                WindowState::Turning => turning = true,
+                WindowState::Idle | WindowState::Dead => {}
+            }
+            if child.alive() {
+                any_live = true;
+            }
+        } else if let Some(pane) = pty.get(&p.pane) {
+            any_process = true;
+            if pane.alive() {
+                any_live = true;
+            }
+        }
+    }
+    if turning {
+        return WindowState::Turning;
+    }
+    if any_process && !any_live {
+        WindowState::Dead
+    } else {
+        WindowState::Idle
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,7 +880,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh").unwrap();
+        work.lock().unwrap().spawn("1", "sh", false).unwrap();
         work.lock().unwrap().write("printf 'hello session'\n").unwrap();
         let mut grid = work.lock().unwrap().read_pane("1");
         for _ in 0..100 {
@@ -820,7 +901,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh").unwrap();
+        work.lock().unwrap().spawn("1", "sh", false).unwrap();
         work.lock().unwrap().write("exit 0\n").unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
@@ -880,7 +961,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh").unwrap();
+        work.lock().unwrap().spawn("1", "sh", false).unwrap();
         work.lock().unwrap().write("exit 0\n").unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
@@ -891,7 +972,7 @@ mod tests {
         assert!(!work.lock().unwrap().read_pane("1").alive);
 
         // The dead pane takes a fresh process.
-        work.lock().unwrap().spawn("1", "sh").unwrap();
+        work.lock().unwrap().spawn("1", "sh", false).unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
     }
 
@@ -955,7 +1036,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh").unwrap();
+        work.lock().unwrap().spawn("1", "sh", false).unwrap();
         work.lock().unwrap().add_window("plugin").unwrap();
         // Current window is plugin (focused pane 2); window work has pane 1.
         work.lock().unwrap().focus("work").unwrap();

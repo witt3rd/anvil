@@ -2,6 +2,7 @@
 //! socket. One JSON object per line in, one per line out. EOF is a
 //! detach — the sessions, windows, and panes stay.
 
+pub mod acp;
 pub mod pane;
 pub mod session;
 pub mod tiling;
@@ -244,14 +245,17 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
                 .resize(cols, rows, gap)
                 .map(|_| Value::Empty {})
         }),
-        Request::Spawn { pane, program, .. } => {
-            attached_session(sessions, attached).and_then(|s| {
-                s.lock()
-                    .map_err(|_| io::Error::other("session busy"))?
-                    .spawn(&pane, &program)
-                    .map(|_| Value::Empty {})
-            })
-        }
+        Request::Spawn {
+            pane,
+            program,
+            acp,
+            ..
+        } => attached_session(sessions, attached).and_then(|s| {
+            s.lock()
+                .map_err(|_| io::Error::other("session busy"))?
+                .spawn(&pane, &program, acp)
+                .map(|_| Value::Empty {})
+        }),
         Request::Write { data, .. } => attached_session(sessions, attached).and_then(|s| {
             s.lock()
                 .map_err(|_| io::Error::other("session busy"))?
