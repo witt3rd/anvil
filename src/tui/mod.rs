@@ -615,12 +615,10 @@ impl Client {
                 } else {
                     Style::default().fg(muted)
                 };
-                let clause = if alive { "idle" } else { "dead" };
-                let line = format!("{}  {clause}", window.window);
                 frame.buffer_mut().set_stringn(
                     area.x + 4,
                     y,
-                    &line,
+                    &window.window,
                     area.width.saturating_sub(4) as usize,
                     name_style,
                 );

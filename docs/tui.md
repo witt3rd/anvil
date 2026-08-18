@@ -60,10 +60,10 @@ The **rail** is three cells: the current window's `┃` (`accent.primary`)
 and one mark per window. The column is `bg.base` — no panel, no
 names. It shows on terminals of 80 cells and wider.
 
-The **roster** is 42 cells, `bg.panel`. Each row is the mark, the
-window name, and a muted clause (`idle`, `turning`, `needs you`,
-or a short activity the stream already named). The current row
-wears the accent bar and `text.primary`. Other rows are muted.
+The **roster** is 42 cells, `bg.panel`. Each row is the mark and
+the window name. The mark is the state; the name is the activity.
+The current row wears the accent bar and `text.primary`. Other
+rows are muted.
 It shows on terminals of 120 cells and wider; narrower terminals
 keep the rail.
 

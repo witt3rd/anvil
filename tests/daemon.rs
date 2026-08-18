@@ -157,7 +157,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
     // split the window: two panes, tiled to the tty
     client.ok(|id| Request::Split {
         id: id.into(),
-        window: "1".into(),
+        window: "work".into(),
     });
     let Value::View(view) = client.ok(|id| Request::Read {
         id: id.into(),

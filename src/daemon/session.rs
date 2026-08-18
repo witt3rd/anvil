@@ -141,7 +141,7 @@ impl Sessions {
             tty_cols: DEFAULT_COLS,
             tty_rows: DEFAULT_ROWS,
             windows: vec![WindowFile {
-                id: "1".to_string(),
+                id: name.to_string(),
                 tree: Tree::Leaf {
                     id: "1".to_string(),
                 },
@@ -158,7 +158,7 @@ impl Sessions {
             tty_rows: file.tty_rows,
             gap: self.tiling().gap,
             windows: vec![Window {
-                id: "1".to_string(),
+                id: name.to_string(),
                 tree: Tree::Leaf {
                     id: "1".to_string(),
                 },
@@ -680,6 +680,7 @@ mod tests {
         let work = sessions.get("work").unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows.len(), 1);
+        assert_eq!(view.windows[0].window, "work");
         assert_eq!(view.windows[0].panes.len(), 1);
         assert_eq!(view.focused, "1");
 
@@ -705,7 +706,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("1").unwrap();
+        work.lock().unwrap().split("work").unwrap();
 
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows[0].panes.len(), 2);
@@ -726,7 +727,7 @@ mod tests {
         let (dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("1").unwrap();
+        work.lock().unwrap().split("work").unwrap();
         drop(work);
 
         // The daemon restarts: a fresh Sessions over the same root.
@@ -743,7 +744,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("1").unwrap();
+        work.lock().unwrap().split("work").unwrap();
         work.lock().unwrap().resize(100, 50, 1).unwrap();
 
         let view = work.lock().unwrap().view();
@@ -814,7 +815,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("1").unwrap();
+        work.lock().unwrap().split("work").unwrap();
         assert_eq!(work.lock().unwrap().view().focused, "1");
 
         work.lock().unwrap().add_window("plugin").unwrap();
@@ -826,7 +827,7 @@ mod tests {
         assert!(view.windows[1].panes.iter().any(|p| p.pane == "3"));
 
         // Focus moves back to the first window.
-        work.lock().unwrap().focus("1").unwrap();
+        work.lock().unwrap().focus("work").unwrap();
         assert_eq!(work.lock().unwrap().view().focused, "1");
 
         let err = work.lock().unwrap().focus("99").unwrap_err();
@@ -863,7 +864,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("1").unwrap();
+        work.lock().unwrap().split("work").unwrap();
         assert_eq!(work.lock().unwrap().view().focused, "1");
 
         work.lock().unwrap().focus_pane("2").unwrap();
@@ -880,7 +881,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("1").unwrap();
+        work.lock().unwrap().split("work").unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows[0].panes.len(), 2);
 
@@ -920,10 +921,10 @@ mod tests {
         let work = sessions.get("work").unwrap();
         work.lock().unwrap().spawn("1", "sh").unwrap();
         work.lock().unwrap().add_window("plugin").unwrap();
-        // Current window is plugin (focused pane 2); window 1 has pane 1.
-        work.lock().unwrap().focus("1").unwrap();
+        // Current window is plugin (focused pane 2); window work has pane 1.
+        work.lock().unwrap().focus("work").unwrap();
 
-        work.lock().unwrap().close_window("1").unwrap();
+        work.lock().unwrap().close_window("work").unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows.len(), 1);
         assert_eq!(view.windows[0].window, "plugin");
