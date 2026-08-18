@@ -106,6 +106,7 @@ pub struct Client {
     /// Draft name: a new window, or the current window under a new name.
     naming: Option<Naming>,
     tick: u64,
+    last_error: Option<String>,
 }
 
 /// What the name draft is for.
@@ -139,6 +140,7 @@ impl Client {
             tty: (80, 24),
             naming: None,
             tick: 0,
+            last_error: None,
         };
         client.attach_first()?;
         Ok(client)
@@ -473,7 +475,10 @@ impl Client {
             }
             Action::SpawnAcp => {
                 if let Some(pane) = self.view.as_ref().map(|v| v.focused.clone()) {
-                    self.spawn_acp(&pane)?;
+                    match self.spawn_acp(&pane) {
+                        Ok(()) => self.last_error = None,
+                        Err(err) => self.last_error = Some(err.to_string()),
+                    }
                 }
                 self.refresh()
             }
@@ -851,7 +856,9 @@ impl Client {
     /// the key hints on the right.
     fn draw_status(&self, frame: &mut ratatui::Frame, area: Rect) {
         let y = area.bottom().saturating_sub(1);
-        let left = if let Some(naming) = &self.naming {
+        let left = if let Some(err) = &self.last_error {
+            err.clone()
+        } else if let Some(naming) = &self.naming {
             let draft = match naming {
                 Naming::Create(s) | Naming::Rename(s) => s.as_str(),
             };

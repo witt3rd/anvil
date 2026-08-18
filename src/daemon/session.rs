@@ -474,21 +474,15 @@ impl Session {
     }
 
     /// Spawn a process in a pane. PTY by default; `acp` holds stdio
-    /// and speaks ACP. A live process on the pane blocks the spawn.
+    /// and speaks ACP. An ACP spawn replaces whatever is already on
+    /// the pane. A PTY spawn leaves a live ACP child alone.
     pub fn spawn(&mut self, pane_id: &str, program: &str, acp: bool) -> io::Result<()> {
         if acp {
-            if let Some(pane) = self.panes.get(pane_id) {
-                if pane.alive() {
-                    return Err(io::Error::other("the pane already has a process"));
-                }
-            }
-            if let Some(child) = self.acp.get(pane_id) {
-                if child.alive() {
-                    return Err(io::Error::other("the pane already has a process"));
-                }
-            }
             if let Some(pane) = self.panes.remove(pane_id) {
                 pane.terminate();
+            }
+            if let Some(child) = self.acp.remove(pane_id) {
+                child.terminate();
             }
             let child = AcpChild::spawn(program)?;
             self.acp.insert(pane_id.to_string(), child);
@@ -893,6 +887,25 @@ mod tests {
             grid.lines.iter().any(|l| l.contains("hello session")),
             "{grid:?}"
         );
+    }
+
+    #[test]
+    fn acp_spawn_replaces_a_live_shell() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().spawn("1", "sh", false).unwrap();
+        assert!(work.lock().unwrap().read_pane("1").alive);
+        assert!(!work.lock().unwrap().read_pane("1").acp);
+
+        let (_keep, path) = crate::daemon::acp::tests::fake_agent();
+        work.lock()
+            .unwrap()
+            .spawn("1", &format!("python3 {path}"), true)
+            .unwrap();
+        let grid = work.lock().unwrap().read_pane("1");
+        assert!(grid.acp, "{grid:?}");
+        assert!(grid.alive, "{grid:?}");
     }
 
     #[test]

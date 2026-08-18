@@ -432,10 +432,10 @@ fn split_cmd(program: &str) -> io::Result<(String, Vec<String>)> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn fake_agent() -> (tempfile::NamedTempFile, String) {
+    pub(crate) fn fake_agent() -> (tempfile::NamedTempFile, String) {
         let mut file = tempfile::Builder::new().suffix(".py").tempfile().unwrap();
         file.write_all(
             br#"
