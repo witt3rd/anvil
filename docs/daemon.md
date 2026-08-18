@@ -1,11 +1,11 @@
 # Daemon
 
-The daemon owns sessions and serves clients over a unix socket.
+The daemon owns sessions and serves clients over a unix socket. It
+is the parent of every process.
 
-A long-running process that owns resources and offers a service via IPC.
-All state lives in the daemon: the sessions, their windows and panes,
-the PTYs, the character grids. The client views a session and sends
-keys.
+All state lives in the daemon: the sessions, their windows and
+panes, each process, each pane's view. The client views a session
+and sends keys.
 
 ```
 daemon
@@ -15,24 +15,18 @@ daemon
 
 ## What it must do
 
-Without these, it is not a daemon for this multiplexer, and no new
-kernel words are needed.
-
-1. **Sessions persist after client detach.** Close the client or drop SSH:
-   sessions, windows, and panes stay. No `SIGHUP`. Only processes keep
-   running. Processes outlive the client, and the daemon keeps them
-   alive: when the daemon stops, the PTYs close and the processes end.
-   The sessions stay on disk and reopen.
-2. **PTY in the middle.** The daemon holds the master PTY; the process
-   runs on the slave. On reattach, the client repaints from the daemon's
-   character grid.
+1. **Sessions persist after client detach.** Close the client or
+   drop SSH: sessions, windows, and panes stay. Processes keep
+   running. The process stays on the turn. When the daemon stops,
+   the processes end. The sessions stay on disk and reopen.
+2. **The daemon is the parent.** It holds the process's input and
+   output. On a PTY, that is the master; the process runs on the
+   slave. On reattach, the client repaints from the daemon's view.
 3. **JSON protocol over unix socket.** Clients send one JSON object
-   followed by `\n`. The daemon replies the same way. No custom wire,
-   no HTTP, no pairing tokens. SSH is the inter-machine bus; local
-   attach is a unix socket first.
-4. **Detach never kills.** Detaching the client (`prefix+q`) does not
-   send SIGHUP to processes. The daemon stays up. Only the viewer
-   disappears.
+   followed by `\n`. The daemon replies the same way. SSH is the
+   inter-machine bus; local attach is a unix socket.
+4. **Detach keeps the processes.** Detaching the client (`prefix+q`)
+   leaves the daemon up. Only the viewer disappears.
 
 ## Operations
 
@@ -46,18 +40,17 @@ The daemon answers these requests from a client over the socket.
 - Rename a session
 - Destroy a session — its windows and panes go away; its processes
   receive `SIGHUP` when their PTY closes
-- Read a session — its windows, panes, their geometry, and the
-  focused pane
+- Read a session — its windows, panes, their geometry, the focused
+  pane, and each process
 
 **Windows and panes**
 
 - Create a window in a session
 - Split a window — panes tiled to fill it
 - Resize the panes — tell the processes (`SIGWINCH`)
-- Spawn a process in a pane — the daemon holds the master PTY; the
-  process runs on the slave
-- Write to the focused pane's process — the client's keys
-- Read a pane's grid — the client repaints from it
+- Spawn a process in a pane — the daemon holds the process
+- Write to a process — the focused pane, or a pane the client names
+- Read a pane's view — the client repaints from it
 
 A client may drop at any time; the sessions, windows, and panes stay.
 
@@ -66,8 +59,9 @@ A client may drop at any time; the sessions, windows, and panes stay.
 The daemon serves a unix socket on its own machine. From another
 machine, SSH carries the client: `ssh host anvil` runs the client on
 that machine, and the client connects to that machine's socket. The
-daemon sees only clients on the local socket. When the SSH connection
-drops, the client drops with it — sessions, windows, and panes stay.
+daemon sees only clients on the local socket. When the SSH
+connection drops, the client drops with it — sessions, windows, and
+panes stay.
 
 ## Where things live
 
@@ -75,27 +69,18 @@ drops, the client drops with it — sessions, windows, and panes stay.
 (`XDG_CONFIG_HOME` honored). The operator's preferences.
 
 **State.** Sessions live on disk under `~/.anvil/`, one directory per
-session. The daemon owns them: the windows, panes, and character grids
-persist there. The socket is `$XDG_RUNTIME_DIR/anvil.sock`
-(`ANVIL_SOCK` overrides). All state lives in the daemon.
-
-## Isolation
+session. The daemon owns them. The socket is
+`$XDG_RUNTIME_DIR/anvil.sock` (`ANVIL_SOCK` overrides).
 
 The daemon is a command of `anvil`. The operator can start it with
-`anvil daemon`; the client starts it when it is not running. This
-design exists for one reason:
-
-**Shared state.** The daemon owns sessions that are logically part of
-the anvil multiplex. Separating it would require duplicating the
-session/root state or passing it over IPC, which adds complexity and
-race conditions.
-
-
+`anvil daemon`; the client starts it when the socket is dead. One
+daemon per box. All state lives there.
 
 ## References
 
 - `docs/kernel.md` — the six kernel words and their ontology
 - `protocol.md` — the wire contract, op by op
+- `tui.md` — how the client draws
 - `quarantine/src/serve/mod.rs` — the Rust source for the daemon binary
 - `quarantine/src/serve/proto.rs` — the json request/response envelope
 - `quarantine/src/frame/mod.rs` — session, workspace, and layout state

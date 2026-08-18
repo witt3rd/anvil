@@ -1,108 +1,99 @@
 # TUI
 
-How the **client** draws. Not kernel. Kernel words stay in
-`docs/kernel.md`.
+How the **client** draws. Kernel words stay in `docs/kernel.md`.
+
+Chrome is the roster and the tiles. ACP is how a process talks;
+the daemon is its parent. Their TUI is the place you type when
+that window is focused.
 
 ## Immediate mode
 
-We draw in **immediate mode**. Each frame: read state, write cells.
-No widget tree. No plugin graph. No retained UI objects.
+Each frame: read state, write cells. One frame function.
 
-That is the same paradigm for all pieces. One frame function.
-Chrome is not a special toolkit. Rich UI is not a special toolkit.
+A pane's view is retained in the daemon. The client copies it into
+the pane's rectangle.
 
-The exception is a **pane**. A process has a character grid in the
-daemon. That grid is retained. The client copies it into the pane’s
-rectangle. We do not rebuild `bash` from widgets.
-
-So a frame is:
+A frame is:
 
 1. Measure the tty.
-2. Draw chrome (immediate).
-3. Copy each visible pane’s grid (retained).
-4. Draw rich UI (immediate).
+2. Draw the roster (immediate).
+3. Copy each visible pane's view (retained).
+4. Draw overlays (immediate).
 
-Prefix keys still belong to the multiplexer. Keys that are not
-prefix go to the focused pane’s process.
+Prefix keys belong to the multiplexer. Keys that are not prefix go
+to the focused pane's process.
 
-## What is not a word yet
+The library is whatever does immediate-mode cells (today, ratatui).
 
-The chrome section describes the status line and the sidebar as they
-exist. Transcript and prompt stay ordinary English until they are
-built. Chrome pieces keep their ordinary names; the kernel words in
-`docs/kernel.md` stay six.
+## The roster
 
-The library is whatever does immediate-mode cells (today that is
-ratatui, when we fault it in). Other multiplexers are still not
-hosts.
+The sidebar is the activity list. It is a column of 42 cells, shown
+on terminals of 120 cells and wider. Narrower terminals show only
+the tiles.
 
-## Component architecture
+Each row is a window of the attached session: the window's name,
+the process in its agent pane, and that process's state — idle,
+turning, needs you. The current window wears the accent. The
+other rows are muted.
 
-Anvil uses the [component architecture] pattern from the ratatui website.
-The application is composed of independent **components**, each encapsulating its own
-state, event handlers, and rendering logic. This addresses the need to add and extend
-functionality without tearing down the entire app — a common problem with ad hoc
-arrangements where every new feature risks breaking existing behavior.
+The first roster on the wire is the session list (the domains the
+daemon owns). The same column fills with windows once `read`
+carries their processes and state.
 
-The `Component` trait provides four methods:
+State comes from the stream the daemon already holds. For an ACP
+process that is `session/update` and `request_permission`. For a
+PTY process that is the grid and whether the process is alive.
 
-1. **`init(&mut self) -> Result<()>`** — Set up initial state or resources.
-2. **`handle_events(&mut self, event: Option<Event>) -> Action`** — Handle user input,
-   returning an `Action` that the app loop processes.
-3. **`update(&mut self, action: Action) -> Action`** — Update internal state in response
-   to an action.
-4. **`render(&mut self, f: &mut Frame, rect: Rect)`** — Render the component's UI given a
-   rendering area.
+Jump is a roster row: `]` / `[` walk windows. The eye goes where
+the light is.
 
-Components are composed at the top level. The application struct holds a tree of components,
-and the main loop delegates `handle_events`, `update`, and `render` to the composite. This
-means:
+## The tiles
 
-- **Adding a feature** = add a new component (or extend an existing one), without modifying
-  existing component code.
-- **Extending a component** = add handlers or state within its own scope; other components
-  are unaffected.
-- **Changing huge swaths** = swap out a component's internal logic or even replace an
-  entire subsystem (e.g., replace the input component) because the trait contract stays stable.
+The content area has a 2-cell gutter on each side. Each pane's
+view sits at the geometry the daemon gave it. A window is one
+screen: only the current window draws; the other windows keep
+their processes in the daemon.
 
-The library still does immediate-mode rendering — each component's `render` function draws
-directly to its rectangle with no retained widget tree — but the *structure* of the app is
-now modular rather than ad hoc.
+Chrome is quiet. The frame and the tiles share `bg.base`. The only
+mark of a boundary is a single thin separator line — `│` beside a
+column, `─` below a row — drawn in the subtle border token. The
+roster column is `bg.panel`.
 
-[component architecture]:
-  https://github.com/ratatui/ratatui-website/blob/main/src/content/docs/concepts/application-patterns/component-architecture.md
+The **active tile** keeps full brightness and holds the cursor.
+Every other tile wears a dark veil: its cells are scaled toward
+black by a fixed factor, a plain brightness shift on the colors
+already in the buffer. The eye lands on the active tile.
 
-## Which-key input handling
+A default window is two panes: the agent and a shell.
 
-The client uses [ratatui-which-key] for all keyboard input. It owns the
-event loop: every keypress goes through `handle_key`, which resolves
-bindings in the current scope and returns a typed `Action`.
+## The courier
+
+The daemon writes to a process. A note to another window is that
+write, naming the pane. On an ACP process the bytes are a
+`session/prompt`. On a PTY they are keys.
+
+The prefix picks the window. The text becomes the write. A further
+word earns its place after that write is in use.
+
+## Which-key
+
+The client uses [ratatui-which-key] for keyboard input. Every
+keypress goes through `handle_key`, which resolves bindings in the
+current scope and returns a typed `Action`.
 
 [ratatui-which-key]: https://docs.rs/ratatui-which-key
 
-### Prefix key
+`Ctrl+B` is the prefix. It arms prefix mode and shows the popup.
+The next key dispatches. Escape cancels.
 
-`Ctrl+B` is the prefix key (kernel: "A prefix is a multiplexer
-command"). Pressing it arms prefix mode and shows the which-key popup.
-The next key dispatches the action. Escape cancels.
+Two scopes:
 
-Non-prefix keys go to the focused pane's process (kernel: "Anything
-else goes to the focused pane's process").
+- **Global** — keys pass through to the focused pane.
+- **Prefix** — multiplexer commands. After dispatch, scope returns
+  to Global.
 
-### Scopes
-
-Two scopes control key routing:
-
-- **Global** — normal mode. No bindings. All keys pass through to the
-  focused pane.
-- **Prefix** — armed after `Ctrl+B`. Bindings here are multiplexer
-  commands. After dispatch, scope returns to Global.
-
-### Actions
-
-Actions are the kernel-only subset — only operations that map to the
-six words and the documented wire ops. The full set in
-`src/tui/keymap.rs`:
+Actions are the kernel-only subset — ops that map to the six words
+and the documented wire. The set in `src/tui/keymap.rs`:
 
 | Kernel word | Actions |
 |---|---|
@@ -111,33 +102,25 @@ six words and the documented wire ops. The full set in
 | **window** | `NewWindow`, `NextWindow`, `PrevWindow`, `CloseWindow` |
 | **pane** | `SplitVertical`, `SplitHorizontal`, `ClosePane`, `FocusLeft`, `FocusDown`, `FocusUp`, `FocusRight` |
 
-### Default keybinds
+Prefix, then:
 
-All binds are in prefix mode (`Ctrl+B` then...):
-
-| Key | Action | Category |
-|---|---|---|
-| `q` | Detach | Session |
-| `?` | Help | Session |
-| `n` | NewSession | Session |
-| `1..9` | SwitchSession(n) | Session |
-| `c` | NewWindow | Window |
-| `]` | NextWindow | Window |
-| `[` | PrevWindow | Window |
-| `w` | CloseWindow | Window |
-| `v` | SplitVertical | Pane |
-| `-` | SplitHorizontal | Pane |
-| `x` | ClosePane | Pane |
-| `h` | FocusLeft | Pane |
-| `j` | FocusDown | Pane |
-| `k` | FocusUp | Pane |
-| `l` | FocusRight | Pane |
-| `<Left>` | FocusLeft | Pane |
-| `<Down>` | FocusDown | Pane |
-| `<Up>` | FocusUp | Pane |
-| `<Right>` | FocusRight | Pane |
-
-### Event flow
+| Key | Action |
+|---|---|
+| `q` | Detach |
+| `?` | Help |
+| `n` | NewSession |
+| `1..9` | SwitchSession(n) |
+| `c` | NewWindow |
+| `]` | NextWindow |
+| `[` | PrevWindow |
+| `w` | CloseWindow |
+| `v` | SplitVertical |
+| `-` | SplitHorizontal |
+| `x` | ClosePane |
+| `h` / `<Left>` | FocusLeft |
+| `j` / `<Down>` | FocusDown |
+| `k` / `<Up>` | FocusUp |
+| `l` / `<Right>` | FocusRight |
 
 ```
 Ctrl+B  →  set_scope(Prefix), toggle popup
@@ -146,84 +129,45 @@ Key      →  handle_key() resolves binding
 Escape   →  dismiss, return to Global
 ```
 
-### Rendering
-
-The which-key popup renders as an overlay on top of the chrome. The
-`WhichKey` widget writes directly to the frame's buffer, clearing and
-redrawing the popup area each frame. The popup is only visible when
-`active` is true or a partial key sequence is pending.
-
-## The chrome
-
-The client draws the opencode TUI proportions: a session list on the
-left, the panes in the middle, one status line at the bottom.
-
-- The **session list** is a column of 42 cells. It shows on terminals
-  of 120 cells and wider; narrower terminals show only the panes.
-- The **content** area has a 2-cell gutter on each side. Each pane's
-  grid sits at the geometry the daemon gave it. A window is one
-  screen: only the current window — the one holding the focused pane —
-  draws; the other windows keep their processes in the daemon.
-- The **status line** is the bottom row. The session name and its
-  focused pane sit on the left; the key hints sit on the right, in the
-  muted text.
-
-Chrome is quiet. The frame and the tiles share `bg.base`, so the gap
-between tiles is invisible. The only mark of a boundary is a single
-thin separator line — `│` beside a column, `─` below a row — drawn in
-the subtle border token. The session list column is `bg.panel`. The
-attached session in the list wears the accent border and text; all
-other text is muted. The chrome stays in the gray steps and the accent.
-
-The **active tile** keeps full brightness and holds the cursor. Every
-other tile wears a dark veil: its cells are scaled toward black by a
-fixed factor, a plain brightness shift on the colors already in the
-buffer — it needs no knowledge of the theme. The eye lands on the
-active tile.
+The which-key popup is the one retained widget in the client — a
+transient overlay, written to the buffer each frame.
 
 ## The gap
 
-The **gap** is a tiling value in the daemon (kernel: the daemon owns
-the layout). It is the distance between two adjacent tiles, in cells —
-one value, not doubled. It is the space the separator line draws in.
-The daemon threads it through every split and resize, so a pane's
-process sees a PTY sized to the tile. The canvas edge keeps no margin;
-the client's content gutter holds it.
+The **gap** is a tiling value in the daemon. It is the distance
+between two adjacent tiles, in cells — one value. It is the space
+the separator line draws in. The daemon threads it through every
+split and resize, so a pane's process sees a PTY sized to the tile.
+The canvas edge keeps no margin; the client's content gutter holds
+it.
 
-Tiling values live in a config file at `<root>/tiling.json`, one JSON
-object per set, like the theme tokens. The first value is `gap`
-(default 1):
+Tiling values live at `<root>/tiling.json`:
 
     {"gap": 2}
 
-A `gap` of 0 is the full-bleed layout — tiles that abut one another.
+A `gap` of 0 is tiles that abut one another.
 
-## Theme integration
+## Theme
 
-The ratatui client ships the `opencode` palette in `themes/opencode.toml`
-and embeds it at compile time, loading it through
-[opaline](https://github.com/hyperb1iss/opaline)'s public loader.
-Semantic tokens resolve to colors; the client names tokens, never hex
-values. opaline itself is untouched — a theme is a data file, loaded
-with the library's own API.
-
-The tokens the chrome uses:
+The ratatui client ships the `opencode` palette in
+`themes/opencode.toml` and embeds it at compile time, loading it
+through [opaline](https://github.com/hyperb1iss/opaline)'s public
+loader. The client names tokens, never hex values. opaline itself
+is untouched.
 
 | token | use |
 |---|---|
 | `bg.base` | the frame and each tile's ground |
-| `bg.panel` | the session list column |
+| `bg.panel` | the roster column |
 | `bg.elevated` | hovered and elevated surfaces |
-| `text.primary` | the session name, the focused pane |
-| `text.muted` | hints, other sessions |
-| `accent.primary` | the attached session's border and name |
+| `text.primary` | the current window, the focused pane |
+| `text.muted` | hints, other rows |
+| `accent.primary` | the current row's border and name |
 | `border.subtle` | the separator line between tiles |
 | `border.focused` | the prefix popup's border |
 
-The prefix (`ctrl-b`) arms the action list; the keys that follow are
-the documented wire ops. The prefix consumes its keys; every other key
-goes to the focused pane's process. `esc` detaches; the session stays.
+## Status line
 
-The client reads the panes' grids from the daemon and copies them at
-their geometry. The prefix popup is the one retained widget in the
-client — a transient overlay, immediate mode everywhere else.
+The bottom row. The session name and the current window sit on the
+left. The focused pane's process state sits next to them. Key hints
+sit on the right, in the muted text.

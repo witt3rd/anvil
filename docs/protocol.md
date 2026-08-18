@@ -37,7 +37,7 @@ the args tell them apart.
 | `attach` | `session` | the client now views this session |
 | `rename` | `session`, `name` | the session under its new name |
 | `destroy` | `session` | the session is gone; its windows and panes with it |
-| `read` | `session` | the session's windows, their panes, each pane's geometry, and the focused pane |
+| `read` | `session` | the session's windows, their panes, each pane's geometry, the focused pane, and each process |
 
 **Windows and panes**
 
@@ -51,13 +51,17 @@ the args tell them apart.
 | `resize` | `cols`, `rows` | the panes relaid out to the new tty; the processes told (`SIGWINCH`) |
 | `spawn` | `pane`, `program` | a process runs on the pane's slave PTY; the daemon holds the master |
 | `write` | `data` | the data goes to the focused pane's process |
-| `read` | `pane` | the pane's grid: its cols, rows, and cells |
+| `write` | `data`, `pane` | the data goes to that pane's process |
+| `read` | `pane` | the pane's view: its cols, rows, and cells |
 
 ## Identifiers
 
 Sessions are named. Windows and panes carry the identifier the daemon
 issued when it made them; `read` returns them; the other ops address
 them by it.
+
+`write` without a pane is today's wire: the focused process. `write`
+with a pane is the same verb.
 
 ## Detach
 
