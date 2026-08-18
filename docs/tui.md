@@ -70,12 +70,14 @@ keep the rail.
 Prefix then `s` toggles rail and roster. The tiles resize. The
 rail is the rest state. The roster is a look, then it goes back.
 
-Prefix then `c` asks for a window name. Type `plugin`, enter. The
-name is the window. The roster shows it.
+Prefix `a` opens a new window on the default agent (`agents.json`,
+`ANVIL_ACP` overrides the program). Prefix `A` picks from the
+catalog. Prefix `t` opens a shell. The window is named after the
+agent (`opencode`, `opencode-2`) or `sh`. Rename (`r`) is later,
+not the start.
 
-Prefix then `a` puts an ACP child on the focused pane (`ANVIL_ACP`,
-or `opencode acp`). Type a prompt, enter. The rail turns. A red
-diamond is needs-you: `y` allows, `n` denies. Prefix then `r` renames
+Type a prompt, enter. The rail turns. A red diamond is needs-you:
+`y` allows, `n` denies. Prefix then `r` renames
 the current window. Prefix then `a` spawns an ACP process on the
 focused pane (`ANVIL_ACP`, default `opencode acp`). Enter in that
 pane sends `session/prompt`. The rail turns and goes red from
@@ -152,7 +154,10 @@ Prefix, then:
 | `n` | NewSession |
 | `s` | Toggle the rail and the roster |
 | `1..9` | SwitchSession(n) |
-| `c` | NewWindow |
+| `a` | New agent (default) |
+| `A` | Pick an agent |
+| `t` | New terminal |
+| `c` | New terminal |
 | `]` | NextWindow |
 | `[` | PrevWindow |
 | `w` | CloseWindow |

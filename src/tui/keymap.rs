@@ -14,6 +14,9 @@ pub enum Action {
     NewSession,
     SwitchSession(u8),
     NewWindow,
+    NewAgent,
+    PickAgent,
+    NewTerminal,
     NextWindow,
     PrevWindow,
     SplitVertical,
@@ -24,7 +27,6 @@ pub enum Action {
     FocusDown,
     FocusUp,
     FocusRight,
-    SpawnAcp,
 }
 
 impl std::fmt::Display for Action {
@@ -37,6 +39,9 @@ impl std::fmt::Display for Action {
             Action::NewSession => write!(f, "new session"),
             Action::SwitchSession(n) => write!(f, "session {n}"),
             Action::NewWindow => write!(f, "new window"),
+            Action::NewAgent => write!(f, "new agent"),
+            Action::PickAgent => write!(f, "pick agent"),
+            Action::NewTerminal => write!(f, "new terminal"),
             Action::NextWindow => write!(f, "next window"),
             Action::PrevWindow => write!(f, "previous window"),
             Action::SplitVertical => write!(f, "split right"),
@@ -47,7 +52,6 @@ impl std::fmt::Display for Action {
             Action::FocusDown => write!(f, "focus down"),
             Action::FocusUp => write!(f, "focus up"),
             Action::FocusRight => write!(f, "focus right"),
-            Action::SpawnAcp => write!(f, "spawn acp"),
         }
     }
 }
@@ -89,7 +93,10 @@ pub fn build_keymap() -> AppKeymap {
         }
 
         // window
-        s.bind("c", Action::NewWindow, Category::Window);
+        s.bind("c", Action::NewTerminal, Category::Window);
+        s.bind("t", Action::NewTerminal, Category::Window);
+        s.bind("a", Action::NewAgent, Category::Window);
+        s.bind("A", Action::PickAgent, Category::Window);
         s.bind("]", Action::NextWindow, Category::Window);
         s.bind("[", Action::PrevWindow, Category::Window);
 
@@ -106,7 +113,6 @@ pub fn build_keymap() -> AppKeymap {
         s.bind("<Up>", Action::FocusUp, Category::Pane);
         s.bind("<Right>", Action::FocusRight, Category::Pane);
         s.bind("w", Action::CloseWindow, Category::Window);
-        s.bind("a", Action::SpawnAcp, Category::Pane);
     });
 
     km
@@ -148,6 +154,19 @@ mod tests {
         let mut wk = prefixed();
         let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
         assert_eq!(wk.handle_key(key), Some(Action::RenameWindow));
+    }
+
+    #[test]
+    fn a_t_and_shift_a_launch() {
+        let mut wk = prefixed();
+        let a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(wk.handle_key(a), Some(Action::NewAgent));
+        let mut wk = prefixed();
+        let shift_a = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        assert_eq!(wk.handle_key(shift_a), Some(Action::PickAgent));
+        let mut wk = prefixed();
+        let t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE);
+        assert_eq!(wk.handle_key(t), Some(Action::NewTerminal));
     }
 
     #[test]

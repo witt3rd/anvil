@@ -3,6 +3,7 @@
 //! builtin theme (opaline) — this module names semantic tokens only,
 //! never colors of its own.
 
+pub mod agents;
 pub mod keymap;
 
 use std::collections::HashMap;
@@ -22,6 +23,7 @@ use crate::daemon::pane::Grid;
 use crate::daemon::session::SessionView;
 use crate::proto::{Reply, Request, Value};
 
+use agents::{Agent, Agents, unique_name};
 use keymap::{Action, AppWhichKey, Scope, build_which_key_state};
 
 /// The opencode palette, shipped with anvil and loaded through
@@ -107,11 +109,12 @@ pub struct Client {
     naming: Option<Naming>,
     tick: u64,
     last_error: Option<String>,
+    catalog: Agents,
+    picking: Option<usize>,
 }
 
 /// What the name draft is for.
 enum Naming {
-    Create(String),
     Rename(String),
 }
 
@@ -141,6 +144,8 @@ impl Client {
             naming: None,
             tick: 0,
             last_error: None,
+            catalog: Agents::load(&agents::default_root()),
+            picking: None,
         };
         client.attach_first()?;
         Ok(client)
@@ -252,15 +257,48 @@ impl Client {
         Ok(())
     }
 
-    fn spawn_acp(&mut self, pane: &str) -> io::Result<()> {
-        let program = std::env::var("ANVIL_ACP").unwrap_or_else(|_| "opencode acp".into());
+    fn spawn_acp(&mut self, pane: &str, program: &str) -> io::Result<()> {
         self.call(Request::Spawn {
             id: String::new(),
             pane: pane.into(),
-            program,
+            program: program.into(),
             acp: true,
         })?;
         Ok(())
+    }
+
+    fn window_names(&self) -> Vec<String> {
+        self.view
+            .as_ref()
+            .map(|v| v.windows.iter().map(|w| w.window.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// A new window running an ACP agent. Named after the agent.
+    fn launch_agent(&mut self, agent: &Agent) -> io::Result<()> {
+        let program = if agent.name == self.catalog.default {
+            self.catalog.default_program()
+        } else {
+            agent.program.clone()
+        };
+        let name = unique_name(&agent.name, &self.window_names());
+        self.add_window(&name)?;
+        self.refresh()?;
+        let pane = self.view.as_ref().map(|v| v.focused.clone());
+        if let Some(pane) = pane {
+            match self.spawn_acp(&pane, &program) {
+                Ok(()) => self.last_error = None,
+                Err(err) => self.last_error = Some(err.to_string()),
+            }
+        }
+        self.refresh()
+    }
+
+    /// A new window running a shell.
+    fn launch_terminal(&mut self) -> io::Result<()> {
+        let name = unique_name("sh", &self.window_names());
+        self.add_window(&name)?;
+        self.refresh()
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
@@ -358,10 +396,53 @@ impl Client {
                 writeln!(f, "key: code={:?} mods={:?} active={}", key.code, key.modifiers, self.which_key.active)
             })();
         }
+        if let Some(idx) = self.picking {
+            let n = self.catalog.agents.len();
+            match key.code {
+                KeyCode::Esc => {
+                    self.picking = None;
+                    return Ok(());
+                }
+                KeyCode::Char('d') => {
+                    if let Some(name) = self.catalog.agents.get(idx).map(|a| a.name.clone()) {
+                        self.catalog.set_default(&name, &agents::default_root());
+                    }
+                    return Ok(());
+                }
+                KeyCode::Enter => {
+                    self.picking = None;
+                    if let Some(agent) = self.catalog.agents.get(idx).cloned() {
+                        return self.launch_agent(&agent);
+                    }
+                    return Ok(());
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if n > 0 {
+                        self.picking = Some((idx + 1) % n);
+                    }
+                    return Ok(());
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if n > 0 {
+                        self.picking = Some((idx + n - 1) % n);
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                    let i = (c as u8 - b'1') as usize;
+                    if i < n {
+                        self.picking = None;
+                        if let Some(agent) = self.catalog.agents.get(i).cloned() {
+                            return self.launch_agent(&agent);
+                        }
+                    }
+                    return Ok(());
+                }
+                _ => return Ok(()),
+            }
+        }
         if let Some(naming) = self.naming.as_mut() {
-            let buf = match naming {
-                Naming::Create(s) | Naming::Rename(s) => s,
-            };
+            let Naming::Rename(buf) = naming;
             match key.code {
                 KeyCode::Esc => {
                     self.naming = None;
@@ -369,16 +450,11 @@ impl Client {
                 }
                 KeyCode::Enter => {
                     let name = buf.trim().to_string();
-                    let create = matches!(self.naming, Some(Naming::Create(_)));
                     self.naming = None;
                     if name.is_empty() {
                         return Ok(());
                     }
-                    if create {
-                        self.add_window(&name)?;
-                    } else {
-                        self.rename_window(&name)?;
-                    }
+                    self.rename_window(&name)?;
                     return self.refresh();
                 }
                 KeyCode::Backspace => {
@@ -463,24 +539,14 @@ impl Client {
             }
             Action::NewSession => self.new_session(),
             Action::SwitchSession(n) => self.switch_session(n),
-            Action::NewWindow => {
-                self.naming = Some(Naming::Create(String::new()));
-                if !self.roster_open {
-                    self.roster_open = true;
-                    let (w, h) = self.tty;
-                    self.resize_tty(w, h)?;
-                    self.refresh()?;
-                }
-                Ok(())
+            Action::NewWindow | Action::NewTerminal => self.launch_terminal(),
+            Action::NewAgent => {
+                let agent = self.catalog.default_agent();
+                self.launch_agent(&agent)
             }
-            Action::SpawnAcp => {
-                if let Some(pane) = self.view.as_ref().map(|v| v.focused.clone()) {
-                    match self.spawn_acp(&pane) {
-                        Ok(()) => self.last_error = None,
-                        Err(err) => self.last_error = Some(err.to_string()),
-                    }
-                }
-                self.refresh()
+            Action::PickAgent => {
+                self.picking = Some(0);
+                Ok(())
             }
             Action::RenameWindow => {
                 let current = self.focused_window().unwrap_or_default();
@@ -858,14 +924,24 @@ impl Client {
         let y = area.bottom().saturating_sub(1);
         let left = if let Some(err) = &self.last_error {
             err.clone()
+        } else if let Some(idx) = self.picking {
+            let names: Vec<String> = self
+                .catalog
+                .agents
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    if i == idx {
+                        format!("[{}]", a.name)
+                    } else {
+                        a.name.clone()
+                    }
+                })
+                .collect();
+            format!("agent {}", names.join("  "))
         } else if let Some(naming) = &self.naming {
-            let draft = match naming {
-                Naming::Create(s) | Naming::Rename(s) => s.as_str(),
-            };
-            match naming {
-                Naming::Create(_) => format!("window: {draft}_"),
-                Naming::Rename(_) => format!("rename: {draft}_"),
-            }
+            let Naming::Rename(draft) = naming;
+            format!("rename: {draft}_")
         } else {
             match &self.attached {
                 Some(name) => {
@@ -885,10 +961,12 @@ impl Client {
             (area.width.saturating_sub(2 * PAD)) as usize,
             Style::default().fg(self.c("text.primary")),
         );
-        let hints = if self.naming.is_some() {
-            "enter create · esc cancel"
+        let hints = if self.picking.is_some() {
+            "j/k · enter · d default · esc"
+        } else if self.naming.is_some() {
+            "enter · esc cancel"
         } else {
-            "ctrl-b prefix · s roster · esc detach"
+            "ctrl-b a agent · t term · s roster"
         };
         let hints_w = hints.len() as u16;
         if hints_w + 2 * PAD <= area.width {
