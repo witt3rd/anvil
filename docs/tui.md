@@ -39,14 +39,22 @@ The mark carries state.
 | state | mark | how the daemon knows |
 |---|---|---|
 | idle | `◇` hollow diamond, muted | no in-flight prompt |
-| turning | `⋅ : ⸬ ⁙` a slow dot pulse | a prompt has not returned |
-| needs you | `◆` filled diamond, accent, a slow pulse | unanswered permission or question |
+| turning | `⋅ : ⸬ ⁙` a slow dot pulse, muted | a prompt has not returned |
+| needs you | `◆` filled diamond, `error`, a slow pulse | unanswered permission or question |
 | dead | `◇` muted | the process has exited |
 
 These are the Grok Build dashboard marks (`diamond_hollow`,
 `dot_spinner_frames`, `diamond_filled`). One cell each. Idle is
-almost invisible. Turning breathes. Needs-you is the only loud
-row.
+almost invisible. Turning breathes in the gray. Needs-you is the
+only loud row: the `error` token (red), not the warm accent. The
+accent is "you are here." Red is "this one is waiting on you."
+
+ACP keeps the rail alive. The host already holds each child's
+stdio. `session/update` is turning. `session/prompt` returning is
+idle. `session/request_permission` and elicitation are needs-you.
+The host pushes `session_info_update` when the mark must change.
+The client does not poll. A PTY child has a thinner signal: alive
+or dead, and whatever the process writes to the title.
 
 The **rail** is three cells: the current window's `┃` (`accent.primary`)
 and one mark per window. The column is `bg.base` — no panel, no
@@ -185,7 +193,8 @@ is untouched.
 | `bg.elevated` | hovered and elevated surfaces |
 | `text.primary` | the current window, the focused pane |
 | `text.muted` | hints, other rows |
-| `accent.primary` | the current row's border and name |
+| `accent.primary` | the current row's `┃` and name |
+| `error` | the needs-you diamond |
 | `border.subtle` | the separator line between tiles |
 | `border.focused` | the prefix popup's border |
 
