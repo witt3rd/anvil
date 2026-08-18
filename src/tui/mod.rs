@@ -332,7 +332,7 @@ impl Client {
         }
         for id in ids {
             let grid = self.read_pane(&id)?;
-            if !grid.alive {
+            if !grid.alive && !grid.acp {
                 let _ = self.spawn(&id);
             }
             self.grids.insert(id, grid);

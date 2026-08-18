@@ -34,6 +34,13 @@ pub struct AcpChild {
     next_id: AtomicU64,
     waiters: Mutex<HashMap<u64, mpsc::Sender<Value>>>,
     pending_prompt: Mutex<Option<u64>>,
+    pending_perm: Mutex<Option<PendingPerm>>,
+    lines: Mutex<Vec<String>>,
+}
+
+struct PendingPerm {
+    id: Value,
+    options: Vec<(String, String)>,
 }
 
 impl AcpChild {
@@ -65,6 +72,8 @@ impl AcpChild {
             next_id: AtomicU64::new(1),
             waiters: Mutex::new(HashMap::new()),
             pending_prompt: Mutex::new(None),
+            pending_perm: Mutex::new(None),
+            lines: Mutex::new(Vec::new()),
         });
         let pump = acp.clone();
         thread::Builder::new()
@@ -86,10 +95,18 @@ impl AcpChild {
         self.alive.load(Ordering::Relaxed)
     }
 
-    /// Keys into a prompt. Enter sends `session/prompt`.
+    /// Keys into a prompt. Enter sends `session/prompt`. When the
+    /// child needs you, `y` allows and `n` denies.
     pub fn write_keys(&self, data: &str) -> io::Result<()> {
         if !self.alive() {
             return Err(io::Error::other("the pane's process has ended"));
+        }
+        if self.state() == WindowState::NeedsYou {
+            match data {
+                "y" | "Y" => return self.answer_perm(true),
+                "n" | "N" => return self.answer_perm(false),
+                _ => {}
+            }
         }
         if data == "\r" || data == "\n" {
             let text = {
@@ -97,6 +114,7 @@ impl AcpChild {
                 std::mem::take(&mut *draft)
             };
             if !text.is_empty() {
+                self.push_line(&format!("> {text}"));
                 self.prompt(&text)?;
             }
             return Ok(());
@@ -108,6 +126,57 @@ impl AcpChild {
             draft.push_str(data);
         }
         Ok(())
+    }
+
+    /// The pane's view of this child: last lines, then the draft.
+    pub fn grid(&self, cols: u16, rows: u16) -> crate::daemon::pane::Grid {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        let draft = self.draft.lock().ok().map(|d| d.clone()).unwrap_or_default();
+        let mut lines = self.lines.lock().ok().map(|l| l.clone()).unwrap_or_default();
+        if self.state() == WindowState::NeedsYou {
+            lines.push("needs you — y allow · n deny".into());
+        }
+        lines.push(format!("> {draft}"));
+        while lines.len() < rows as usize {
+            lines.push(String::new());
+        }
+        if lines.len() > rows as usize {
+            let skip = lines.len() - rows as usize;
+            lines = lines[skip..].to_vec();
+        }
+        let cursor_row = rows.saturating_sub(1);
+        let cursor_col = (draft.chars().count() as u16 + 2).min(cols.saturating_sub(1));
+        let runs = lines
+            .iter()
+            .map(|line| {
+                vec![crate::daemon::pane::Run {
+                    text: if line.is_empty() {
+                        " ".repeat(cols as usize)
+                    } else {
+                        line.clone()
+                    },
+                    fg: None,
+                    fg_rgb: None,
+                    bg: None,
+                    bg_rgb: None,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    inverse: false,
+                }]
+            })
+            .collect();
+        crate::daemon::pane::Grid {
+            cols,
+            rows,
+            cursor_col,
+            cursor_row,
+            lines,
+            runs,
+            alive: self.alive(),
+            acp: true,
+        }
     }
 
     pub fn prompt(&self, text: &str) -> io::Result<()> {
@@ -134,6 +203,44 @@ impl AcpChild {
                 "prompt": [{ "type": "text", "text": text }],
             }),
         )
+    }
+
+    fn push_line(&self, line: &str) {
+        if let Ok(mut lines) = self.lines.lock() {
+            lines.push(line.to_string());
+            if lines.len() > 200 {
+                let drain = lines.len() - 200;
+                lines.drain(..drain);
+            }
+        }
+    }
+
+    fn answer_perm(&self, allow: bool) -> io::Result<()> {
+        let pending = self
+            .pending_perm
+            .lock()
+            .map_err(|_| io::Error::other("acp busy"))?
+            .take();
+        let Some(pending) = pending else {
+            return Ok(());
+        };
+        let want = if allow { "allow" } else { "reject" };
+        let option_id = pending
+            .options
+            .iter()
+            .find(|(kind, _)| kind.contains(want))
+            .or_else(|| pending.options.first())
+            .map(|(_, id)| id.clone())
+            .unwrap_or_else(|| if allow { "allow" } else { "reject" }.into());
+        let result = json!({
+            "outcome": { "outcome": "selected", "optionId": option_id }
+        });
+        self.reply(&pending.id, result)?;
+        if let Ok(mut state) = self.state.lock() {
+            *state = WindowState::Turning;
+        }
+        self.push_line(if allow { "allowed" } else { "denied" });
+        Ok(())
     }
 
     pub fn terminate(&self) {
@@ -165,7 +272,10 @@ impl AcpChild {
                 "clientInfo": { "name": "anvil", "version": "0.1.0" },
             }),
         )?;
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        let cwd = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+            .display()
+            .to_string();
         let result = self.call(
             "session/new",
             json!({
@@ -193,8 +303,19 @@ impl AcpChild {
             .map_err(|_| io::Error::other("acp busy"))?
             .insert(id, tx);
         self.send(id, method, params)?;
-        rx.recv_timeout(Duration::from_secs(5))
+        rx.recv_timeout(Duration::from_secs(20))
             .map_err(|_| io::Error::other(format!("acp {method} timed out")))
+    }
+
+    fn reply(&self, id: &Value, result: Value) -> io::Result<()> {
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result,
+        });
+        let mut stdin = self.stdin.lock().map_err(|_| io::Error::other("acp busy"))?;
+        writeln!(stdin, "{msg}")?;
+        stdin.flush()
     }
 
     fn send(&self, id: u64, method: &str, params: Value) -> io::Result<()> {
@@ -222,8 +343,17 @@ fn pump_stdout(acp: Arc<AcpChild>, stdout: impl std::io::Read) {
         };
         if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
             if method == "session/request_permission" {
+                let options = perm_options(&msg);
+                if let Ok(mut pending) = acp.pending_perm.lock() {
+                    *pending = msg.get("id").cloned().map(|id| PendingPerm { id, options });
+                }
                 if let Ok(mut state) = acp.state.lock() {
                     *state = WindowState::NeedsYou;
+                }
+                acp.push_line("needs you");
+            } else if method == "session/update" {
+                if let Some(text) = update_text(&msg) {
+                    acp.push_line(&text);
                 }
             }
             continue;
@@ -252,6 +382,39 @@ fn pump_stdout(acp: Arc<AcpChild>, stdout: impl std::io::Read) {
     if let Ok(mut state) = acp.state.lock() {
         *state = WindowState::Dead;
     }
+}
+
+fn perm_options(msg: &Value) -> Vec<(String, String)> {
+    msg.get("params")
+        .and_then(|p| p.get("options"))
+        .and_then(|o| o.as_array())
+        .map(|opts| {
+            opts.iter()
+                .filter_map(|o| {
+                    let id = o.get("optionId")?.as_str()?.to_string();
+                    let kind = o
+                        .get("kind")
+                        .and_then(|k| k.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some((kind, id))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn update_text(msg: &Value) -> Option<String> {
+    let update = msg.get("params")?.get("update")?;
+    let content = update.get("content")?;
+    if let Some(text) = content.get("text").and_then(|t| t.as_str()) {
+        let t = text.trim();
+        if t.is_empty() {
+            return None;
+        }
+        return Some(t.to_string());
+    }
+    None
 }
 
 fn json_id(v: &Value) -> Option<u64> {
@@ -301,8 +464,15 @@ while True:
             if block.get("type") == "text":
                 text += block.get("text","")
         if text == "ask":
-            send({"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{"sessionId":"s1"}})
+            send({"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{
+                "sessionId":"s1",
+                "options":[
+                    {"optionId":"allow-once","name":"Allow","kind":"allow_once"},
+                    {"optionId":"reject-once","name":"Reject","kind":"reject_once"}
+                ]
+            }})
         else:
+            send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ok"}}}})
             send({"jsonrpc":"2.0","id":i,"result":{"stopReason":"end_turn"}})
 "#,
         )
@@ -339,5 +509,13 @@ while True:
             thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(acp.state(), WindowState::NeedsYou);
+        acp.write_keys("y").unwrap();
+        for _ in 0..50 {
+            if acp.state() == WindowState::Turning {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(acp.state(), WindowState::Turning);
     }
 }

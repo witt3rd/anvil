@@ -23,6 +23,9 @@ pub struct Grid {
     pub lines: Vec<String>,
     pub runs: Vec<Vec<Run>>,
     pub alive: bool,
+    /// This pane's process speaks ACP. The client does not spawn a shell on it.
+    #[serde(default)]
+    pub acp: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -218,6 +221,7 @@ impl Pane {
             lines,
             runs,
             alive: self.alive(),
+            acp: false,
         }
     }
 

@@ -50,7 +50,8 @@ the args tell them apart.
 | `close` | `pane` | the pane is gone; its process ends; the layout re-tiles |
 | `close` | `window` | the window is gone; its panes and their processes end |
 | `resize` | `cols`, `rows` | the panes relaid out to the new tty; the processes told (`SIGWINCH`) |
-| `spawn` | `pane`, `program` | a process runs on the pane's slave PTY; the daemon holds the master |
+| `spawn` | `pane`, `program` | a process on the pane's PTY |
+| `spawn` | `pane`, `program`, `acp` | the daemon holds stdio and speaks ACP |
 | `spawn` | `pane`, `program`, `acp` | a process runs on stdio; the daemon is its ACP client |
 | `write` | `data` | the data goes to the focused pane's process |
 | `write` | `data`, `pane` | the data goes to that pane's process |

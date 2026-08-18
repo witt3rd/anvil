@@ -535,9 +535,7 @@ impl Session {
             let (_, _, cols, rows) = self
                 .pane_geometry(pane_id)
                 .unwrap_or((0, 0, DEFAULT_COLS, DEFAULT_ROWS));
-            let mut grid = Grid::blank(cols, rows);
-            grid.alive = acp.alive();
-            return grid;
+            return acp.grid(cols, rows);
         }
         let grid = self.panes.get(pane_id).cloned().map(|pane| pane.grid());
         if let Some(grid) = grid {
@@ -724,6 +722,7 @@ impl Grid {
             lines: vec![line; rows as usize],
             runs: vec![run; rows as usize],
             alive: false,
+            acp: false,
         }
     }
 }

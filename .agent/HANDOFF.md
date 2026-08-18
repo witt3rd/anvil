@@ -30,5 +30,6 @@ the rail.
 
 ## Next (single most important)
 
-Land `feat/rail` if not already on `main`. Then ACP parent so the
-rail can turn red.
+Try `ctrl-b a` on a pane (`ANVIL_ACP` or `opencode acp`). Type,
+enter. Rail should turn; red diamond is `y`/`n`. Then land
+`feat/rail` when it feels usable.
