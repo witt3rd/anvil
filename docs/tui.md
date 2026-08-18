@@ -27,25 +27,47 @@ The library is whatever does immediate-mode cells (today, ratatui).
 
 ## The roster
 
-The sidebar is the activity list. It is a column of 42 cells, shown
-on terminals of 120 cells and wider. Narrower terminals show only
-the tiles.
+The sidebar has two widths. The **rail** is the default: a few
+cells of marks, enough to see the fleet without taking the
+tiles. The **roster** is the same list opened out — names, a
+quiet clause of state — so a glance is enough.
 
-Each row is a window of the attached session: the window's name,
-the process in its agent pane, and that process's state — idle,
-turning, needs you. The current window wears the accent. The
-other rows are muted.
+Both widths list the windows of the attached session, in the
+order the operator laid them. The list does not sort itself.
+The mark carries state.
 
-The first roster on the wire is the session list (the domains the
-daemon owns). The same column fills with windows once `read`
-carries their processes and state.
+| state | mark | how the daemon knows |
+|---|---|---|
+| idle | `◇` hollow diamond, muted | no in-flight prompt |
+| turning | `⋅ : ⸬ ⁙` a slow dot pulse | a prompt has not returned |
+| needs you | `◆` filled diamond, accent, a slow pulse | unanswered permission or question |
+| dead | `◇` muted | the process has exited |
 
-State comes from the stream the daemon already holds. For an ACP
-process that is `session/update` and `request_permission`. For a
-PTY process that is the grid and whether the process is alive.
+These are the Grok Build dashboard marks (`diamond_hollow`,
+`dot_spinner_frames`, `diamond_filled`). One cell each. Idle is
+almost invisible. Turning breathes. Needs-you is the only loud
+row.
 
-Jump is a roster row: `]` / `[` walk windows. The eye goes where
-the light is.
+The **rail** is three cells: the current window's `┃` (`accent.primary`)
+and one mark per window. The column is `bg.base` — no panel, no
+names. It shows on terminals of 80 cells and wider.
+
+The **roster** is 42 cells, `bg.panel`. Each row is the mark, the
+window name, and a muted clause (`idle`, `turning`, `needs you`,
+or a short activity the stream already named). The current row
+wears the accent bar and `text.primary`. Other rows are muted.
+It shows on terminals of 120 cells and wider; narrower terminals
+keep the rail.
+
+Prefix then `s` toggles rail and roster. The tiles resize. The
+rail is the rest state. The roster is a look, then it goes back.
+
+The first list on the wire is still the sessions (the domains).
+The same column fills with windows once `read` carries each
+process and its state.
+
+Jump is a row: `]` / `[` walk windows. On the rail the marks
+are the rows. The eye goes where the light is.
 
 ## The tiles
 
@@ -54,10 +76,10 @@ view sits at the geometry the daemon gave it. A window is one
 screen: only the current window draws; the other windows keep
 their processes in the daemon.
 
-Chrome is quiet. The frame and the tiles share `bg.base`. The only
-mark of a boundary is a single thin separator line — `│` beside a
-column, `─` below a row — drawn in the subtle border token. The
-roster column is `bg.panel`.
+Chrome is quiet. The frame, the tiles, and the rail share
+`bg.base`. The only mark of a boundary is a single thin separator
+line — `│` beside a column, `─` below a row — drawn in the subtle
+border token. The open roster column is `bg.panel`.
 
 The **active tile** keeps full brightness and holds the cursor.
 Every other tile wears a dark veil: its cells are scaled toward
@@ -97,7 +119,7 @@ and the documented wire. The set in `src/tui/keymap.rs`:
 
 | Kernel word | Actions |
 |---|---|
-| **client** | `Detach`, `Help` |
+| **client** | `Detach`, `Help`, toggle rail / roster |
 | **session** | `NewSession`, `SwitchSession(1..9)` |
 | **window** | `NewWindow`, `NextWindow`, `PrevWindow`, `CloseWindow` |
 | **pane** | `SplitVertical`, `SplitHorizontal`, `ClosePane`, `FocusLeft`, `FocusDown`, `FocusUp`, `FocusRight` |
@@ -109,6 +131,7 @@ Prefix, then:
 | `q` | Detach |
 | `?` | Help |
 | `n` | NewSession |
+| `s` | Toggle the rail and the roster |
 | `1..9` | SwitchSession(n) |
 | `c` | NewWindow |
 | `]` | NextWindow |
@@ -158,7 +181,7 @@ is untouched.
 | token | use |
 |---|---|
 | `bg.base` | the frame and each tile's ground |
-| `bg.panel` | the roster column |
+| `bg.panel` | the open roster column |
 | `bg.elevated` | hovered and elevated surfaces |
 | `text.primary` | the current window, the focused pane |
 | `text.muted` | hints, other rows |

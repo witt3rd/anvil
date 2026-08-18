@@ -11,8 +11,9 @@ a unix socket.
 
 A session is a domain (`personal`, `spire`). A window is one
 activity (`ui`, `plugin`, `anvil`): an agent pane and a shell pane.
-Ten agents run at once. The sidebar shows each window's process and
-its state — idle, turning, needs you. The daemon writes to any pane,
+Ten agents run at once. The sidebar is a rail of marks by default
+and opens into a roster for a glance — idle, turning, needs you.
+The daemon writes to any pane,
 so a note can move from one window's agent to another.
 
 That is the kernel to implement. The old program is in `quarantine/`.
@@ -45,7 +46,8 @@ The crate is named anvil. That is a path.
 5. **Unsandboxed.** A process has the same trust as a shell.
 6. **SSH is the bus.** Local attach is a unix socket. Mux ops tile
    the screen. ACP talks to an agent process.
-7. **The roster is the product.** The sidebar is the activity list.
+7. **The roster is the product.** A rail of marks; it opens into
+   the activity list.
 8. **The daemon writes.** A prompt can reach another pane.
 
 The daemon is the parent of a process. Their TUI stays the place
