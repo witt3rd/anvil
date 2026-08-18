@@ -26,7 +26,7 @@ impl Default for Agents {
             agents: vec![
                 Agent {
                     name: "opencode".into(),
-                    program: "opencode acp".into(),
+                    program: "opencode".into(),
                 },
                 Agent {
                     name: "grok".into(),
@@ -86,9 +86,40 @@ impl Agents {
     fn fallback() -> Agent {
         Agent {
             name: "opencode".into(),
-            program: "opencode acp".into(),
+            program: "opencode".into(),
         }
     }
+}
+
+impl Agent {
+    /// TUI command and optional HTTP door for the rail.
+    /// OpenCode: `opencode --hostname 127.0.0.1 --port N`.
+    pub fn tui_spawn(&self) -> (String, Option<String>) {
+        let first = self
+            .program
+            .split_whitespace()
+            .next()
+            .unwrap_or("opencode");
+        if first == "opencode" || self.name == "opencode" {
+            if let Ok(port) = free_port() {
+                return (
+                    format!("opencode --hostname 127.0.0.1 --port {port}"),
+                    Some(format!("http://127.0.0.1:{port}")),
+                );
+            }
+        }
+        let program = if !self.program.contains(" acp") {
+            self.program.clone()
+        } else {
+            first.to_string()
+        };
+        (program, None)
+    }
+}
+
+fn free_port() -> std::io::Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    Ok(listener.local_addr()?.port())
 }
 
 /// A window name that is not yet taken: `opencode`, then `opencode-2`.

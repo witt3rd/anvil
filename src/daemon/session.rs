@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::acp::{AcpChild, WindowState};
 use super::pane::{Grid, Pane};
 use super::tiling::Tiling;
+use super::watch::HttpWatch;
 
 const FILE: &str = "session.json";
 const DEFAULT_COLS: u16 = 80;
@@ -95,6 +96,7 @@ pub struct Session {
     focused: String,
     panes: HashMap<String, Arc<Pane>>,
     acp: HashMap<String, Arc<AcpChild>>,
+    watch: HashMap<String, Arc<HttpWatch>>,
 }
 
 /// The sessions the daemon owns. Named, on disk under a root.
@@ -170,6 +172,7 @@ impl Sessions {
             focused: file.focused,
             panes: HashMap::new(),
             acp: HashMap::new(),
+            watch: HashMap::new(),
         }));
         self.live
             .lock()
@@ -210,6 +213,7 @@ impl Sessions {
             focused: file.focused,
             panes: HashMap::new(),
             acp: HashMap::new(),
+            watch: HashMap::new(),
         }));
         self.live
             .lock()
@@ -279,7 +283,7 @@ impl Session {
                     }
                 })
                 .collect();
-            let state = window_state(&panes, &self.panes, &self.acp);
+            let state = window_state(&panes, &self.panes, &self.acp, &self.watch);
             windows.push(WindowView {
                 window: window.id.clone(),
                 panes,
@@ -476,7 +480,7 @@ impl Session {
     /// Spawn a process in a pane. PTY by default; `acp` holds stdio
     /// and speaks ACP. An ACP spawn replaces whatever is already on
     /// the pane. A PTY spawn leaves a live ACP child alone.
-    pub fn spawn(&mut self, pane_id: &str, program: &str, acp: bool) -> io::Result<()> {
+    pub fn spawn(&mut self, pane_id: &str, program: &str, acp: bool, watch: Option<&str>) -> io::Result<()> {
         if acp {
             if let Some(pane) = self.panes.remove(pane_id) {
                 pane.terminate();
@@ -488,13 +492,20 @@ impl Session {
             self.acp.insert(pane_id.to_string(), child);
             return Ok(());
         }
-        if let Some(child) = self.acp.get(pane_id) {
-            if child.alive() {
+        if let Some(w) = self.watch.remove(pane_id) {
+            w.stop();
+        }
+        if watch.is_some() {
+            if let Some(pane) = self.panes.remove(pane_id) {
+                pane.terminate();
+            }
+        } else if let Some(pane) = self.panes.get(pane_id) {
+            if pane.alive() {
                 return Err(io::Error::other("the pane already has a process"));
             }
         }
-        if let Some(pane) = self.panes.get(pane_id) {
-            if pane.alive() {
+        if let Some(child) = self.acp.get(pane_id) {
+            if child.alive() {
                 return Err(io::Error::other("the pane already has a process"));
             }
         }
@@ -506,6 +517,10 @@ impl Session {
             .ok_or_else(|| io::Error::other("no such pane"))?;
         let pane = Pane::spawn(program, cols, rows)?;
         self.panes.insert(pane_id.to_string(), pane);
+        if let Some(url) = watch {
+            self.watch
+                .insert(pane_id.to_string(), HttpWatch::start(url));
+        }
         Ok(())
     }
 
@@ -548,6 +563,9 @@ impl Session {
         }
         for acp in self.acp.values() {
             acp.hangup();
+        }
+        for w in self.watch.values() {
+            w.stop();
         }
     }
 
@@ -725,11 +743,19 @@ fn window_state(
     panes: &[PaneView],
     pty: &HashMap<String, Arc<Pane>>,
     acp: &HashMap<String, Arc<AcpChild>>,
+    watch: &HashMap<String, Arc<HttpWatch>>,
 ) -> WindowState {
     let mut any_live = false;
     let mut any_process = false;
     let mut turning = false;
     for p in panes {
+        if let Some(w) = watch.get(&p.pane) {
+            match w.state() {
+                WindowState::NeedsYou => return WindowState::NeedsYou,
+                WindowState::Turning => turning = true,
+                WindowState::Idle | WindowState::Dead => {}
+            }
+        }
         if let Some(child) = acp.get(&p.pane) {
             any_process = true;
             match child.state() {
@@ -873,7 +899,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
         work.lock().unwrap().write("printf 'hello session'\n").unwrap();
         let mut grid = work.lock().unwrap().read_pane("1");
         for _ in 0..100 {
@@ -894,14 +920,14 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
         assert!(!work.lock().unwrap().read_pane("1").acp);
 
         let (_keep, path) = crate::daemon::acp::tests::fake_agent();
         work.lock()
             .unwrap()
-            .spawn("1", &format!("python3 {path}"), true)
+            .spawn("1", &format!("python3 {path}"), true, None)
             .unwrap();
         let grid = work.lock().unwrap().read_pane("1");
         assert!(grid.acp, "{grid:?}");
@@ -913,7 +939,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
         work.lock().unwrap().write("exit 0\n").unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
@@ -973,7 +999,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
         work.lock().unwrap().write("exit 0\n").unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
@@ -984,7 +1010,7 @@ mod tests {
         assert!(!work.lock().unwrap().read_pane("1").alive);
 
         // The dead pane takes a fresh process.
-        work.lock().unwrap().spawn("1", "sh", false).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
     }
 
@@ -1048,7 +1074,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false).unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None).unwrap();
         work.lock().unwrap().add_window("plugin").unwrap();
         // Current window is plugin (focused pane 2); window work has pane 1.
         work.lock().unwrap().focus("work").unwrap();

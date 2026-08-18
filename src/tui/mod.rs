@@ -253,16 +253,18 @@ impl Client {
             pane: pane.into(),
             program: self.shell.clone(),
             acp: false,
+            watch: None,
         })?;
         Ok(())
     }
 
-    fn spawn_acp(&mut self, pane: &str, program: &str) -> io::Result<()> {
+    fn spawn_tui(&mut self, pane: &str, program: &str, watch: Option<String>) -> io::Result<()> {
         self.call(Request::Spawn {
             id: String::new(),
             pane: pane.into(),
             program: program.into(),
-            acp: true,
+            acp: false,
+            watch,
         })?;
         Ok(())
     }
@@ -274,19 +276,16 @@ impl Client {
             .unwrap_or_default()
     }
 
-    /// A new window running an ACP agent. Named after the agent.
+    /// A new window running the agent's TUI. The daemon watches the
+    /// HTTP door for the rail.
     fn launch_agent(&mut self, agent: &Agent) -> io::Result<()> {
-        let program = if agent.name == self.catalog.default {
-            self.catalog.default_program()
-        } else {
-            agent.program.clone()
-        };
+        let (program, watch) = agent.tui_spawn();
         let name = unique_name(&agent.name, &self.window_names());
         self.add_window(&name)?;
         self.refresh()?;
         let pane = self.view.as_ref().map(|v| v.focused.clone());
         if let Some(pane) = pane {
-            match self.spawn_acp(&pane, &program) {
+            match self.spawn_tui(&pane, &program, watch) {
                 Ok(()) => self.last_error = None,
                 Err(err) => self.last_error = Some(err.to_string()),
             }
@@ -1105,12 +1104,14 @@ impl Request {
                 pane,
                 program,
                 acp,
+                watch,
                 ..
             } => Request::Spawn {
                 id: id.into(),
                 pane,
                 program,
                 acp,
+                watch,
             },
             Request::Write { data, .. } => Request::Write { id: id.into(), data },
         }

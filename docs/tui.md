@@ -70,11 +70,11 @@ keep the rail.
 Prefix then `s` toggles rail and roster. The tiles resize. The
 rail is the rest state. The roster is a look, then it goes back.
 
-Prefix `a` opens a new window on the default agent (`agents.json`,
-`ANVIL_ACP` overrides the program). Prefix `A` picks from the
-catalog. Prefix `t` opens a shell. The window is named after the
-agent (`opencode`, `opencode-2`) or `sh`. Rename (`r`) is later,
-not the start.
+Prefix `a` opens a new window on the default agent (`agents.json`).
+The TUI runs on the PTY (`opencode --port N`). The daemon watches
+that HTTP door for the rail. Prefix `A` picks from the catalog.
+Prefix `t` opens a shell. The window is named after the agent.
+Rename (`r`) is later, not the start.
 
 Type a prompt, enter. The rail turns. A red diamond is needs-you:
 `y` allows, `n` denies. Prefix then `r` renames

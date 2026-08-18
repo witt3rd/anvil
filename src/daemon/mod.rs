@@ -6,6 +6,7 @@ pub mod acp;
 pub mod pane;
 pub mod session;
 pub mod tiling;
+pub mod watch;
 
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
@@ -249,11 +250,12 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
             pane,
             program,
             acp,
+            watch,
             ..
         } => attached_session(sessions, attached).and_then(|s| {
             s.lock()
                 .map_err(|_| io::Error::other("session busy"))?
-                .spawn(&pane, &program, acp)
+                .spawn(&pane, &program, acp, watch.as_deref())
                 .map(|_| Value::Empty {})
         }),
         Request::Write { data, .. } => attached_session(sessions, attached).and_then(|s| {

@@ -84,6 +84,10 @@ pub enum Request {
         program: String,
         #[serde(default)]
         acp: bool,
+        /// HTTP door of the TUI (`http://127.0.0.1:port`). The daemon
+        /// watches it for rail state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        watch: Option<String>,
     },
     /// The data goes to the focused pane's process.
     Write {

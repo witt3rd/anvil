@@ -126,7 +126,12 @@ impl Pane {
                 pixel_height: 0,
             })
             .map_err(|err| io::Error::other(err.to_string()))?;
-        let mut cmd = CommandBuilder::new(program);
+        let mut parts = program.split_whitespace();
+        let bin = parts.next().unwrap_or(program);
+        let mut cmd = CommandBuilder::new(bin);
+        for arg in parts {
+            cmd.arg(arg);
+        }
         cmd.env("TERM", "xterm-256color");
         let child = pair
             .slave
