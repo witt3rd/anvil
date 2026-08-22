@@ -134,7 +134,11 @@ so the daemon can watch `/session/status`. Prefix `A` picks from
 the catalog — a vertical list. An agent with a native TUI and an
 ACP command then asks which one: their TUI on a PTY, or anvil's
 prompt/response viewer. `acp_only` skips that list. Prefix `c`
-opens a shell. Prefix `,` renames the current window.
+opens a shell. Prefix `,` renames the current window. Prefix `m`
+opens the current window's note: a markdown blob the daemon
+stores with that window. Esc saves. A line that is `- [ ]` or
+`- [x]` is a task; space on the box checks it. The footer
+hints `ctrl-b m` while a window is in view.
 
 `<root>/agents.json` is the catalog. Every row can speak ACP so
 the rail can see a turn. Mark the inverse when there is no native
@@ -216,7 +220,7 @@ and the documented wire. The set in `src/tui/keymap.rs`:
 |---|---|
 | **client** | `Detach`, `Help`, toggle rail / sidebar |
 | **session** | `NewSession`, `PickSession`, `SwitchSession(1..9)` |
-| **window** | `NewWindow`, `NextWindow`, `PrevWindow`, `CloseWindow` |
+| **window** | `NewWindow`, `NextWindow`, `PrevWindow`, `CloseWindow`, `Notes` |
 | **pane** | `SplitVertical`, `SplitHorizontal`, `ClosePane`, `FocusLeft`, `FocusDown`, `FocusUp`, `FocusRight` |
 
 Prefix, then:
@@ -233,6 +237,7 @@ Prefix, then:
 | `a` | New agent (default) |
 | `A` | Pick an agent |
 | `p` | Prompt the agent (same context as the TUI) |
+| `m` | The current window's note (a markdown blob) |
 | `c` | New window (shell) |
 | `,` | Rename the current window |
 | `]` | NextWindow |

@@ -29,12 +29,15 @@ pub struct SessionView {
     pub focused: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowView {
     pub window: String,
     pub panes: Vec<PaneView>,
     #[serde(default)]
     pub state: WindowState,
+    /// Markdown blob the operator stores with this window.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,12 +89,15 @@ struct FileState {
 struct WindowFile {
     id: String,
     tree: Tree,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    note: String,
 }
 
 #[derive(Debug, Clone)]
 struct Window {
     id: String,
     tree: Tree,
+    note: String,
 }
 
 pub struct Session {
@@ -164,6 +170,7 @@ impl Sessions {
                 tree: Tree::Leaf {
                     id: "1".to_string(),
                 },
+                note: String::new(),
             }],
             focused: "1".to_string(),
         };
@@ -181,6 +188,7 @@ impl Sessions {
                 tree: Tree::Leaf {
                     id: "1".to_string(),
                 },
+                note: String::new(),
             }],
             focused: file.focused,
             panes: HashMap::new(),
@@ -223,7 +231,11 @@ impl Sessions {
             windows: file
                 .windows
                 .into_iter()
-                .map(|w| Window { id: w.id, tree: w.tree })
+                .map(|w| Window {
+                    id: w.id,
+                    tree: w.tree,
+                    note: w.note,
+                })
                 .collect(),
             focused: file.focused,
             panes: HashMap::new(),
@@ -330,6 +342,7 @@ impl Session {
                 window: window.id.clone(),
                 panes,
                 state,
+                note: window.note.clone(),
             });
         }
         SessionView {
@@ -387,6 +400,7 @@ impl Session {
         self.windows.push(Window {
             id: name.to_string(),
             tree: Tree::Leaf { id: pane.clone() },
+            note: String::new(),
         });
         self.focused = pane;
         self.persist()?;
@@ -412,6 +426,17 @@ impl Session {
             .find(|w| w.id == window)
             .ok_or_else(|| io::Error::other("no such window"))?;
         w.id = name.to_string();
+        self.persist()
+    }
+
+    /// The markdown blob stored with this window.
+    pub fn set_note(&mut self, window: &str, note: &str) -> io::Result<()> {
+        let w = self
+            .windows
+            .iter_mut()
+            .find(|w| w.id == window)
+            .ok_or_else(|| io::Error::other("no such window"))?;
+        w.note = note.to_string();
         self.persist()
     }
 
@@ -735,6 +760,7 @@ impl Session {
                     .map(|w| WindowFile {
                         id: w.id.clone(),
                         tree: w.tree.clone(),
+                        note: w.note.clone(),
                     })
                     .collect(),
                 focused: self.focused.clone(),
@@ -1203,6 +1229,22 @@ mod tests {
         assert!(err.to_string().contains("already exists"), "{err}");
         let err = work.lock().unwrap().add_window("  ").unwrap_err();
         assert!(err.to_string().contains("needs a name"), "{err}");
+    }
+
+    #[test]
+    fn a_window_note_survives_reopen_and_rename() {
+        let (dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().set_note("sh", "- [ ] ship").unwrap();
+        assert_eq!(work.lock().unwrap().view().windows[0].note, "- [ ] ship");
+        work.lock().unwrap().rename_window("sh", "ui").unwrap();
+        drop(work);
+
+        let restarted = Sessions::open(dir.path().join("root")).unwrap();
+        let view = restarted.get("work").unwrap().lock().unwrap().view();
+        assert_eq!(view.windows[0].window, "ui");
+        assert_eq!(view.windows[0].note, "- [ ] ship");
     }
 
     #[test]

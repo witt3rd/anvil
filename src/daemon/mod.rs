@@ -186,6 +186,7 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
             session,
             name,
             window,
+            note,
             ..
         } => match window {
             None => {
@@ -197,10 +198,14 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
                 Ok(Value::Empty {})
             }
             Some(window) => attached_session(sessions, attached).and_then(|s| {
-                s.lock()
-                    .map_err(|_| io::Error::other("session busy"))?
-                    .rename_window(&window, &name)
-                    .map(|_| Value::Empty {})
+                let mut s = s.lock().map_err(|_| io::Error::other("session busy"))?;
+                if let Some(ref note) = note {
+                    s.set_note(&window, note)?;
+                }
+                if note.is_none() || name != window {
+                    s.rename_window(&window, &name)?;
+                }
+                Ok(Value::Empty {})
             }),
         },
         Request::Destroy { session, .. } => {

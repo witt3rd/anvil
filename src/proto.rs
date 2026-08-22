@@ -31,12 +31,15 @@ pub enum Request {
         session: String,
     },
     /// The session under its new name, or a window in that session.
+    /// `note` is the markdown blob stored with that window.
     Rename {
         id: String,
         session: String,
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     /// The session is gone; its windows and panes with it.
     Destroy {

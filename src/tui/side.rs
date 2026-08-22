@@ -333,6 +333,7 @@ mod tests {
                 WindowView {
                     window: "ansible".into(),
                     state: WindowState::Idle,
+                    note: String::new(),
                     panes: vec![
                         PaneView {
                             pane: "1".into(),
@@ -359,6 +360,7 @@ mod tests {
                 WindowView {
                     window: "sh".into(),
                     state: WindowState::Idle,
+                    note: String::new(),
                     panes: vec![PaneView {
                         pane: "3".into(),
                         x: 0,
@@ -426,6 +428,7 @@ mod tests {
             windows: vec![WindowView {
                 window: "sh".into(),
                 state: WindowState::Idle,
+                note: String::new(),
                 panes: vec![PaneView {
                     pane: "1".into(),
                     x: 0,
@@ -483,6 +486,7 @@ mod tests {
             windows: vec![WindowView {
                 window: "w".into(),
                 state: WindowState::Idle,
+                note: String::new(),
                 panes: vec![named("old", "a"), named("fresh", "b"), named("live", "c")],
             }],
         };
