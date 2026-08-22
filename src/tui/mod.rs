@@ -241,7 +241,7 @@ impl Client {
 
     fn enumerate(&mut self) -> io::Result<Vec<String>> {
         match self.call(Request::Enumerate { id: String::new() })? {
-            Value::Sessions { sessions } => {
+            Value::Sessions { sessions, .. } => {
                 self.sessions = sessions.clone();
                 Ok(sessions)
             }

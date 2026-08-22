@@ -7,7 +7,8 @@ use anvil::daemon;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "anvil", version)]
+#[command(name = "anvil")]
+#[command(version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("ANVIL_BUILD"), ")"))]
 #[command(about = "A multiplexer for ACP agents and shells")]
 #[command(long_about = LONG_ABOUT)]
 #[command(after_help = AFTER_HELP)]
@@ -38,7 +39,8 @@ ACP agent sits on stdio. The client tiles their screens and draws a \
 roster of what they are doing.
 
 With no command, this binary is the client: it attaches to the daemon. \
-If none is listening, it starts one. Detach never kills a process.
+If none is listening, it starts this binary. It will not attach to
+another build. Detach never kills a process.
 
 Prefix is Ctrl-B. Prefix q detaches. The socket is \
 $XDG_RUNTIME_DIR/anvil.sock (ANVIL_SOCK). State is ~/.anvil (ANVIL_ROOT).";

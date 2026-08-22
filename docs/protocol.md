@@ -31,7 +31,7 @@ the args tell them apart.
 
 | op | args | reply |
 |---|---|---|
-| `enumerate` | — | the names of the sessions the daemon owns |
+| `enumerate` | — | the names of the sessions the daemon owns, and `build` — the git of this ELF |
 | `create` | `session` — a name | a new session with one window |
 | `create` | `session`, `window` — a name | a new window in the session |
 | `attach` | `session` | the client now views this session |
