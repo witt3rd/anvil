@@ -3160,6 +3160,7 @@ mod tests {
             watch: Some("http".into()),
             acp_only: false,
             acp_program: Some("oc acp".into()),
+            ..Default::default()
         };
         assert_eq!(agent_clause(&oc), "oc · anvil");
         let rung = Agent {
@@ -3168,6 +3169,7 @@ mod tests {
             watch: None,
             acp_only: true,
             acp_program: None,
+            ..Default::default()
         };
         assert_eq!(agent_clause(&rung), "anvil");
     }

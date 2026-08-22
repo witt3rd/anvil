@@ -149,11 +149,26 @@ TUI:
 {
   "default": "oc",
   "agents": [
-    { "name": "oc", "program": "oc", "watch": "http", "acp_program": "oc acp" },
-    { "name": "rung", "program": "rung-agent --acp", "acp_only": true }
+    {
+      "name": "oc",
+      "program": "oc",
+      "acp_program": "oc acp",
+      "adopt": ["oc", "opencode"],
+      "door": { "kind": "http" }
+    },
+    {
+      "name": "rung",
+      "program": "rung-agent --acp",
+      "acp_only": true
+    }
   ]
 }
 ```
+
+A row is the adapter. `adopt` is how a shell's process tree is recognized.
+`door` is how the rail and the courier see a native TUI: `http` (local
+server), `inhibit` (a descendant cmdline), or omit. ACP panes need no
+door. Brand names do not belong in the daemon.
 
 Prefix `a` takes the native TUI when the default agent has one.
 A row with no `acp_program` and no `acp_only` is native only until

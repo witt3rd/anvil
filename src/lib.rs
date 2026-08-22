@@ -2,6 +2,7 @@
 //! clients over a unix socket. One binary, two seats: the client is
 //! the default seat; `anvil daemon` is the daemon.
 
+pub mod catalog;
 pub mod daemon;
 pub mod proto;
 pub mod tui;
