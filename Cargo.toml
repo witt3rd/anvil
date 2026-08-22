@@ -3,7 +3,7 @@ name = "anvil"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Terminal multiplexer"
+description = "A multiplexer for ACP agents and shells"
 
 [[bin]]
 name = "anvil"

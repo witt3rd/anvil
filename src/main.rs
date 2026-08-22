@@ -1,8 +1,5 @@
-// As a user: run `anvil` to become the client, attaching to a session.
-// The session persists on disk (kernel: "Sessions, windows, and panes stay").
-// Allocate a window -> pane -> process (e.g., nvim).
-// Each pane holds a PTY; the process runs on the slave PTY.
-// On reattach, the client repaints from the daemon's character grid.
+// No command: the client. `anvil daemon` stays up as parent of every
+// process. Detach never kills. Prefix q detaches.
 use std::io;
 use std::path::PathBuf;
 
@@ -10,11 +7,12 @@ use anvil::daemon;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "anvil")]
-#[command(about = "Terminal multiplexer", long_about = None)]
+#[command(name = "anvil", version)]
+#[command(about = "A multiplexer for ACP agents and shells")]
+#[command(long_about = LONG_ABOUT)]
+#[command(after_help = AFTER_HELP)]
 struct Cli {
-    /// Stop the running daemon, start this binary, attach.
-    /// From a tree: `cargo run -- --restart`.
+    /// Stop the daemon on this socket, start this binary, attach.
     #[arg(long)]
     restart: bool,
     #[command(subcommand)]
@@ -23,16 +21,33 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// The daemon: owns sessions, serves clients over a unix socket.
+    /// Stay up. Parent of every process. Owns sessions. Socket for clients.
     Daemon {
-        /// Override the socket path (`ANVIL_SOCK`).
+        /// Unix socket (`ANVIL_SOCK`, else `$XDG_RUNTIME_DIR/anvil.sock`).
         #[arg(long)]
         sock: Option<PathBuf>,
-        /// Override the state root (`~/.anvil` by default).
+        /// State directory (`ANVIL_ROOT`, else `~/.anvil`).
         #[arg(long)]
         root: Option<PathBuf>,
     },
 }
+
+const LONG_ABOUT: &str = "\
+The daemon holds every process on the box. A shell sits on a PTY. An \
+ACP agent sits on stdio. The client tiles their screens and draws a \
+roster of what they are doing.
+
+With no command, this binary is the client: it attaches to the daemon. \
+If none is listening, it starts one. Detach never kills a process.
+
+Prefix is Ctrl-B. Prefix q detaches. The socket is \
+$XDG_RUNTIME_DIR/anvil.sock (ANVIL_SOCK). State is ~/.anvil (ANVIL_ROOT).";
+
+const AFTER_HELP: &str = "\
+Channel (PATH wrapper scripts/launch, not this binary):
+  anvil channel show
+  anvil channel stable
+  anvil channel dev <worktree>";
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
@@ -57,4 +72,44 @@ fn main() -> io::Result<()> {
 
 fn default_root() -> String {
     std::env::var("HOME").map(|h| format!("{h}/.anvil")).unwrap_or_else(|_| ".anvil".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn long_help() -> String {
+        let mut buf = Vec::new();
+        Cli::command()
+            .write_long_help(&mut buf)
+            .expect("help writes");
+        String::from_utf8(buf).expect("help is utf-8")
+    }
+
+    #[test]
+    fn help_names_the_client_the_daemon_and_channel() {
+        let help = long_help();
+        assert!(help.contains("ACP"), "{help}");
+        assert!(help.contains("client"), "{help}");
+        assert!(help.contains("daemon"), "{help}");
+        assert!(help.contains("--restart"), "{help}");
+        assert!(help.contains("channel"), "{help}");
+        assert!(help.contains("Ctrl-B"), "{help}");
+        assert!(!help.contains("Terminal multiplexer"), "{help}");
+    }
+
+    #[test]
+    fn daemon_help_says_it_is_the_parent() {
+        let mut buf = Vec::new();
+        Cli::command()
+            .find_subcommand_mut("daemon")
+            .expect("daemon")
+            .write_long_help(&mut buf)
+            .expect("help writes");
+        let help = String::from_utf8(buf).expect("help is utf-8");
+        assert!(help.contains("Parent of every process"), "{help}");
+        assert!(help.contains("ANVIL_SOCK"), "{help}");
+        assert!(help.contains("ANVIL_ROOT"), "{help}");
+    }
 }
