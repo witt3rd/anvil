@@ -350,19 +350,33 @@ impl Client {
             .unwrap_or_default()
     }
 
-    /// A new window running the agent's TUI. The daemon watches the
-    /// HTTP door for the rail.
+    /// A new window running the agent. ACP children get the prompt
+    /// pane; others get a PTY (and an HTTP door when the catalog says).
     fn launch_agent(&mut self, agent: &Agent) -> io::Result<()> {
-        let (program, watch) = agent.tui_spawn();
         let name = unique_name(&agent.name, &self.window_names());
         self.add_window(&name)?;
         self.refresh()?;
         let pane = self.view.as_ref().map(|v| v.focused.clone());
-        if let Some(pane) = pane {
-            match self.spawn_tui(&pane, &program, watch, &agent.name) {
-                Ok(()) => self.last_error = None,
-                Err(err) => self.last_error = Some(err.to_string()),
-            }
+        let Some(pane) = pane else {
+            return Ok(());
+        };
+        let result = if agent.acp {
+            self.call(Request::Spawn {
+                id: String::new(),
+                pane: pane.clone(),
+                program: agent.program.clone(),
+                acp: true,
+                watch: None,
+                name: Some(agent.name.clone()),
+            })
+            .map(|_| ())
+        } else {
+            let (program, watch) = agent.tui_spawn();
+            self.spawn_tui(&pane, &program, watch, &agent.name)
+        };
+        match result {
+            Ok(()) => self.last_error = None,
+            Err(err) => self.last_error = Some(err.to_string()),
         }
         self.refresh()
     }

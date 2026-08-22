@@ -14,6 +14,14 @@ pub struct Agent {
     /// with `--hostname 127.0.0.1 --port N` so the wrapper stays argv0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch: Option<String>,
+    /// The process speaks ACP on stdio. The pane is the prompt/response
+    /// view, not a PTY.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub acp: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// The catalog and which name is the default.
@@ -32,16 +40,25 @@ impl Default for Agents {
                     name: "oc".into(),
                     program: "oc".into(),
                     watch: Some("http".into()),
+                    acp: false,
                 },
                 Agent {
                     name: "oc-work".into(),
                     program: "oc-work".into(),
                     watch: Some("http".into()),
+                    acp: false,
                 },
                 Agent {
                     name: "grok".into(),
                     program: "grok".into(),
                     watch: None,
+                    acp: false,
+                },
+                Agent {
+                    name: "rung".into(),
+                    program: "rung-agent --acp".into(),
+                    watch: None,
+                    acp: true,
                 },
             ],
         }
@@ -99,6 +116,7 @@ impl Agents {
             name: "oc".into(),
             program: "oc".into(),
             watch: Some("http".into()),
+            acp: false,
         }
     }
 }
@@ -199,6 +217,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let agents = Agents::load(&dir);
         assert_eq!(agents.default, "oc");
+        assert!(agents.agents.iter().any(|a| a.name == "rung" && a.acp));
         assert!(dir.join("agents.json").is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -209,6 +228,7 @@ mod tests {
             name: "oc".into(),
             program: "oc".into(),
             watch: Some("http".into()),
+            acp: false,
         };
         let (cmd, watch) = oc.tui_spawn();
         assert!(cmd.starts_with("oc --hostname 127.0.0.1 --port "));
@@ -218,6 +238,7 @@ mod tests {
             name: "oc-work".into(),
             program: "oc-work".into(),
             watch: Some("http".into()),
+            acp: false,
         };
         let (cmd, _) = work.tui_spawn();
         assert!(cmd.starts_with("oc-work --hostname 127.0.0.1 --port "));

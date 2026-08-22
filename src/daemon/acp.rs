@@ -48,12 +48,17 @@ impl AcpChild {
     /// `initialize` then `session/new` before returning.
     pub fn spawn(program: &str) -> io::Result<Arc<AcpChild>> {
         let (cmd, args) = split_cmd(program)?;
-        let mut child = Command::new(&cmd)
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+        let mut command = Command::new(&cmd);
+        command.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        if let Ok(home) = std::env::var("HOME") {
+            command.env("HOME", &home);
+            let mut path = format!("{home}/.local/bin:{home}/.local/share/mise/shims");
+            if let Ok(p) = std::env::var("PATH") {
+                path = format!("{path}:{p}");
+            }
+            command.env("PATH", path);
+        }
+        let mut child = command.spawn()?;
         let stdout = child
             .stdout
             .take()
@@ -137,24 +142,37 @@ impl AcpChild {
         if self.state() == WindowState::NeedsYou {
             body.push("needs you — y allow · n deny".into());
         }
+        let width = cols.max(1) as usize;
+        let mut wrapped: Vec<(String, Kind)> = Vec::new();
+        if body.is_empty() {
+            wrapped.push(("type a prompt, then enter".into(), Kind::Hint));
+        }
+        for line in &body {
+            let kind = if line.starts_with("> ") {
+                Kind::You
+            } else {
+                Kind::Agent
+            };
+            for row in wrap(line, width) {
+                wrapped.push((row, kind));
+            }
+        }
         let prompt = format!("> {draft}");
         let body_rows = rows.saturating_sub(1) as usize;
-        if body.len() > body_rows {
-            body = body[body.len() - body_rows..].to_vec();
+        if wrapped.len() > body_rows {
+            wrapped = wrapped[wrapped.len() - body_rows..].to_vec();
         }
-        while body.len() < body_rows {
-            body.push(String::new());
+        while wrapped.len() < body_rows {
+            wrapped.push((String::new(), Kind::Hint));
         }
-        body.push(prompt.clone());
+        wrapped.push((prompt.clone(), Kind::Composer));
         let cursor_row = rows.saturating_sub(1);
         let cursor_col = (draft.chars().count() as u16 + 2).min(cols.saturating_sub(1));
-        let last = body.len().saturating_sub(1);
-        let runs = body
+        let runs = wrapped
             .iter()
-            .enumerate()
-            .map(|(i, line)| {
+            .map(|(line, kind)| {
                 let text = if line.is_empty() {
-                    " ".repeat(cols as usize)
+                    " ".repeat(width)
                 } else {
                     line.clone()
                 };
@@ -164,13 +182,14 @@ impl AcpChild {
                     fg_rgb: None,
                     bg: None,
                     bg_rgb: None,
-                    bold: false,
-                    italic: false,
-                    underline: i == last,
+                    bold: matches!(kind, Kind::Composer | Kind::You),
+                    italic: matches!(kind, Kind::You | Kind::Hint),
+                    underline: matches!(kind, Kind::Composer),
                     inverse: false,
                 }]
             })
             .collect();
+        let body: Vec<String> = wrapped.into_iter().map(|(s, _)| s).collect();
         crate::daemon::pane::Grid {
             cols,
             rows,
@@ -378,6 +397,38 @@ impl AcpChild {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Kind {
+    You,
+    Agent,
+    Composer,
+    Hint,
+}
+
+fn wrap(s: &str, cols: usize) -> Vec<String> {
+    if cols == 0 {
+        return vec![String::new()];
+    }
+    if s.is_empty() {
+        return vec![String::new()];
+    }
+    let mut rows = Vec::new();
+    let mut acc = String::new();
+    let mut n = 0;
+    for c in s.chars() {
+        if n >= cols {
+            rows.push(std::mem::take(&mut acc));
+            n = 0;
+        }
+        acc.push(c);
+        n += 1;
+    }
+    if !acc.is_empty() {
+        rows.push(acc);
+    }
+    rows
+}
+
 fn pump_stdout(acp: Arc<AcpChild>, stdout: impl std::io::Read) {
     let reader = BufReader::new(stdout);
     for line in reader.lines() {
@@ -400,7 +451,13 @@ fn pump_stdout(acp: Arc<AcpChild>, stdout: impl std::io::Read) {
                 acp.push_line("needs you");
             } else if method == "session/update" {
                 if let Some(text) = update_text(&msg) {
-                    acp.push_text(&text, false);
+                    let newline = acp
+                        .lines
+                        .lock()
+                        .ok()
+                        .and_then(|l| l.last().cloned())
+                        .is_some_and(|s| s.starts_with("> "));
+                    acp.push_text(&text, newline);
                 }
             }
             continue;
