@@ -122,7 +122,10 @@ WantedBy=default.target
 `loginctl enable-linger` on the user so the unit survives logout.
 The client (`anvil`) attaches to `$XDG_RUNTIME_DIR/anvil.sock` and
 will start a detached daemon if none is listening — that is for a
-dev tree. A shipped box holds the daemon with the unit.
+dev tree. A shipped box holds the daemon with the unit. Opening a
+session spawns each named agent pane again (`session.json`
+`agents`). The process is new; the pane and the catalog name are
+not.
 
 The rail's turning mark is OpenCode's HTTP door (`--port`). Prefix
 `a` / `A` pass that flag. A shell that runs `oc` with no `--port`

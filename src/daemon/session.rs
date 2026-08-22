@@ -16,6 +16,7 @@ use super::acp::{AcpChild, WindowState};
 use super::pane::{Grid, Pane};
 use super::tiling::Tiling;
 use super::watch::HttpWatch;
+use crate::tui::agents::Agents;
 
 const FILE: &str = "session.json";
 const DEFAULT_COLS: u16 = 80;
@@ -83,6 +84,21 @@ struct FileState {
     tty_rows: u16,
     windows: Vec<WindowFile>,
     focused: String,
+    /// Named agent panes. Spawned again when the session is opened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agents: Vec<PaneAgent>,
+}
+
+/// A pane that held a catalog agent. `program` is the last spawn
+/// command (a fallback when the catalog no longer has `name`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PaneAgent {
+    pane: String,
+    name: String,
+    #[serde(default)]
+    acp: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    program: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -114,6 +130,8 @@ pub struct Session {
     watch: HashMap<String, Arc<HttpWatch>>,
     /// pane id → catalog name for agent processes.
     names: HashMap<String, String>,
+    /// pane id → last spawn program, for disk.
+    programs: HashMap<String, String>,
     /// panes whose name came from a shell that launched a catalog agent.
     adopted: HashSet<String>,
 }
@@ -173,6 +191,7 @@ impl Sessions {
                 note: String::new(),
             }],
             focused: "1".to_string(),
+            agents: Vec::new(),
         };
         fs::create_dir_all(&dir)?;
         persist(&dir, &file)?;
@@ -195,6 +214,7 @@ impl Sessions {
             acp: HashMap::new(),
             watch: HashMap::new(),
             names: HashMap::new(),
+            programs: HashMap::new(),
             adopted: HashSet::new(),
         }));
         self.live
@@ -204,8 +224,8 @@ impl Sessions {
         Ok(session)
     }
 
-    /// Open a session by name. Reopens from disk; the panes have no
-    /// processes until one is spawned.
+    /// Open a session by name. Reopens from disk and spawns each
+    /// named agent pane again.
     pub fn get(&self, name: &str) -> io::Result<Arc<Mutex<Session>>> {
         if let Some(session) = self
             .live
@@ -221,7 +241,8 @@ impl Sessions {
             return Err(io::Error::other("no such session"));
         }
         let file = load(&dir)?;
-        let session = Arc::new(Mutex::new(Session {
+        let agents = file.agents;
+        let mut session = Session {
             root: dir,
             name: name.to_string(),
             next_id: file.next_id,
@@ -242,8 +263,11 @@ impl Sessions {
             acp: HashMap::new(),
             watch: HashMap::new(),
             names: HashMap::new(),
+            programs: HashMap::new(),
             adopted: HashSet::new(),
-        }));
+        };
+        session.resurrect(agents);
+        let session = Arc::new(Mutex::new(session));
         self.live
             .lock()
             .map_err(|_| io::Error::other("sessions busy"))?
@@ -642,9 +666,11 @@ impl Session {
         if let Some(name) = name.filter(|n| !n.is_empty()) {
             self.names.insert(pane_id.to_string(), name.to_string());
         }
+        self.programs.insert(pane_id.to_string(), program.to_string());
         if acp {
             let child = AcpChild::spawn(program)?;
             self.acp.insert(pane_id.to_string(), child);
+            let _ = self.persist();
             return Ok(());
         }
         let (_, _, cols, rows) = self
@@ -656,7 +682,7 @@ impl Session {
             self.watch
                 .insert(pane_id.to_string(), HttpWatch::start(url));
         }
-        Ok(())
+        self.persist()
     }
 
     fn drop_process(&mut self, pane_id: &str) {
@@ -667,7 +693,68 @@ impl Session {
             child.terminate();
         }
         self.names.remove(pane_id);
+        self.programs.remove(pane_id);
         self.adopted.remove(pane_id);
+    }
+
+    fn agent_records(&self) -> Vec<PaneAgent> {
+        let mut live = HashSet::new();
+        for w in &self.windows {
+            let mut panes = Vec::new();
+            collect_panes(&w.tree, &mut panes);
+            live.extend(panes);
+        }
+        self.names
+            .iter()
+            .filter(|(id, _)| live.contains(*id))
+            .map(|(id, name)| PaneAgent {
+                pane: id.clone(),
+                name: name.clone(),
+                acp: self.acp.contains_key(id),
+                program: self.programs.get(id).cloned().unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    /// Spawn each named agent again. Catalog wins (fresh HTTP ports).
+    /// Unknown names use the stored program.
+    fn resurrect(&mut self, records: Vec<PaneAgent>) {
+        if records.is_empty() {
+            return;
+        }
+        let catalog = Agents::load(self.root.parent().unwrap_or(&self.root));
+        for rec in records {
+            if rec.name.is_empty() {
+                continue;
+            }
+            let result = if let Some(agent) = catalog.by_name(&rec.name) {
+                if rec.acp {
+                    match agent.acp_cmd() {
+                        Some(cmd) => self.spawn(&rec.pane, cmd, true, None, Some(&rec.name)),
+                        None => continue,
+                    }
+                } else {
+                    let (program, watch) = agent.tui_spawn();
+                    self.spawn(
+                        &rec.pane,
+                        &program,
+                        false,
+                        watch.as_deref(),
+                        Some(&rec.name),
+                    )
+                }
+            } else if rec.program.is_empty() {
+                continue;
+            } else {
+                self.spawn(&rec.pane, &rec.program, rec.acp, None, Some(&rec.name))
+            };
+            if let Err(err) = result {
+                eprintln!(
+                    "anvil: could not restore agent {} on pane {}: {err}",
+                    rec.name, rec.pane
+                );
+            }
+        }
     }
 
     /// Write to a process. Keys go to the PTY or ACP composer.
@@ -764,6 +851,7 @@ impl Session {
                     })
                     .collect(),
                 focused: self.focused.clone(),
+                agents: self.agent_records(),
             },
         )
     }
@@ -1068,6 +1156,31 @@ mod tests {
         assert_eq!(a.rows, 24);
         assert_eq!(b.rows, 24);
         assert_eq!(view.focused, "2");
+    }
+
+    #[test]
+    fn reopen_from_disk_spawns_named_agents() {
+        let (dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, Some("golem"))
+            .unwrap();
+        assert_eq!(
+            work.lock().unwrap().view().windows[0].panes[0].name.as_deref(),
+            Some("golem")
+        );
+        drop(work);
+
+        let restarted = Sessions::open(dir.path().join("root")).unwrap();
+        let work = restarted.get("work").unwrap();
+        let view = work.lock().unwrap().view();
+        assert_eq!(view.windows[0].panes[0].name.as_deref(), Some("golem"));
+        assert!(
+            work.lock().unwrap().read_pane("1").alive,
+            "the agent pane should be running again"
+        );
     }
 
     #[test]
