@@ -1,9 +1,9 @@
 ---
 name: dev
 description: >
-  Build the blank multiplexer tree and fault code in from quarantine.
-  Use when compiling, testing, or copying a piece of the mothballed
-  program.
+  Build the multiplexer, fault code in from quarantine, and ship a
+  binary. Use when compiling, testing, installing, or copying a piece
+  of the mothballed program.
 ---
 
 # Build
@@ -13,12 +13,70 @@ cargo test
 cargo build --release
 ```
 
-`src/main.rs` is a ratatui client: init, draw `test`, any key restores the tty.
-
 ```bash
 cargo run
 cargo run -- --restart    # this tree's daemon + client
 ```
+
+# Ship
+
+From a clone, with Rust and a C linker on PATH:
+
+```bash
+cargo test
+cargo build --release
+install -m 0755 target/release/anvil ~/.local/bin/anvil
+```
+
+Dependencies must resolve from the network. Path deps cannot ship.
+
+opaline is a git tag, not crates.io:
+
+```
+opaline = { git = "https://github.com/hyperb1iss/opaline.git", tag = "v0.4.1", features = ["ratatui"] }
+```
+
+If this tree carries a patch that is not upstream, the dep is the
+fork and its tag. A local checkout is not a dep.
+
+The daemon is a systemd --user unit. `Type=simple`. SIGTERM stops
+it; there is no `anvil daemon stop` subcommand.
+
+```
+[Unit]
+Description=Anvil — multiplexer daemon for ACP agents and shells
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/anvil daemon
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=8s
+
+[Install]
+WantedBy=default.target
+```
+
+`loginctl enable-linger` on the user so the unit survives logout.
+The client (`anvil`) attaches to `$XDG_RUNTIME_DIR/anvil.sock` and
+will start a detached daemon if none is listening — that is for a
+dev tree. A shipped box holds the daemon with the unit.
+
+# Not yet published
+
+Ship is install-from-git. These remain:
+
+- **crates.io.** Not published. The name `anvil` is taken (a
+  templating crate). crates.io rejects git dependencies; opaline is
+  git. A publish needs a free name and opaline (or a fork) on
+  crates.io.
+- **Release.** Version is `0.1.0`. No tags.
+- **Unit in this tree.** None. `quarantine/systemd/anvil.service`
+  speaks the old `anvil serve` CLI. Do not copy it.
+- **Install the crate owns.** No `anvil daemon --install`. The
+  binary is copied by hand (or by whoever provisions the box).
+- **CI.** None.
 
 # Fault in
 
@@ -34,7 +92,3 @@ Copy the smallest file that implements a kernel primitive. Rewrite it
 to the words in `docs/kernel.md`. Do not `include!` quarantine. Do not
 add quarantine as a path dependency. If the piece needs a name that is
 not daemon, session, window, pane, process, or client, leave it.
-
-# Git
-
-House `git` skill. Never commit on `~/src/witt3rd/anvil` (`main`).
