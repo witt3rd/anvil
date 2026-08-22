@@ -240,6 +240,7 @@ mod tests {
             cols: 10,
             rows: 10,
             name: name.map(str::to_string),
+            activity: None,
             state,
         }
     }

@@ -47,6 +47,10 @@ pub struct PaneView {
     /// Catalog name when this process is an agent. Absent on a shell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// What this agent is doing: the OpenCode session title, or
+    /// the last user line when the title is still a placeholder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
     #[serde(default)]
     pub state: WindowState,
 }
@@ -316,6 +320,7 @@ impl Session {
                         cols,
                         rows,
                         name: self.names.get(&id).cloned(),
+                        activity: self.pane_activity(&id),
                         state: pane_state(&id, &self.panes, &self.acp, &self.watch),
                     }
                 })
@@ -444,6 +449,18 @@ impl Session {
         self.persist()
     }
 
+    fn pane_activity(&self, id: &str) -> Option<String> {
+        self.watch
+            .get(id)
+            .and_then(|w| w.activity())
+            .or_else(|| {
+                self.panes
+                    .get(id)
+                    .and_then(|p| p.pid())
+                    .and_then(super::grok::activity)
+            })
+    }
+
     /// A process that has ended takes its pane with it. `exit` in a
     /// shell closes the pane; the last pane of a window takes the
     /// window. A pane that never got a process is left for spawn.
@@ -490,6 +507,7 @@ impl Session {
             }
         }
         self.refocus();
+        self.relay_panes();
         self.persist()
     }
 
@@ -538,7 +556,8 @@ impl Session {
     }
 
     /// Split a window: its focused pane becomes two panes, tiled.
-    pub fn split(&mut self, window_id: &str) -> io::Result<()> {
+    /// `rows` stacks them; otherwise they sit side by side.
+    pub fn split(&mut self, window_id: &str, rows: bool) -> io::Result<()> {
         let idx = self
             .windows
             .iter()
@@ -549,12 +568,12 @@ impl Session {
         if !rects.contains_key(&self.focused) {
             return Err(io::Error::other("no such pane"));
         }
-        let (_, _, cols, rows) = rects[&self.focused];
-        let dir = if cols >= rows { Dir::Cols } else { Dir::Rows };
+        let dir = if rows { Dir::Rows } else { Dir::Cols };
         let new_id = self.next_id.to_string();
         self.windows[idx].tree = split_into(&tree, &self.focused, dir, self.next_id);
         self.next_id += 1;
         self.focused = new_id;
+        self.relay_panes();
         self.persist()
     }
 
@@ -563,13 +582,18 @@ impl Session {
         self.gap = gap;
         self.tty_cols = cols.max(2);
         self.tty_rows = rows.max(2);
+        self.relay_panes();
+        self.persist()
+    }
+
+    /// Tell every live PTY the size its tile now has.
+    fn relay_panes(&self) {
         let rects = self.all_rects();
         for (id, pane) in self.panes.iter() {
             if let Some((_, _, cols, rows)) = rects.get(id) {
-                pane.resize(*cols, *rows)?;
+                let _ = pane.resize(*cols, *rows);
             }
         }
-        self.persist()
     }
 
     /// Spawn a process in a pane. PTY by default; `acp` holds stdio
@@ -624,17 +648,37 @@ impl Session {
         self.adopted.remove(pane_id);
     }
 
-    /// Write to the focused pane's process — the client's keys.
-    pub fn write(&self, data: &str) -> io::Result<()> {
-        if let Some(acp) = self.acp.get(&self.focused) {
+    /// Write to a process. Keys go to the PTY or ACP composer.
+    /// A prompt is a turn on the agent door: ACP `session/prompt`,
+    /// or OpenCode's HTTP session — the same context as the TUI.
+    pub fn write(&self, data: &str, pane: Option<&str>, prompt: bool) -> io::Result<()> {
+        let pane_id = pane.unwrap_or(self.focused.as_str());
+        if prompt {
+            return self.prompt_pane(pane_id, data);
+        }
+        if let Some(acp) = self.acp.get(pane_id) {
             return acp.write_keys(data);
         }
         let pane = self
             .panes
-            .get(&self.focused)
+            .get(pane_id)
             .cloned()
             .ok_or_else(|| io::Error::other("the focused pane has no process"))?;
         pane.write(data.as_bytes())
+    }
+
+    fn prompt_pane(&self, pane_id: &str, text: &str) -> io::Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(());
+        }
+        if let Some(acp) = self.acp.get(pane_id) {
+            return acp.prompt(text);
+        }
+        if let Some(w) = self.watch.get(pane_id) {
+            return w.prompt(text);
+        }
+        Err(io::Error::other("this pane has no agent door"))
     }
 
     /// Read a pane's grid. An ACP pane has no grid; it is alive while
@@ -835,6 +879,9 @@ impl Grid {
             runs: vec![run; rows as usize],
             alive: false,
             acp: false,
+            mouse: false,
+            kitty: 0,
+            modify: false,
         }
     }
 }
@@ -858,11 +905,13 @@ fn pane_state(
         return child.state();
     }
     if let Some(pane) = pty.get(pane_id) {
-        if pane.alive() {
-            WindowState::Idle
-        } else {
-            WindowState::Dead
+        if !pane.alive() {
+            return WindowState::Dead;
         }
+        if pane.pid().is_some_and(super::grok::turning) {
+            return WindowState::Turning;
+        }
+        WindowState::Idle
     } else {
         WindowState::Idle
     }
@@ -899,6 +948,9 @@ fn window_state(
             any_process = true;
             if pane.alive() {
                 any_live = true;
+                if pane.pid().is_some_and(super::grok::turning) {
+                    turning = true;
+                }
             }
         }
     }
@@ -953,11 +1005,32 @@ mod tests {
     }
 
     #[test]
+    fn split_down_stacks_the_panes() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().split("sh", true).unwrap();
+
+        let view = work.lock().unwrap().view();
+        assert_eq!(view.windows[0].panes.len(), 2);
+        let a = &view.windows[0].panes[0];
+        let b = &view.windows[0].panes[1];
+        assert_eq!(a.x, 0);
+        assert_eq!(b.x, 0);
+        assert_eq!(a.cols, 80);
+        assert_eq!(b.cols, 80);
+        assert_eq!(a.y, 0);
+        assert_eq!(b.y, a.rows + 1, "{a:?} {b:?}");
+        assert_eq!(a.rows + b.rows, 23, "{a:?} {b:?}");
+        assert_eq!(view.focused, "2");
+    }
+
+    #[test]
     fn split_tiles_and_persists_geometry() {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("sh").unwrap();
+        work.lock().unwrap().split("sh", false).unwrap();
 
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows[0].panes.len(), 2);
@@ -979,7 +1052,7 @@ mod tests {
         let (dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("sh").unwrap();
+        work.lock().unwrap().split("sh", false).unwrap();
         drop(work);
 
         // The daemon restarts: a fresh Sessions over the same root.
@@ -996,7 +1069,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("sh").unwrap();
+        work.lock().unwrap().split("sh", false).unwrap();
         work.lock().unwrap().resize(100, 50, 1).unwrap();
 
         let view = work.lock().unwrap().view();
@@ -1030,7 +1103,7 @@ mod tests {
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
         work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
-        work.lock().unwrap().write("printf 'hello session'\n").unwrap();
+        work.lock().unwrap().write("printf 'hello session'\n", None, false).unwrap();
         let mut grid = work.lock().unwrap().read_pane("1");
         for _ in 0..100 {
             if grid.lines.iter().any(|l| l.contains("hello session")) {
@@ -1095,14 +1168,14 @@ mod tests {
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
         work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
-        work.lock().unwrap().write("exit 0\n").unwrap();
+        work.lock().unwrap().write("exit 0\n", None, false).unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let err = work.lock().unwrap().write("echo x\n").unwrap_err();
+        let err = work.lock().unwrap().write("echo x\n", None, false).unwrap_err();
         assert!(err.to_string().contains("ended"), "{err}");
     }
 
@@ -1111,7 +1184,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("sh").unwrap();
+        work.lock().unwrap().split("sh", false).unwrap();
         assert_eq!(work.lock().unwrap().view().focused, "2");
 
         work.lock().unwrap().add_window("plugin").unwrap();
@@ -1154,11 +1227,11 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("sh").unwrap();
+        work.lock().unwrap().split("sh", false).unwrap();
         work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
         work.lock().unwrap().spawn("2", "sh", false, None, None).unwrap();
         work.lock().unwrap().focus_pane("1").unwrap();
-        work.lock().unwrap().write("exit 0\n").unwrap();
+        work.lock().unwrap().write("exit 0\n", None, false).unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
                 break;
@@ -1177,7 +1250,7 @@ mod tests {
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
         work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
-        work.lock().unwrap().write("exit 0\n").unwrap();
+        work.lock().unwrap().write("exit 0\n", None, false).unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
                 break;
@@ -1193,7 +1266,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("sh").unwrap();
+        work.lock().unwrap().split("sh", false).unwrap();
         assert_eq!(work.lock().unwrap().view().focused, "2");
 
         work.lock().unwrap().focus_pane("1").unwrap();
@@ -1210,7 +1283,7 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().split("sh").unwrap();
+        work.lock().unwrap().split("sh", false).unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows[0].panes.len(), 2);
 
@@ -1220,11 +1293,28 @@ mod tests {
         assert_eq!(view.windows.len(), 1);
         assert_eq!(view.windows[0].panes.len(), 1);
         assert_eq!(view.windows[0].panes[0].pane, "2");
+        assert_eq!(view.windows[0].panes[0].cols, 80);
+        assert_eq!(view.windows[0].panes[0].rows, 24);
         // Focus moved to the remaining pane.
         assert_eq!(view.focused, "2");
 
         let err = work.lock().unwrap().close_pane("99").unwrap_err();
         assert!(err.to_string().contains("no such pane"));
+    }
+
+    #[test]
+    fn close_pane_gives_the_remaining_process_the_window() {
+        let (_dir, sessions) = sessions();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
+        work.lock().unwrap().split("sh", false).unwrap();
+        let half = work.lock().unwrap().read_pane("1");
+        assert!(half.cols < 80, "split should shrink the original PTY: {half:?}");
+        work.lock().unwrap().close_pane("2").unwrap();
+        let full = work.lock().unwrap().read_pane("1");
+        assert_eq!(full.cols, 80, "{full:?}");
+        assert_eq!(full.rows, 24, "{full:?}");
     }
 
     #[test]
@@ -1272,7 +1362,7 @@ mod tests {
         assert!(sessions.get("nope").is_err());
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        let err = work.lock().unwrap().split("9").unwrap_err();
+        let err = work.lock().unwrap().split("9", false).unwrap_err();
         assert!(err.to_string().contains("no such window"), "{err}");
     }
 }

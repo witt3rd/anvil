@@ -21,7 +21,9 @@ A frame is:
 4. Draw overlays (immediate).
 
 Prefix keys belong to the multiplexer. Keys that are not prefix go
-to the focused pane's process.
+to the focused pane's process. Shift+Enter is a newline when the
+process asked for kitty keys or modifyOtherKeys — OpenCode's
+prompt; a plain Enter still submits.
 
 The library is whatever does immediate-mode cells (today, ratatui).
 
@@ -44,7 +46,11 @@ spawned from the catalog (`oc`, `oc-work`, `grok`). A window
 may hold none, one, or several. Selecting an agent focuses
 that pane and brings its window forward.
 
-The list does not sort itself. The mark carries state.
+The list is recency: a turning (or needs-you) agent sits at
+the top; then the one that stopped last; the oldest idle at
+the bottom. When a turn ends, the client bells unless this
+terminal is the focused application and that pane is the
+one selected. The mark carries state.
 
 | state | mark | how the daemon knows |
 |---|---|---|
@@ -77,9 +83,14 @@ panel, no names.
 The **open sidebar** is 21 cells by default, `bg.panel`, and
 lives in `<root>/sidebar.json`. Each entry is two lines.
 The first is the mark and the name. The second is a clause:
-on a window, what lives there (`oc · shell`, `shell`); on an
-agent, the window it sits in, plus turning or needs-you when
-that is true. Headers `windows` and `agents` sit above each
+on a window, what lives there (`oc · shell`, `shell`), or the
+agent's activity when the HTTP door has a session title; on
+an agent, that same activity (OpenCode's title, grok's
+`generated_title` on disk, or the last user line), plus
+turning or needs-you when that is true. These are task
+summaries, not gerunds we invent — the agent already
+named the work. Grok's turn is the `systemd-inhibit`
+it holds while working. Headers `windows` and `agents` sit above each
 list in `text.dim`, the same as the host. `windows` has a
 blank row above and below. `agents` sits on the row under
 the divider. The agents block is always there, even when empty.
@@ -102,11 +113,14 @@ is clicked, or walked with prefix `]` / `[`.
 `exit` in a shell ends the process and closes the pane. The
 last pane of a window takes the window with it.
 
-A click on a tile focuses that pane. Wheel, drag, and click
-inside a tile go to that pane's process (SGR mouse), so the
-inner TUI can select and scroll. Prefix `]` / `[` walk
-windows. Prefix `v` / `-` split the focused pane and move
-focus into the new one.
+A click on a tile focuses that pane. A drag that is not a
+click selects cells; release copies the text to the clipboard
+and a short toast says so. Wheel, drag, and click go to the
+pane's process as SGR mouse only when it has asked (DECSET
+1000/1002/1003). Shift-drag selects even then. Prefix `]` /
+`[` walk windows. Prefix `v` splits the focused pane to the
+right; prefix `-` splits it down. Focus moves into the new
+pane. Closing a pane gives the leftover tile the space.
 
 A shell that launches a catalog program (`oc`, `oc-work`,
 `opencode`, `grok`) is adopted: the pane gets that name and,
@@ -121,10 +135,10 @@ window.
 
 ## The tiles
 
-The content area has a 2-cell gutter on each side. Each pane's
-view sits at the geometry the daemon gave it. A window is one
-screen: only the current window draws; the other windows keep
-their processes in the daemon.
+Tiles sit flush against the chrome — no content gutter.
+Each pane's view sits at the geometry the daemon gave it.
+A window is one screen: only the current window draws; the
+other windows keep their processes in the daemon.
 
 Chrome is quiet. The frame, the tiles, and the rail share
 `bg.base`. The only mark of a boundary is a single thin separator
@@ -142,10 +156,13 @@ A default window is two panes: the agent and a shell.
 
 The daemon writes to a process. A note to another window is that
 write, naming the pane. On an ACP process the bytes are a
-`session/prompt`. On a PTY they are keys.
+`session/prompt`. On an OpenCode TUI they go through the HTTP
+door (`/tui/append-prompt` then submit, else the current
+session's `prompt_async`) so the turn is the same context as
+the headful composer. On a shell they are keys.
 
-The prefix picks the window. The text becomes the write. A further
-word earns its place after that write is in use.
+Prefix `p` opens a loud prompt bar. Enter sends that write to
+the focused agent, or the first named agent on the window.
 
 ## Which-key
 
@@ -178,7 +195,7 @@ Prefix, then:
 
 | Key | Action |
 |---|---|
-| `q` | Detach |
+| `q` | Detach (the only way out; Esc goes to the pane) |
 | `?` | Help |
 | `n` | New session (then a loud name prompt) |
 | `s` | Pick a session |
@@ -187,6 +204,7 @@ Prefix, then:
 | `1..9` | SwitchSession(n) |
 | `a` | New agent (default) |
 | `A` | Pick an agent |
+| `p` | Prompt the agent (same context as the TUI) |
 | `c` | New window (shell) |
 | `,` | Rename the current window |
 | `]` | NextWindow |
@@ -216,8 +234,7 @@ The **gap** is a tiling value in the daemon. It is the distance
 between two adjacent tiles, in cells — one value. It is the space
 the separator line draws in. The daemon threads it through every
 split and resize, so a pane's process sees a PTY sized to the tile.
-The canvas edge keeps no margin; the client's content gutter holds
-it.
+The canvas edge keeps no margin. Tiles meet the chrome.
 
 Tiling values live at `<root>/tiling.json`:
 
@@ -278,31 +295,26 @@ the bar.
 dead sit in the denom and leave a hole. Shells do not
 count. Zero agents hides the track. Turning is a prompt
 in flight (HTTP watch or ACP), not a TUI that happens
-to redraw. The header track is `[····]` so a 0% fleet
-still reads.
+to redraw. A 0% fleet is a row of dots — the hole has
+to read.
 
 **Over time** is the time-weighted mean, sampled by the
 daemon every five seconds so detach does not reset it. The
-clock runs only while there is at least one agent. The
-stain on the track is the last 24 hours. Lifetime stays
-on disk.
+clock runs only while there is at least one agent. A
+brighter dot on the track is the last 24 hours. Lifetime
+stays on disk.
 
-The **header** is every session. A hairline between the
-session chip and the host: fill is now (`text.primary`,
-then `warning` at the high bands), a `│` is the 24h
-stain, empty `·` in `text.muted` is unused capacity. A
-0% fleet is a full row of dots — the hole has to read.
+The **header** is every session: a single-pixel hairline
+between the session chip and the host. The hue is
+`accent.secondary` (the cool blue), so it does not fight
+the orange chip or needs-you red. Empty cells are dim
+dots. The fill starts as those dots and coalesces into
+`─`, brightening toward the tip.
 
-The **agents block** of the open sidebar is this session
-only. A one-cell thermometer on the left edge, fill from
-the bottom. The collapsed rail does not grow.
-
-**Bands** are fleet size, not saturation. One agent at
-100% is the nucleus: a thin `─`. Each doubling of agents
-is another shell — denser glyphs, then warmer — so one
-saturated agent and a hundred saturated agents do not
-read the same. Achievements and a board can hang off the
-band later; they are not chrome yet.
+**Bands** are fleet size, not saturation. The ramp's
+length is how saturated; how many agents is a later
+shell, not a fatter bar. Achievements and a board can
+hang off the band later; they are not chrome yet.
 
 The daemon writes `<root>/saturation.json`. The client
 reads it. No new proto op.

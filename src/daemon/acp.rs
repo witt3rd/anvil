@@ -180,6 +180,9 @@ impl AcpChild {
             runs,
             alive: self.alive(),
             acp: true,
+            mouse: false,
+            kitty: 0,
+            modify: false,
         }
     }
 

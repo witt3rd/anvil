@@ -1,11 +1,12 @@
-//! Draw saturation: a track of unused capacity, a fill of now,
-//! a stain of the last day, and a glyph that is the energy band.
+//! Draw saturation: a hairline of unused capacity and a gradient
+//! of now. Empty is dots; the fill starts as dots and coalesces
+//! into a single-pixel line that brightens at the tip.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 
-use crate::daemon::sat::{self, Counters};
+use crate::daemon::sat::Counters;
 
 const TRACK_MIN: u16 = 8;
 const TRACK_MAX: u16 = 40;
@@ -26,46 +27,10 @@ pub fn header_rect(left: u16, right: u16, y: u16) -> Option<Rect> {
     })
 }
 
-pub fn h_glyph(agents: u32) -> &'static str {
-    match sat::band(agents) {
-        0 => " ",
-        1 => "─",
-        2 => "─",
-        3 => "━",
-        4 => "━",
-        5 => "═",
-        _ => "▬",
-    }
-}
-
-pub fn v_glyph(agents: u32) -> &'static str {
-    match sat::band(agents) {
-        0 => " ",
-        1 => "│",
-        2 => "┃",
-        3 => "║",
-        4 => "┃",
-        5 => "║",
-        _ => "▌",
-    }
-}
-
-/// Fill stays quiet. Higher bands warm slightly; never a slab.
-pub fn fill_token(agents: u32) -> &'static str {
-    if sat::band(agents) >= 6 {
-        "warning"
-    } else {
-        "text.muted"
-    }
-}
-
-/// Empty track. Must read on `bg.panel` — `border.subtle` does not.
-pub fn track_token() -> &'static str {
-    "text.muted"
-}
-
-pub fn stain_token() -> &'static str {
-    "text.dim"
+/// The live end of the ramp. Cool, and not the session chip
+/// (`accent.primary`) or needs-you (`error`).
+pub fn hue_token() -> &'static str {
+    "accent.secondary"
 }
 
 pub fn fill_len(span: u16, sat: f32) -> u16 {
@@ -79,69 +44,71 @@ pub fn draw_header(
     buf: &mut Buffer,
     area: Rect,
     counters: &Counters,
-    track: Style,
-    fill: Style,
-    stain: Style,
+    dim: Color,
+    bright: Color,
+    bar_bg: Color,
 ) {
     let Some(now) = counters.instant() else {
         return;
     };
-    if area.width < 2 {
+    if area.width == 0 {
         return;
     }
-    let inner = area.width.saturating_sub(2);
-    let glyph = h_glyph(counters.agents);
-    let filled = fill_len(inner, now);
-    buf.set_stringn(area.x, area.y, "[", 1, track);
-    buf.set_stringn(area.x + area.width - 1, area.y, "]", 1, track);
-    for i in 0..inner {
-        let x = area.x + 1 + i;
-        if i < filled {
-            buf.set_stringn(x, area.y, glyph, 1, fill);
+    let dim_rgb = rgb_of(dim);
+    let bright_rgb = rgb_of(bright);
+    let hole = mix(dim_rgb, bright_rgb, 0.22);
+    let filled = fill_len(area.width, now);
+    for i in 0..area.width {
+        let (ch, color) = if i < filled {
+            cell(i, filled, dim_rgb, bright_rgb)
         } else {
-            buf.set_stringn(x, area.y, "·", 1, track);
-        }
+            ("·", hole)
+        };
+        buf.set_stringn(
+            area.x + i,
+            area.y,
+            ch,
+            1,
+            Style::default().fg(color).bg(bar_bg),
+        );
     }
     if let Some(mean) = counters.mean_24h() {
-        let caret = fill_len(inner.saturating_sub(1), mean);
-        buf.set_stringn(area.x + 1 + caret, area.y, "│", 1, stain);
+        let caret = fill_len(area.width.saturating_sub(1), mean);
+        buf.set_stringn(
+            area.x + caret,
+            area.y,
+            "·",
+            1,
+            Style::default()
+                .fg(mix(dim_rgb, bright_rgb, 0.85))
+                .bg(bar_bg),
+        );
     }
 }
 
-pub fn draw_strip(
-    buf: &mut Buffer,
-    area: Rect,
-    counters: &Counters,
-    track: Style,
-    fill: Style,
-    stain: Style,
-) {
-    let Some(now) = counters.instant() else {
-        return;
+/// Along the fill: dim dots, then a hairline that brightens at the tip.
+fn cell(i: u16, filled: u16, dim: [u8; 3], bright: [u8; 3]) -> (&'static str, Color) {
+    let t = if filled <= 1 {
+        1.0
+    } else {
+        i as f32 / (filled - 1) as f32
     };
-    if area.height == 0 || area.width == 0 {
-        return;
+    let t = t * t;
+    let ch = if t < 0.30 { "·" } else { "─" };
+    (ch, mix(dim, bright, 0.28 + 0.72 * t))
+}
+
+fn rgb_of(color: Color) -> [u8; 3] {
+    match color {
+        Color::Rgb(r, g, b) => [r, g, b],
+        _ => [0x14, 0x14, 0x14],
     }
-    let glyph = v_glyph(counters.agents);
-    let filled = fill_len(area.height, now);
-    let bottom = area.bottom();
-    for row in 0..area.height {
-        let y = area.y + row;
-        let from_bottom = bottom.saturating_sub(y + 1);
-        let (ch, style) = if from_bottom < filled {
-            (glyph, fill)
-        } else {
-            ("·", track)
-        };
-        buf.set_stringn(area.x, y, ch, 1, style);
-    }
-    if let Some(mean) = counters.mean_24h() {
-        let caret = fill_len(area.height.saturating_sub(1), mean);
-        let y = bottom.saturating_sub(caret + 1);
-        if y >= area.y {
-            buf.set_stringn(area.x, y, "─", 1, stain);
-        }
-    }
+}
+
+fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |i: usize| (a[i] as f32 + (b[i] as f32 - a[i] as f32) * t).round() as u8;
+    Color::Rgb(ch(0), ch(1), ch(2))
 }
 
 #[cfg(test)]
@@ -157,29 +124,37 @@ mod tests {
     }
 
     #[test]
-    fn one_and_a_hundred_use_different_glyphs() {
-        assert_eq!(h_glyph(1), "─");
-        assert_eq!(h_glyph(100), "▬");
-        assert_ne!(h_glyph(1), h_glyph(100));
-        assert_ne!(v_glyph(1), v_glyph(100));
-    }
-
-    #[test]
-    fn a_full_bar_paints_brackets_and_fill() {
+    fn a_full_bar_is_dots_then_a_hairline() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 12, 1));
         let counters = Counters::snapshot(1, 1);
         draw_header(
             &mut buf,
             Rect::new(0, 0, 12, 1),
             &counters,
-            Style::default(),
-            Style::default(),
-            Style::default(),
+            Color::Rgb(0x14, 0x14, 0x14),
+            Color::Rgb(0x5c, 0x9c, 0xf5),
+            Color::Rgb(0x14, 0x14, 0x14),
         );
         let row: String = (0..12).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(row.starts_with('['), "{row}");
-        assert!(row.ends_with(']'), "{row}");
+        assert!(row.contains('·'), "{row}");
         assert!(row.contains('─'), "{row}");
+        assert!(!row.starts_with('['), "{row}");
+    }
+
+    #[test]
+    fn an_empty_bar_is_all_dots() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 1));
+        let counters = Counters::snapshot(0, 1);
+        draw_header(
+            &mut buf,
+            Rect::new(0, 0, 8, 1),
+            &counters,
+            Color::Rgb(0x14, 0x14, 0x14),
+            Color::Rgb(0x5c, 0x9c, 0xf5),
+            Color::Rgb(0x14, 0x14, 0x14),
+        );
+        let row: String = (0..8).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(row, "········");
     }
 
     #[test]
@@ -188,5 +163,14 @@ mod tests {
         assert_eq!(fill_len(20, 1.0), 20);
         assert_eq!(fill_len(20, 0.5), 10);
         assert_eq!(fill_len(0, 1.0), 0);
+    }
+
+    #[test]
+    fn mix_hits_the_endpoints() {
+        let a = [0, 0, 0];
+        let b = [100, 200, 50];
+        assert_eq!(mix(a, b, 0.0), Color::Rgb(0, 0, 0));
+        assert_eq!(mix(a, b, 1.0), Color::Rgb(100, 200, 50));
+        assert_eq!(mix(a, b, 0.5), Color::Rgb(50, 100, 25));
     }
 }

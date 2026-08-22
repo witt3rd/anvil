@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::daemon::pane::Grid;
 use crate::daemon::session::SessionView;
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -48,10 +52,13 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<String>,
     },
-    /// A window is now two panes, tiled.
+    /// A window is now two panes, tiled. `rows` stacks them
+    /// (split down); the default is side by side (split right).
     Split {
         id: String,
         window: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        rows: bool,
     },
     /// Move the focus: a window becomes the current one, or a pane
     /// becomes the focused pane.
@@ -93,10 +100,15 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
-    /// The data goes to the focused pane's process.
+    /// The data goes to the focused pane's process, or a named pane.
+    /// `prompt` is a turn on an agent door (HTTP or ACP), not keys.
     Write {
         id: String,
         data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        prompt: bool,
     },
 }
 

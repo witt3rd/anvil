@@ -28,6 +28,7 @@ pub enum Action {
     FocusDown,
     FocusUp,
     FocusRight,
+    Prompt,
 }
 
 impl std::fmt::Display for Action {
@@ -54,6 +55,7 @@ impl std::fmt::Display for Action {
             Action::FocusDown => write!(f, "focus down"),
             Action::FocusUp => write!(f, "focus up"),
             Action::FocusRight => write!(f, "focus right"),
+            Action::Prompt => write!(f, "prompt"),
         }
     }
 }
@@ -100,6 +102,7 @@ pub fn build_keymap() -> AppKeymap {
         s.bind("c", Action::NewWindow, Category::Window);
         s.bind("a", Action::NewAgent, Category::Window);
         s.bind("A", Action::PickAgent, Category::Window);
+        s.bind("p", Action::Prompt, Category::Window);
         s.bind("]", Action::NextWindow, Category::Window);
         s.bind("[", Action::PrevWindow, Category::Window);
 
@@ -176,6 +179,9 @@ mod tests {
         let mut wk = prefixed();
         let t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE);
         assert_eq!(wk.handle_key(t), None);
+        let mut wk = prefixed();
+        let p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
+        assert_eq!(wk.handle_key(p), Some(Action::Prompt));
     }
 
     #[test]

@@ -45,6 +45,8 @@ pub fn match_cmd(cmd: &str) -> Option<Hit> {
         "oc"
     } else if argv0 == "grok" || script == Some("grok") {
         "grok"
+    } else if argv0 == "node" && bins.iter().any(|b| *b == "grok") {
+        "grok"
     } else {
         return None;
     };
@@ -80,7 +82,7 @@ fn cmdline(pid: u32) -> String {
         .unwrap_or_default()
 }
 
-fn descendants(pid: u32) -> Vec<u32> {
+pub fn descendants(pid: u32) -> Vec<u32> {
     let mut out = Vec::new();
     let mut stack = children_of(pid);
     while let Some(child) = stack.pop() {
@@ -195,6 +197,13 @@ mod tests {
         let grok = match_cmd("grok").unwrap();
         assert_eq!(grok.name, "grok");
         assert!(grok.watch.is_none());
+
+        let wrapped = match_cmd(
+            "node /home/dt/.local/share/mise/installs/npm-xai-official-grok/latest/node_modules/@xai-official/grok/bin/grok",
+        )
+        .unwrap();
+        assert_eq!(wrapped.name, "grok");
+        assert!(match_cmd("git clone grok").is_none());
 
         let wrap = match_cmd("/bin/bash /home/dt/.local/bin/oc").unwrap();
         assert_eq!(wrap.name, "oc");

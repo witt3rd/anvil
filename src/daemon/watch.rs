@@ -1,5 +1,5 @@
-//! Watch an agent's HTTP door (OpenCode's server) for rail state.
-//! The TUI owns the PTY; this only reads.
+//! Watch an agent's HTTP door (OpenCode's server) for rail state,
+//! and send a prompt through that same door — the TUI's context.
 
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -8,20 +8,24 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::acp::WindowState;
 
 /// Polls `base` (`http://127.0.0.1:port`) for session status.
 pub struct HttpWatch {
+    base: String,
     state: Mutex<WindowState>,
+    activity: Mutex<Option<String>>,
     stop: AtomicBool,
 }
 
 impl HttpWatch {
     pub fn start(base: &str) -> Arc<HttpWatch> {
         let watch = Arc::new(HttpWatch {
+            base: base.to_string(),
             state: Mutex::new(WindowState::Idle),
+            activity: Mutex::new(None),
             stop: AtomicBool::new(false),
         });
         let pump = watch.clone();
@@ -32,8 +36,37 @@ impl HttpWatch {
         watch
     }
 
+    /// A prompt into the TUI's current session. Prefers the TUI
+    /// composer so the operator sees it; falls back to the session
+    /// message door.
+    pub fn prompt(&self, text: &str) -> io::Result<()> {
+        let append = serde_json::to_string(&json!({ "text": text }))
+            .map_err(io::Error::other)?;
+        if http_post(&self.base, "/tui/append-prompt", &append).is_ok() {
+            let _ = http_post(&self.base, "/tui/submit-prompt", "{}");
+            return Ok(());
+        }
+        let list = http_get(&self.base, "/session")?;
+        let sid = current_session_id(&list)
+            .ok_or_else(|| io::Error::other("the agent has no session"))?;
+        let body = serde_json::to_string(&json!({
+            "parts": [{ "type": "text", "text": text }]
+        }))
+        .map_err(io::Error::other)?;
+        http_post(
+            &self.base,
+            &format!("/session/{sid}/prompt_async"),
+            &body,
+        )?;
+        Ok(())
+    }
+
     pub fn state(&self) -> WindowState {
         self.state.lock().map(|s| *s).unwrap_or(WindowState::Idle)
+    }
+
+    pub fn activity(&self) -> Option<String> {
+        self.activity.lock().ok().and_then(|a| a.clone())
     }
 
     pub fn stop(&self) {
@@ -50,6 +83,7 @@ impl HttpWatch {
             }
             thread::sleep(Duration::from_millis(100));
         }
+        let mut ticks = 0u32;
         while !self.stop.load(Ordering::Relaxed) {
             let next = match http_get(base, "/session/status") {
                 Ok(body) => status_from_json(&body),
@@ -57,6 +91,14 @@ impl HttpWatch {
             };
             if let Ok(mut state) = self.state.lock() {
                 *state = next;
+            }
+            ticks = ticks.wrapping_add(1);
+            if ticks % 5 == 1 {
+                if let Some(act) = refresh_activity(base) {
+                    if let Ok(mut slot) = self.activity.lock() {
+                        *slot = Some(act);
+                    }
+                }
             }
             thread::sleep(Duration::from_millis(400));
         }
@@ -114,18 +156,168 @@ fn classify(s: &str, turning: &mut bool, needs: &mut bool) {
 }
 
 fn http_get(base: &str, path: &str) -> io::Result<String> {
+    http_exchange(base, "GET", path, None, Duration::from_millis(400))
+}
+
+fn http_post(base: &str, path: &str, body: &str) -> io::Result<String> {
+    http_exchange(base, "POST", path, Some(body), Duration::from_secs(2))
+}
+
+fn http_exchange(
+    base: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    timeout: Duration,
+) -> io::Result<String> {
     let (host, port) = parse_base(base)?;
     let mut stream = TcpStream::connect((host.as_str(), port))?;
-    stream.set_read_timeout(Some(Duration::from_millis(400)))?;
-    stream.set_write_timeout(Some(Duration::from_millis(400)))?;
-    write!(
-        stream,
-        "GET {path} HTTP/1.0\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
-    )?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    match body {
+        Some(body) => write!(
+            stream,
+            "{method} {path} HTTP/1.0\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )?,
+        None => write!(
+            stream,
+            "{method} {path} HTTP/1.0\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
+        )?,
+    }
     let mut buf = String::new();
     stream.read_to_string(&mut buf)?;
+    let status = buf
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("");
+    if !status.starts_with('2') && !status.is_empty() {
+        return Err(io::Error::other(format!("agent door {status}")));
+    }
     let body = buf.split("\r\n\r\n").nth(1).unwrap_or(&buf);
     Ok(body.to_string())
+}
+
+/// Newest session on `GET /session`.
+pub fn current_session_id(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let sessions = match &v {
+        Value::Array(a) => a.as_slice(),
+        Value::Object(m) => m.get("sessions")?.as_array()?.as_slice(),
+        _ => return None,
+    };
+    let mut best: Option<(u64, String)> = None;
+    for s in sessions {
+        let id = s.get("id")?.as_str()?.to_string();
+        let t = s
+            .pointer("/time/updated")
+            .or_else(|| s.pointer("/time/created"))
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        if best.as_ref().is_none_or(|(bt, _)| t >= *bt) {
+            best = Some((t, id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+fn refresh_activity(base: &str) -> Option<String> {
+    let list = http_get(base, "/session").ok()?;
+    let (id, title) = current_work_session(&list)?;
+    if !placeholder_title(&title) {
+        return Some(terse(&title, 28));
+    }
+    let msgs = http_get(base, &format!("/session/{id}/message?limit=8")).ok()?;
+    last_user_line(&msgs).map(|s| terse(&s, 28))
+}
+
+/// Newest session that is real work, not a courier fork.
+pub fn current_work_session(body: &str) -> Option<(String, String)> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let sessions = match &v {
+        Value::Array(a) => a.as_slice(),
+        Value::Object(m) => m.get("sessions")?.as_array()?.as_slice(),
+        _ => return None,
+    };
+    let mut best: Option<(u64, String, String)> = None;
+    let mut fallback: Option<(u64, String, String)> = None;
+    for s in sessions {
+        let id = s.get("id")?.as_str()?.to_string();
+        let title = s
+            .get("title")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        let t = s
+            .pointer("/time/updated")
+            .or_else(|| s.pointer("/time/created"))
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        if title.starts_with("anvil-courier") {
+            continue;
+        }
+        let row = (t, id, title);
+        if placeholder_title(&row.2) {
+            if fallback.as_ref().is_none_or(|(bt, ..)| t >= *bt) {
+                fallback = Some(row);
+            }
+        } else if best.as_ref().is_none_or(|(bt, ..)| t >= *bt) {
+            best = Some(row);
+        }
+    }
+    best.or(fallback).map(|(_, id, title)| (id, title))
+}
+
+fn placeholder_title(title: &str) -> bool {
+    title.is_empty() || title.starts_with("New session")
+}
+
+/// Last user text in a `/session/:id/message` payload.
+pub fn last_user_line(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let items = match &v {
+        Value::Array(a) => a.as_slice(),
+        Value::Object(m) => m.get("messages")?.as_array()?.as_slice(),
+        _ => return None,
+    };
+    for item in items.iter().rev() {
+        let role = item
+            .pointer("/info/role")
+            .or_else(|| item.get("role"))
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
+        if role != "user" {
+            continue;
+        }
+        let parts = item
+            .get("parts")
+            .and_then(|p| p.as_array())
+            .map(|a| a.as_slice())
+            .unwrap_or(&[]);
+        for p in parts.iter().rev() {
+            if p.get("type").and_then(|t| t.as_str()) != Some("text") {
+                continue;
+            }
+            let text = p.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
+            if !text.is_empty() {
+                return Some(text.replace('\n', " "));
+            }
+        }
+    }
+    None
+}
+
+fn terse(s: &str, max: usize) -> String {
+    let s: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.chars().count() <= max {
+        return s;
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 fn parse_base(base: &str) -> io::Result<(String, u16)> {
@@ -167,6 +359,36 @@ mod tests {
         assert_eq!(
             status_from_json(r#"{"abc":{"type":"idle"}}"#),
             WindowState::Idle
+        );
+    }
+
+    #[test]
+    fn newest_session_wins() {
+        let body = r#"[{"id":"old","time":{"updated":1}},{"id":"new","time":{"updated":9}}]"#;
+        assert_eq!(current_session_id(body).as_deref(), Some("new"));
+        let wrapped = r#"{"sessions":[{"id":"only"}]}"#;
+        assert_eq!(current_session_id(wrapped).as_deref(), Some("only"));
+        assert_eq!(current_session_id("[]"), None);
+    }
+
+    #[test]
+    fn work_session_skips_courier_and_placeholders() {
+        let body = r#"[
+            {"id":"c","title":"anvil-courier-silent","time":{"updated":30}},
+            {"id":"n","title":"New session - 2026","time":{"updated":20}},
+            {"id":"w","title":"RunPod RTX 6000 pricing","time":{"updated":10}}
+        ]"#;
+        let (id, title) = current_work_session(body).unwrap();
+        assert_eq!(id, "w");
+        assert_eq!(title, "RunPod RTX 6000 pricing");
+    }
+
+    #[test]
+    fn last_user_line_reads_the_transcript() {
+        let body = r#"[{"info":{"role":"user"},"parts":[{"type":"text","text":"what's the pricing on runpod"}]},{"info":{"role":"assistant"},"parts":[{"type":"text","text":"$0.74/hr"}]}]"#;
+        assert_eq!(
+            last_user_line(body).as_deref(),
+            Some("what's the pricing on runpod")
         );
     }
 }

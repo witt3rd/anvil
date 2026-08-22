@@ -26,12 +26,15 @@ pub fn clause(view: &SessionView) -> String {
     for w in &view.windows {
         let dead = w.state == WindowState::Dead
             || (!w.panes.is_empty() && w.panes.iter().all(|p| p.state == WindowState::Dead));
+        let activity = w.panes.iter().find_map(|p| p.activity.as_deref());
         let agents: Vec<&str> = w
             .panes
             .iter()
             .filter_map(|p| p.name.as_deref())
             .collect();
-        let label = if agents.is_empty() {
+        let label = if let Some(act) = activity {
+            act.to_string()
+        } else if agents.is_empty() {
             w.window.clone()
         } else {
             agents.join(" · ")
@@ -73,6 +76,7 @@ mod tests {
                         cols: 10,
                         rows: 10,
                         name: Some("oc".into()),
+                        activity: None,
                         state: WindowState::Idle,
                     }],
                 },
@@ -86,6 +90,7 @@ mod tests {
                         cols: 10,
                         rows: 10,
                         name: None,
+                        activity: None,
                         state: WindowState::Dead,
                     }],
                 },

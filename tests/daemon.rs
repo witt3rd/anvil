@@ -158,6 +158,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
     client.ok(|id| Request::Split {
         id: id.into(),
         window: "sh".into(),
+        rows: false,
     });
     let Value::View(view) = client.ok(|id| Request::Read {
         id: id.into(),
@@ -191,7 +192,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
     assert_eq!(view.windows[0].panes[0].cols + view.windows[0].panes[1].cols, 99);
     assert_eq!(view.windows[0].panes[0].rows, 40);
 
-    // spawn a process in the focused pane, write to it, read its grid
+    // spawn a process in pane 1, write to that pane, read its grid
     client.ok(|id| Request::Spawn {
         id: id.into(),
         pane: "1".into(),
@@ -203,6 +204,8 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
     client.ok(|id| Request::Write {
         id: id.into(),
         data: "printf 'hello wire'\n".into(),
+        pane: Some("1".into()),
+        prompt: false,
     });
     let Value::Grid(grid) = client.ok(|id| Request::Read {
         id: id.into(),
@@ -236,6 +239,8 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
     client.ok(|id| Request::Write {
         id: id.into(),
         data: "printf 'still attached'\n".into(),
+        pane: Some("1".into()),
+        prompt: false,
     });
     let Value::Grid(grid) = client.ok(|id| Request::Read {
         id: id.into(),
@@ -292,6 +297,8 @@ fn detach_keeps_the_session() {
     client.ok(|id| Request::Write {
         id: id.into(),
         data: "printf 'long live the session'\n".into(),
+        pane: None,
+        prompt: false,
     });
     drop(client); // detach: EOF
 
@@ -360,6 +367,8 @@ fn destroy_sighups_the_processes() {
             ready.display()
         )
         .into(),
+        pane: None,
+        prompt: false,
     });
 
     let start = Instant::now();
@@ -396,6 +405,8 @@ fn ops_without_an_attached_session_are_errors() {
         .err(|id| Request::Write {
             id: id.into(),
             data: "echo x".into(),
+            pane: None,
+            prompt: false,
         })
         .contains("not attached"));
     assert!(client

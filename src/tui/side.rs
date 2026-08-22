@@ -1,6 +1,8 @@
 //! The sidebar's two lists: windows above, agent processes below.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::time::Instant;
 
 use ratatui::layout::Rect;
 use serde::{Deserialize, Serialize};
@@ -105,7 +107,6 @@ pub struct SideLayout {
     pub divider_y: Option<u16>,
     pub windows_header: Option<u16>,
     pub agents_header: Option<u16>,
-    pub agent_area: Rect,
 }
 
 impl SideLayout {
@@ -124,8 +125,21 @@ impl SideLayout {
     }
 }
 
-pub fn agents(view: &SessionView) -> Vec<SideItem> {
-    view.windows
+/// Last time this agent was on a turn. Active agents sit at the top;
+/// among the rest, the most recently stopped is next.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Recency {
+    pub active: bool,
+    pub last: Option<Instant>,
+}
+
+pub fn running(state: WindowState) -> bool {
+    matches!(state, WindowState::Turning | WindowState::NeedsYou)
+}
+
+pub fn agents(view: &SessionView, recency: &HashMap<String, Recency>) -> Vec<SideItem> {
+    let mut items: Vec<SideItem> = view
+        .windows
         .iter()
         .flat_map(|w| {
             w.panes.iter().filter_map(|p| {
@@ -136,16 +150,33 @@ pub fn agents(view: &SessionView) -> Vec<SideItem> {
                 })
             })
         })
-        .collect()
+        .collect();
+    items.sort_by(|a, b| {
+        let pa = match a {
+            SideItem::Agent { pane, .. } => pane.as_str(),
+            _ => "",
+        };
+        let pb = match b {
+            SideItem::Agent { pane, .. } => pane.as_str(),
+            _ => "",
+        };
+        let ra = recency.get(pa).copied().unwrap_or_default();
+        let rb = recency.get(pb).copied().unwrap_or_default();
+        rb.active
+            .cmp(&ra.active)
+            .then(rb.last.cmp(&ra.last))
+            .then(pa.cmp(pb))
+    });
+    items
 }
 
-pub fn items(view: &SessionView) -> Vec<SideItem> {
+pub fn items(view: &SessionView, recency: &HashMap<String, Recency>) -> Vec<SideItem> {
     let mut out: Vec<SideItem> = view
         .windows
         .iter()
         .map(|w| SideItem::Window(w.window.clone()))
         .collect();
-    out.extend(agents(view));
+    out.extend(agents(view, recency));
     out
 }
 
@@ -160,7 +191,13 @@ const AGENT_HEAD_ROWS: u16 = 2;
 const FOOT_PAD: u16 = 1;
 
 /// The divider follows `split` on the rail and the open sidebar.
-pub fn layout(area: Rect, open: bool, split: f32, view: &SessionView) -> SideLayout {
+pub fn layout(
+    area: Rect,
+    open: bool,
+    split: f32,
+    view: &SessionView,
+    recency: &HashMap<String, Recency>,
+) -> SideLayout {
     let area = Rect {
         height: area.height.saturating_sub(FOOT_PAD),
         ..area
@@ -171,7 +208,7 @@ pub fn layout(area: Rect, open: bool, split: f32, view: &SessionView) -> SideLay
         .iter()
         .map(|w| SideItem::Window(w.window.clone()))
         .collect();
-    let agent_items = agents(view);
+    let agent_items = agents(view, recency);
     let (win_area, divider_y, agent_area) = sections(area, open, split);
 
     let mut hits = Vec::new();
@@ -199,7 +236,6 @@ pub fn layout(area: Rect, open: bool, split: f32, view: &SessionView) -> SideLay
         divider_y,
         windows_header,
         agents_header,
-        agent_area,
     }
 }
 
@@ -248,6 +284,9 @@ fn sections(area: Rect, open: bool, split: f32) -> (Rect, Option<u16>, Rect) {
 }
 
 pub fn window_clause(window: &WindowView) -> String {
+    if let Some(act) = window.panes.iter().find_map(|p| p.activity.as_deref()) {
+        return act.to_string();
+    }
     let named: Vec<&str> = window
         .panes
         .iter()
@@ -264,12 +303,13 @@ pub fn window_clause(window: &WindowView) -> String {
     }
 }
 
-pub fn agent_clause(window: &str, state: WindowState) -> String {
+pub fn agent_clause(window: &str, state: WindowState, activity: Option<&str>) -> String {
+    let label = activity.filter(|s| !s.is_empty()).unwrap_or(window);
     match state {
-        WindowState::Turning => format!("{window} · turning"),
-        WindowState::NeedsYou => format!("{window} · needs you"),
-        WindowState::Dead => format!("{window} · dead"),
-        WindowState::Idle => window.to_string(),
+        WindowState::Turning => format!("{label} · turning"),
+        WindowState::NeedsYou => format!("{label} · needs you"),
+        WindowState::Dead => format!("{label} · dead"),
+        WindowState::Idle => label.to_string(),
     }
 }
 
@@ -280,6 +320,7 @@ pub fn window_has_agent(window: &WindowView) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use crate::daemon::session::PaneView;
 
     fn view() -> SessionView {
@@ -297,6 +338,7 @@ mod tests {
                             cols: 20,
                             rows: 10,
                             name: Some("oc".into()),
+                            activity: None,
                             state: WindowState::Idle,
                         },
                         PaneView {
@@ -306,6 +348,7 @@ mod tests {
                             cols: 20,
                             rows: 10,
                             name: None,
+                            activity: None,
                             state: WindowState::Idle,
                         },
                     ],
@@ -320,6 +363,7 @@ mod tests {
                         cols: 40,
                         rows: 10,
                         name: None,
+                        activity: None,
                         state: WindowState::Idle,
                     }],
                 },
@@ -330,7 +374,7 @@ mod tests {
     #[test]
     fn shell_windows_are_not_agents() {
         let v = view();
-        let agent_list = agents(&v);
+        let agent_list = agents(&v, &HashMap::new());
         assert_eq!(agent_list.len(), 1);
         assert!(matches!(
             &agent_list[0],
@@ -346,9 +390,24 @@ mod tests {
     }
 
     #[test]
+    fn window_clause_prefers_activity() {
+        let mut v = view();
+        v.windows[0].panes[0].activity = Some("RunPod RTX 6000 pricing".into());
+        assert_eq!(window_clause(&v.windows[0]), "RunPod RTX 6000 pricing");
+        assert_eq!(
+            agent_clause("oc", WindowState::Idle, Some("RunPod RTX 6000 pricing")),
+            "RunPod RTX 6000 pricing"
+        );
+        assert_eq!(
+            agent_clause("oc", WindowState::Turning, Some("RunPod RTX 6000 pricing")),
+            "RunPod RTX 6000 pricing · turning"
+        );
+    }
+
+    #[test]
     fn open_sidebar_splits_on_the_ratio() {
         let v = view();
-        let lay = layout(Rect::new(0, 0, 21, 24), true, 0.5, &v);
+        let lay = layout(Rect::new(0, 0, 21, 24), true, 0.5, &v, &HashMap::new());
         assert_eq!(lay.hits[0].1, 2);
         assert_eq!(lay.windows_header, Some(1));
         assert_eq!(lay.at(3), Some(&SideItem::Window("ansible".into())));
@@ -371,22 +430,23 @@ mod tests {
                     cols: 40,
                     rows: 10,
                     name: None,
+                    activity: None,
                     state: WindowState::Idle,
                 }],
             }],
         };
-        let lay = layout(Rect::new(0, 0, 21, 24), true, 0.5, &v);
+        let lay = layout(Rect::new(0, 0, 21, 24), true, 0.5, &v, &HashMap::new());
         assert_eq!(lay.divider_y, Some(11));
         assert_eq!(lay.agents_header, Some(12));
-        assert!(agents(&v).is_empty());
+        assert!(agents(&v, &HashMap::new()).is_empty());
         assert!(lay.at(14).is_none());
     }
 
     #[test]
     fn rail_keeps_the_same_split() {
         let v = view();
-        let open = layout(Rect::new(0, 0, 21, 20), true, 0.5, &v);
-        let rail = layout(Rect::new(0, 0, 3, 20), false, 0.5, &v);
+        let open = layout(Rect::new(0, 0, 21, 20), true, 0.5, &v, &HashMap::new());
+        let rail = layout(Rect::new(0, 0, 3, 20), false, 0.5, &v, &HashMap::new());
         assert_eq!(open.divider_y, rail.divider_y);
         assert_eq!(rail.divider_y, Some(9));
         assert_eq!(rail.at(3), Some(&SideItem::Window("ansible".into())));
@@ -394,5 +454,62 @@ mod tests {
         assert!(matches!(rail.at(12), Some(SideItem::Agent { name, .. }) if name == "oc"));
         assert!(rail.at(0).is_none());
         assert!(rail.at(9).is_none());
+    }
+
+    fn named(pane: &str, name: &str) -> PaneView {
+        PaneView {
+            pane: pane.into(),
+            x: 0,
+            y: 0,
+            cols: 40,
+            rows: 10,
+            name: Some(name.into()),
+            activity: None,
+            state: WindowState::Idle,
+        }
+    }
+
+    #[test]
+    fn agents_active_then_recent_then_oldest() {
+        let v = SessionView {
+            focused: "1".into(),
+            windows: vec![WindowView {
+                window: "w".into(),
+                state: WindowState::Idle,
+                panes: vec![named("old", "a"), named("fresh", "b"), named("live", "c")],
+            }],
+        };
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(10);
+        let mut recency = HashMap::new();
+        recency.insert(
+            "old".into(),
+            Recency {
+                active: false,
+                last: Some(t0),
+            },
+        );
+        recency.insert(
+            "fresh".into(),
+            Recency {
+                active: false,
+                last: Some(t1),
+            },
+        );
+        recency.insert(
+            "live".into(),
+            Recency {
+                active: true,
+                last: Some(t0),
+            },
+        );
+        let names: Vec<_> = agents(&v, &recency)
+            .into_iter()
+            .filter_map(|i| match i {
+                SideItem::Agent { pane, .. } => Some(pane),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["live", "fresh", "old"]);
     }
 }

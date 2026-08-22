@@ -4,6 +4,8 @@
 
 pub mod acp;
 pub mod adopt;
+pub mod grok;
+pub mod keys;
 pub mod pane;
 pub mod sat;
 pub mod session;
@@ -224,10 +226,10 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
             }),
             _ => Err(io::Error::other("read takes a session or a pane")),
         },
-        Request::Split { window, .. } => attached_session(sessions, attached).and_then(|s| {
+        Request::Split { window, rows, .. } => attached_session(sessions, attached).and_then(|s| {
             s.lock()
                 .map_err(|_| io::Error::other("session busy"))?
-                .split(&window)
+                .split(&window, rows)
                 .map(|_| Value::Empty {})
         }),
         Request::Focus { window, pane, .. } => attached_session(sessions, attached).and_then(|s| {
@@ -266,10 +268,12 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
                 .spawn(&pane, &program, acp, watch.as_deref(), name.as_deref())
                 .map(|_| Value::Empty {})
         }),
-        Request::Write { data, .. } => attached_session(sessions, attached).and_then(|s| {
+        Request::Write {
+            data, pane, prompt, ..
+        } => attached_session(sessions, attached).and_then(|s| {
             s.lock()
                 .map_err(|_| io::Error::other("session busy"))?
-                .write(&data)
+                .write(&data, pane.as_deref(), prompt)
                 .map(|_| Value::Empty {})
         }),
     }

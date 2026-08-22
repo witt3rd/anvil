@@ -26,6 +26,16 @@ pub struct Grid {
     /// This pane's process speaks ACP. The client does not spawn a shell on it.
     #[serde(default)]
     pub acp: bool,
+    /// The process asked for mouse tracking (DECSET 1000/1002/1003).
+    /// The client writes SGR mouse only while this is true.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mouse: bool,
+    /// Kitty keyboard flags the process asked for (`CSI > flags u`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub kitty: u16,
+    /// xterm modifyOtherKeys (`CSI > 4 ; 1/2 m`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub modify: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,6 +61,10 @@ pub struct Run {
 
 fn is_false(v: &bool) -> bool {
     !*v
+}
+
+fn is_zero(v: &u16) -> bool {
+    *v == 0
 }
 
 fn split_color(c: vt100::Color) -> (Option<u8>, Option<[u8; 3]>) {
@@ -107,6 +121,7 @@ impl Run {
 pub struct Pane {
     writer: Mutex<Box<dyn Write + Send>>,
     parser: Mutex<vt100::Parser>,
+    keys: Mutex<super::keys::Mode>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     alive: AtomicBool,
@@ -149,6 +164,7 @@ impl Pane {
         let pane = Arc::new(Pane {
             writer: Mutex::new(writer),
             parser: Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK)),
+            keys: Mutex::new(super::keys::Mode::default()),
             child: Mutex::new(child),
             master: Mutex::new(pair.master),
             alive: AtomicBool::new(true),
@@ -164,6 +180,9 @@ impl Pane {
                         Ok(n) => {
                             if let Ok(mut parser) = pump.parser.lock() {
                                 parser.process(&buf[..n]);
+                            }
+                            if let Ok(mut keys) = pump.keys.lock() {
+                                keys.feed(&buf[..n]);
                             }
                         }
                         Err(_) => break,
@@ -216,12 +235,23 @@ impl Pane {
     /// Read the pane's grid: its cols, rows, and cells.
     pub fn grid(&self) -> Grid {
         let _ = self.reap_if_dead();
-        let (lines, runs, cols, rows, cursor_col, cursor_row) = self
+        let (lines, runs, cols, rows, cursor_col, cursor_row, mouse) = self
             .parser
             .lock()
             .ok()
-            .map(|p| screen_lines(p.screen()))
-            .unwrap_or_else(|| (Vec::new(), Vec::new(), 0, 0, 0, 0));
+            .map(|p| {
+                let (lines, runs, cols, rows, cursor_col, cursor_row) = screen_lines(p.screen());
+                let mouse =
+                    p.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None;
+                (lines, runs, cols, rows, cursor_col, cursor_row, mouse)
+            })
+            .unwrap_or_else(|| (Vec::new(), Vec::new(), 0, 0, 0, 0, false));
+        let (kitty, modify) = self
+            .keys
+            .lock()
+            .ok()
+            .map(|k| (k.kitty(), k.modify()))
+            .unwrap_or((0, false));
         Grid {
             cols,
             rows,
@@ -231,6 +261,9 @@ impl Pane {
             runs,
             alive: self.alive(),
             acp: false,
+            mouse,
+            kitty,
+            modify,
         }
     }
 
@@ -379,6 +412,27 @@ mod tests {
         let grid = wait_for(&pane, |g| g.lines.iter().any(|l| l.contains("got-28x100")));
         assert_eq!(grid.cols, 100);
         assert_eq!(grid.rows, 28);
+        pane.terminate();
+    }
+
+    #[test]
+    fn mouse_follows_the_childs_decset() {
+        let pane = Pane::spawn("sh", 24, 80).unwrap();
+        pane.write(b"printf '\\033[?1000h'\n").unwrap();
+        let on = wait_for(&pane, |g| g.mouse);
+        assert!(on.mouse, "DECSET 1000 should arm mouse: {on:?}");
+        pane.write(b"printf '\\033[?1000l'\n").unwrap();
+        let off = wait_for(&pane, |g| !g.mouse);
+        assert!(!off.mouse, "DECRST 1000 should clear mouse: {off:?}");
+        pane.terminate();
+    }
+
+    #[test]
+    fn kitty_flags_follow_the_child() {
+        let pane = Pane::spawn("sh", 24, 80).unwrap();
+        pane.write(b"printf '\\033[>1u'\n").unwrap();
+        let on = wait_for(&pane, |g| g.kitty > 0);
+        assert_eq!(on.kitty, 1, "CSI > 1 u should arm kitty keys: {on:?}");
         pane.terminate();
     }
 

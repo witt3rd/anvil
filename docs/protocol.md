@@ -44,7 +44,8 @@ the args tell them apart.
 
 | op | args | reply |
 |---|---|---|
-| `split` | `window` | the window is now two panes, tiled |
+| `split` | `window` | the window is now two panes, side by side |
+| `split` | `window`, `rows` | the window is now two panes, stacked |
 | `focus` | `window` | the window becomes the current one; its first pane is focused |
 | `focus` | `pane` | the pane becomes the focused pane; its window becomes current |
 | `close` | `pane` | the pane is gone; its process ends; the layout re-tiles |
@@ -56,7 +57,8 @@ the args tell them apart.
 | `spawn` | `pane`, `program`, `acp` | a process runs on stdio; the daemon is its ACP client |
 | `write` | `data` | the data goes to the focused pane's process |
 | `write` | `data`, `pane` | the data goes to that pane's process |
-| `read` | `pane` | the pane's view: its cols, rows, and cells |
+| `write` | `data`, `prompt` | a turn on the agent door: ACP `session/prompt`, or the TUI's HTTP session |
+| `read` | `pane` | the pane's view: its cols, rows, cells, and whether the process asked for mouse |
 
 ## Identifiers
 
