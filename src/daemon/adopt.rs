@@ -112,13 +112,17 @@ fn children_of(pid: u32) -> Vec<u32> {
     out
 }
 
-/// First listening TCP port on 127.0.0.1 for this pid.
+/// First listening TCP port for this pid (IPv4 or IPv6).
 fn listen_port(pid: u32) -> Option<u16> {
     let inodes = socket_inodes(pid);
     if inodes.is_empty() {
         return None;
     }
-    let tcp = fs::read_to_string("/proc/net/tcp").ok()?;
+    listen_in(&inodes, "/proc/net/tcp").or_else(|| listen_in(&inodes, "/proc/net/tcp6"))
+}
+
+fn listen_in(inodes: &[u64], path: &str) -> Option<u16> {
+    let tcp = fs::read_to_string(path).ok()?;
     for line in tcp.lines().skip(1) {
         let cols: Vec<&str> = line.split_whitespace().collect();
         if cols.len() < 10 {
@@ -132,14 +136,14 @@ fn listen_port(pid: u32) -> Option<u16> {
         if !inodes.contains(&inode) {
             continue;
         }
-        let Some((addr, port)) = parse_hex_addr(cols[1]) else {
-            continue;
-        };
-        if addr == [127, 0, 0, 1] || addr == [0, 0, 0, 0] {
-            return Some(port);
-        }
+        return parse_hex_port(cols[1]);
     }
     None
+}
+
+/// `/proc/net/tcp{,6}` local address: hex-ip `:` hex-port.
+fn parse_hex_port(local: &str) -> Option<u16> {
+    u16::from_str_radix(local.rsplit_once(':')?.1, 16).ok()
 }
 
 fn socket_inodes(pid: u32) -> Vec<u64> {
@@ -163,18 +167,6 @@ fn socket_inodes(pid: u32) -> Vec<u64> {
         }
     }
     out
-}
-
-fn parse_hex_addr(s: &str) -> Option<([u8; 4], u16)> {
-    let (ip, port) = s.split_once(':')?;
-    if ip.len() != 8 {
-        return None;
-    }
-    let n = u32::from_str_radix(ip, 16).ok()?;
-    // little-endian on Linux
-    let addr = n.to_le_bytes();
-    let port = u16::from_str_radix(port, 16).ok()?;
-    Some((addr, port))
 }
 
 #[cfg(test)]
@@ -219,5 +211,11 @@ mod tests {
         assert_eq!(port_from_args(&["oc", "--port", "9"]), Some(9));
         assert_eq!(port_from_args(&["oc", "--port=11"]), Some(11));
         assert_eq!(port_from_args(&["oc"]), None);
+    }
+
+    #[test]
+    fn proc_net_port_is_the_hex_after_the_colon() {
+        assert_eq!(parse_hex_port("0100007F:1F90"), Some(8080));
+        assert_eq!(parse_hex_port("00000000000000000000000001000000:0FA0"), Some(4000));
     }
 }
