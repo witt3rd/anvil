@@ -54,14 +54,17 @@ together. `git worktree list` is the check.
 # Channel
 
 `~/.local/bin/anvil` is a symlink to `scripts/launch`. It execs
-`target/release/anvil` from one tree:
+`target/release/anvil` from one tree. Git pull does not rebuild
+that ELF. Launch does: if HEAD or `src/` is newer than the binary,
+it runs `cargo build --release` in the channel's tree. `anvil daemon`
+started by systemd does not. `anvil channel show` prints `stale=yes`
+when a rebuild would happen. `ANVIL_SKIP_BUILD=1` skips.
 
 ```bash
 ln -sf "$(pwd)/scripts/launch" ~/.local/bin/anvil
-cargo build --release
 anvil channel show
-anvil channel stable                    # this clone (main)
-anvil channel dev /path/to/worktree     # then cargo build --release there
+anvil channel stable                    # this clone (main); builds if stale
+anvil channel dev /path/to/worktree     # builds if stale
 ```
 
 Channel is not git. `~/.anvil/channel` and `~/.anvil/dev-root` remember
