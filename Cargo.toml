@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 ratatui = "0.30"
-opaline = { path = "/home/dt/src/ext/opaline", features = ["ratatui"] }
+opaline = { git = "https://github.com/hyperb1iss/opaline.git", tag = "v0.4.1", features = ["ratatui"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
 portable-pty = "0.8"
