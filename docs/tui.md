@@ -141,9 +141,9 @@ stores with that window. Esc saves. A line that is `- [ ]` or
 hints `ctrl-b m` while a window is in view.
 
 `<root>/agents.json` is the catalog — pure config. The shipped
-defaults live in `agents.default.json` in this tree; they are
-copied when the user's file is missing. Adding an agent is a
-row. The daemon has no table of brands.
+defaults live in `agents.default.json` in this tree. Maintain it
+with `anvil agent` (`list`, `show`, `add`, `from`, `rm`, `default`,
+`seed`). Do not hand-edit. The daemon has no table of brands.
 
 ```json
 {
