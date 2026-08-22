@@ -457,6 +457,10 @@ mod tests {
         assert!(!fresh.contains("--session"), "{fresh}");
         let (empty, _) = oc.tui_spawn_session(Some(""));
         assert!(!empty.contains("--session"), "{empty}");
+        let grok = Agents::default().by_name("grok").unwrap().clone();
+        let (cmd, _) = grok.tui_spawn_session(Some("ses_pane_2"));
+        assert!(cmd.contains("--resume ses_pane_2"), "{cmd}");
+        assert!(!cmd.contains("--continue"), "{cmd}");
     }
 
     #[test]

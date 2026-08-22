@@ -41,6 +41,7 @@
       "name": "grok",
       "program": "grok",
       "adopt": ["grok"],
+      "resume": "--resume {session}",
       "door": {
         "kind": "inhibit",
         "contains": ["systemd-inhibit", "turn in progress"],
