@@ -104,6 +104,10 @@ The rail's turning mark is OpenCode's HTTP door (`--port`). Prefix
 has no door — OpenCode's default port `0` does not listen. The
 unit's PATH must include `~/.local/bin` or spawn cannot find `oc`.
 
+An ACP catalog row (`acp: true`) is stdio, not a PTY. Prefix `A`
+and pick `rung` (`rung-agent --acp`). The pane is the
+prompt/response viewer. Turning is an in-flight `session/prompt`.
+
 # Not yet published
 
 Ship is install-from-git. These remain:
