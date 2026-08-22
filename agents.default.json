@@ -1,0 +1,61 @@
+{
+  "default": "oc",
+  "agents": [
+    {
+      "name": "oc",
+      "program": "oc",
+      "acp_program": "oc acp",
+      "adopt": ["oc", "opencode"],
+      "door": {
+        "kind": "http",
+        "bind": "--hostname 127.0.0.1 --port {port}",
+        "health": "/global/health",
+        "status": "/session/status",
+        "sessions": "/session",
+        "append": "/tui/append-prompt",
+        "submit": "/tui/submit-prompt",
+        "prompt": "/session/{id}/prompt_async",
+        "messages": "/session/{id}/message?limit=8"
+      }
+    },
+    {
+      "name": "oc-work",
+      "program": "oc-work",
+      "acp_program": "oc-work acp",
+      "adopt": ["oc-work"],
+      "door": {
+        "kind": "http",
+        "bind": "--hostname 127.0.0.1 --port {port}",
+        "health": "/global/health",
+        "status": "/session/status",
+        "sessions": "/session",
+        "append": "/tui/append-prompt",
+        "submit": "/tui/submit-prompt",
+        "prompt": "/session/{id}/prompt_async",
+        "messages": "/session/{id}/message?limit=8"
+      }
+    },
+    {
+      "name": "grok",
+      "program": "grok",
+      "adopt": ["grok"],
+      "door": {
+        "kind": "inhibit",
+        "contains": ["systemd-inhibit", "turn in progress"],
+        "files": {
+          "home": ".grok",
+          "active": "active_sessions.json",
+          "summary": "summary.json",
+          "history": "chat_history.jsonl",
+          "title_keys": ["generated_title", "session_summary"],
+          "strip_tags": ["user_query"]
+        }
+      }
+    },
+    {
+      "name": "rung",
+      "program": "rung-agent --acp",
+      "acp_only": true
+    }
+  ]
+}

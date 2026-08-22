@@ -76,6 +76,7 @@ earns its place after that write is in use.
 
 ```
 src/               daemon, proto, client
+agents.default.json  catalog rows (the adapters)
 docs/kernel.md     the six words
 docs/tui.md        chrome: rail, roster, tiles
 docs/acp.md        ACP: the host, the children, the viewers
