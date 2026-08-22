@@ -92,6 +92,9 @@ cargo build --release
 cargo run -- --restart    # this tree: stop daemon, start this binary, attach
 ```
 
+`~/.local/bin/anvil` is `scripts/launch`: it execs `target/release/anvil`
+from this clone (stable) or a worktree (dev). `anvil channel` picks.
+
 To read the old program: `quarantine/`. To run it: that tree has its
 own `Cargo.toml`.
 
@@ -99,10 +102,10 @@ own `Cargo.toml`.
 
 A clone on any Unix box with Rust and a C linker is enough. Dependencies
 come from the network — crates.io or git — never a path on the author's
-disk. `cargo test` and `cargo build --release` succeed. The binary is
-`~/.local/bin/anvil`. The daemon is `anvil daemon`; the client is
-`anvil`. A systemd --user unit holds the daemon so detach never kills
-it.
+disk. `cargo test` and `cargo build --release` succeed. PATH is
+`scripts/launch`, which execs that release binary. The daemon is
+`anvil daemon`; the client is `anvil`. A systemd --user unit holds
+the daemon so detach never kills it.
 
 That is ship. Publishing to crates.io, a free crate name, a release
 tag, a unit file in this tree, and an install the crate itself owns
