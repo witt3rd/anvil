@@ -29,7 +29,7 @@ use crate::daemon::pane::Grid;
 use crate::daemon::session::SessionView;
 use crate::proto::{Reply, Request, Value};
 
-use agents::{Agent, Agents, unique_name};
+use agents::{Agent, Agents, Seat, unique_name};
 use keymap::{Action, AppWhichKey, Scope, build_which_key_state};
 
 /// The opencode palette, shipped with anvil and loaded through
@@ -128,6 +128,8 @@ pub struct Client {
     last_error: Option<String>,
     catalog: Agents,
     picking: Option<usize>,
+    /// After picking an agent that has both a native TUI and ACP.
+    seat_pick: Option<(Agent, usize)>,
     sessions_pick: Option<usize>,
     session_rows: Vec<sessions::Row>,
     host: String,
@@ -185,6 +187,7 @@ impl Client {
             last_error: None,
             catalog: Agents::load(&agents::default_root()),
             picking: None,
+            seat_pick: None,
             sessions_pick: None,
             session_rows: Vec::new(),
             host: host_name(),
@@ -350,9 +353,9 @@ impl Client {
             .unwrap_or_default()
     }
 
-    /// A new window running the agent. ACP children get the prompt
-    /// pane; others get a PTY (and an HTTP door when the catalog says).
-    fn launch_agent(&mut self, agent: &Agent) -> io::Result<()> {
+    /// A new window running the agent. Native is their TUI on a PTY.
+    /// Anvil is the prompt/response viewer over ACP stdio.
+    fn launch_agent(&mut self, agent: &Agent, seat: Seat) -> io::Result<()> {
         let name = unique_name(&agent.name, &self.window_names());
         self.add_window(&name)?;
         self.refresh()?;
@@ -360,25 +363,62 @@ impl Client {
         let Some(pane) = pane else {
             return Ok(());
         };
-        let result = if agent.acp {
-            self.call(Request::Spawn {
-                id: String::new(),
-                pane: pane.clone(),
-                program: agent.program.clone(),
-                acp: true,
-                watch: None,
-                name: Some(agent.name.clone()),
-            })
-            .map(|_| ())
-        } else {
-            let (program, watch) = agent.tui_spawn();
-            self.spawn_tui(&pane, &program, watch, &agent.name)
+        let result = match seat {
+            Seat::Anvil => match agent.acp_cmd() {
+                Some(program) => self
+                    .call(Request::Spawn {
+                        id: String::new(),
+                        pane: pane.clone(),
+                        program: program.to_string(),
+                        acp: true,
+                        watch: None,
+                        name: Some(agent.name.clone()),
+                    })
+                    .map(|_| ()),
+                None => Err(io::Error::other(format!(
+                    "{} has no ACP program",
+                    agent.name
+                ))),
+            },
+            Seat::Native => {
+                let (program, watch) = agent.tui_spawn();
+                self.spawn_tui(&pane, &program, watch, &agent.name)
+            }
         };
         match result {
             Ok(()) => self.last_error = None,
             Err(err) => self.last_error = Some(err.to_string()),
         }
         self.refresh()
+    }
+
+    /// Native when they have a TUI; otherwise anvil.
+    fn launch_preferred(&mut self, agent: &Agent) -> io::Result<()> {
+        let seat = agent.seats().into_iter().next().unwrap_or(Seat::Native);
+        self.launch_agent(agent, seat)
+    }
+
+    /// One seat launches now. Two seats open the native / anvil list.
+    fn confirm_agent(&mut self, agent: Agent) -> io::Result<()> {
+        let seats = agent.seats();
+        if seats.len() <= 1 {
+            return self.launch_preferred(&agent);
+        }
+        self.picking = None;
+        self.seat_pick = Some((agent, 0));
+        Ok(())
+    }
+
+    fn cancel_seat_pick(&mut self) {
+        if let Some((agent, _)) = self.seat_pick.take() {
+            self.picking = Some(
+                self.catalog
+                    .agents
+                    .iter()
+                    .position(|a| a.name == agent.name)
+                    .unwrap_or(0),
+            );
+        }
     }
 
     /// A new window running a shell.
@@ -666,6 +706,42 @@ impl Client {
                 _ => return Ok(()),
             }
         }
+        if let Some((agent, idx)) = self.seat_pick.clone() {
+            let seats = agent.seats();
+            let n = seats.len();
+            match key.code {
+                KeyCode::Esc => {
+                    self.cancel_seat_pick();
+                    return Ok(());
+                }
+                KeyCode::Enter => {
+                    self.seat_pick = None;
+                    if let Some(seat) = seats.get(idx).copied() {
+                        return self.launch_agent(&agent, seat);
+                    }
+                    return Ok(());
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.seat_pick = Some((agent, step_pick(idx, n, true)));
+                    return Ok(());
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.seat_pick = Some((agent, step_pick(idx, n, false)));
+                    return Ok(());
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                    let i = (c as u8 - b'1') as usize;
+                    if i < n {
+                        self.seat_pick = None;
+                        if let Some(seat) = seats.get(i).copied() {
+                            return self.launch_agent(&agent, seat);
+                        }
+                    }
+                    return Ok(());
+                }
+                _ => return Ok(()),
+            }
+        }
         if let Some(idx) = self.picking {
             let n = self.catalog.agents.len();
             match key.code {
@@ -682,7 +758,7 @@ impl Client {
                 KeyCode::Enter => {
                     self.picking = None;
                     if let Some(agent) = self.catalog.agents.get(idx).cloned() {
-                        return self.launch_agent(&agent);
+                        return self.confirm_agent(agent);
                     }
                     return Ok(());
                 }
@@ -699,7 +775,7 @@ impl Client {
                     if i < n {
                         self.picking = None;
                         if let Some(agent) = self.catalog.agents.get(i).cloned() {
-                            return self.launch_agent(&agent);
+                            return self.confirm_agent(agent);
                         }
                     }
                     return Ok(());
@@ -909,7 +985,7 @@ impl Client {
             Action::NewWindow => self.launch_terminal(),
             Action::NewAgent => {
                 let agent = self.catalog.default_agent();
-                self.launch_agent(&agent)
+                self.launch_preferred(&agent)
             }
             Action::PickAgent => {
                 self.picking = Some(0);
@@ -1091,6 +1167,29 @@ impl Client {
                 }
                 MouseEventKind::ScrollUp => {
                     self.sessions_pick = Some(step_pick(idx, n, false));
+                }
+                _ => {}
+            }
+            return Ok(true);
+        }
+        if let Some((agent, idx)) = self.seat_pick.clone() {
+            let n = agent.seats().len();
+            let popup = pick_box(area, n, 28, 48);
+            match kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if !pick_contains(popup, col, row) {
+                        self.cancel_seat_pick();
+                        return Ok(true);
+                    }
+                    if let Some(i) = pick_row(pick_inner(popup), n, idx, row) {
+                        self.seat_pick = Some((agent, i));
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    self.seat_pick = Some((agent, step_pick(idx, n, true)));
+                }
+                MouseEventKind::ScrollUp => {
+                    self.seat_pick = Some((agent, step_pick(idx, n, false)));
                 }
                 _ => {}
             }
@@ -1447,6 +1546,9 @@ impl Client {
         self.draw_status(frame, area);
         if self.sessions_pick.is_some() {
             self.draw_sessions_popup(frame, area);
+        }
+        if self.seat_pick.is_some() {
+            self.draw_seat_popup(frame, area);
         }
         if self.picking.is_some() {
             self.draw_agents_popup(frame, area);
@@ -1911,6 +2013,14 @@ impl Client {
                 ("esc", "cancel"),
             ];
         }
+        if self.seat_pick.is_some() {
+            return vec![
+                ("j/k", "move"),
+                ("click", "pick"),
+                ("enter", "launch"),
+                ("esc", "back"),
+            ];
+        }
         if self.picking.is_some() {
             return vec![
                 ("j/k", "move"),
@@ -2002,7 +2112,7 @@ impl Client {
             Style::default().fg(self.c("text.dim")).bg(panel)
         };
         let mut spans: Vec<Span> = Vec::new();
-        if self.sessions_pick.is_some() || self.picking.is_some() {
+        if self.sessions_pick.is_some() || self.picking.is_some() || self.seat_pick.is_some() {
             // The popup is the list; the footer is only keys.
         } else if let Some(draft) = &self.prompting {
             spans.push(Span::styled(format!("prompt: {draft}_"), key));
@@ -2103,7 +2213,76 @@ impl Client {
                 title_style,
             );
             if y + 1 < inner.bottom() {
-                let clause = if here { "default" } else { agent.program.as_str() };
+                let clause = if here {
+                    "default".to_string()
+                } else {
+                    agent_clause(agent)
+                };
+                frame.buffer_mut().set_stringn(
+                    inner.x + 2,
+                    y + 1,
+                    &clause,
+                    inner.width.saturating_sub(2) as usize,
+                    Style::default().fg(self.c("text.dim")),
+                );
+            }
+        }
+    }
+
+    fn draw_seat_popup(&self, frame: &mut ratatui::Frame, area: Rect) {
+        let Some((agent, sel)) = &self.seat_pick else {
+            return;
+        };
+        let seats = agent.seats();
+        let popup = pick_box(area, seats.len(), 28, 48);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Block::default()
+                .title(format!(" {} ", agent.name))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.c("border.focused")))
+                .bg(self.c("bg.panel")),
+            popup,
+        );
+        let inner = pick_inner(popup);
+        let visible = (inner.height / PICK_ROW).max(1) as usize;
+        let scroll = sel.saturating_sub(visible.saturating_sub(1));
+        for (n, seat) in seats.iter().enumerate().skip(scroll).take(visible) {
+            let y = inner.y + ((n - scroll) as u16) * PICK_ROW;
+            if y >= inner.bottom() {
+                break;
+            }
+            let picked = n == *sel;
+            let title_style = if picked {
+                Style::default()
+                    .fg(self.c("text.primary"))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.c("text.muted"))
+            };
+            if picked {
+                frame.render_widget(
+                    Block::default().bg(self.c("bg.elevated")),
+                    Rect {
+                        x: inner.x,
+                        y,
+                        width: inner.width,
+                        height: PICK_ROW.min(inner.bottom().saturating_sub(y)),
+                    },
+                );
+            }
+            frame.buffer_mut().set_stringn(
+                inner.x + 2,
+                y,
+                seat.label(),
+                inner.width.saturating_sub(2) as usize,
+                title_style,
+            );
+            if y + 1 < inner.bottom() {
+                let clause = match seat {
+                    Seat::Native => agent.program.as_str(),
+                    Seat::Anvil => agent.acp_cmd().unwrap_or("acp"),
+                };
                 frame.buffer_mut().set_stringn(
                     inner.x + 2,
                     y + 1,
@@ -2612,6 +2791,17 @@ fn error_owns_footer(naming: Option<&Naming>, last_error: Option<&str>) -> bool 
 
 const PICK_ROW: u16 = 2;
 
+fn agent_clause(agent: &Agent) -> String {
+    let seats = agent.seats();
+    if seats == [Seat::Anvil] {
+        return "anvil".into();
+    }
+    if seats.contains(&Seat::Anvil) {
+        return format!("{} · anvil", agent.program);
+    }
+    agent.program.clone()
+}
+
 fn pick_box(area: Rect, n: usize, min_w: u16, max_w: u16) -> Rect {
     let max_h = area.height.saturating_sub(6).max(6);
     let inner_h = ((n as u16).saturating_mul(PICK_ROW) + 1).min(max_h.saturating_sub(2));
@@ -2774,6 +2964,26 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn agent_clause_marks_anvil() {
+        let oc = Agent {
+            name: "oc".into(),
+            program: "oc".into(),
+            watch: Some("http".into()),
+            acp_only: false,
+            acp_program: Some("oc acp".into()),
+        };
+        assert_eq!(agent_clause(&oc), "oc · anvil");
+        let rung = Agent {
+            name: "rung".into(),
+            program: "rung-agent --acp".into(),
+            watch: None,
+            acp_only: true,
+            acp_program: None,
+        };
+        assert_eq!(agent_clause(&rung), "anvil");
     }
 
     #[test]

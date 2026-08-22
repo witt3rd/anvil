@@ -131,13 +131,35 @@ Prefix `a` opens a new window on the default agent (`agents.json`).
 The catalog names the program (`oc`, `oc-work`, `grok`). An
 OpenCode wrapper stays argv0; `--hostname` / `--port` are appended
 so the daemon can watch `/session/status`. Prefix `A` picks from
-the catalog — a vertical list. Prefix `c` opens a shell. Prefix
-`,` renames the current window.
+the catalog — a vertical list. An agent with a native TUI and an
+ACP command then asks which one: their TUI on a PTY, or anvil's
+prompt/response viewer. `acp_only` skips that list. Prefix `c`
+opens a shell. Prefix `,` renames the current window.
+
+`<root>/agents.json` is the catalog. Every row can speak ACP so
+the rail can see a turn. Mark the inverse when there is no native
+TUI. `acp_program` is the stdio command when it differs from the
+TUI:
+
+```json
+{
+  "default": "oc",
+  "agents": [
+    { "name": "oc", "program": "oc", "watch": "http", "acp_program": "oc acp" },
+    { "name": "rung", "program": "rung-agent --acp", "acp_only": true }
+  ]
+}
+```
+
+Prefix `a` takes the native TUI when the default agent has one.
+A row with no `acp_program` and no `acp_only` is native only until
+that command is filled in.
 
 Vim motion keys always have the matching arrow: `h`/`←`, `j`/`↓`,
 `k`/`↑`, `l`/`→`. A list that needs a selection (the catalog, the
-sessions popup, the sidebar) always takes a click. The wheel
-moves the same way as `j`/`k`. Enter still confirms.
+native/anvil list, the sessions popup, the sidebar) always takes
+a click. The wheel moves the same way as `j`/`k`. Enter still
+confirms.
 
 ## The tiles
 
