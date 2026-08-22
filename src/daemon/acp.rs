@@ -32,7 +32,7 @@ pub struct AcpChild {
     session_id: Mutex<Option<String>>,
     draft: Mutex<String>,
     next_id: AtomicU64,
-    waiters: Mutex<HashMap<u64, mpsc::Sender<Value>>>,
+    waiters: Mutex<HashMap<u64, mpsc::Sender<Result<Value, String>>>>,
     pending_prompt: Mutex<Option<u64>>,
     pending_perm: Mutex<Option<PendingPerm>>,
     lines: Mutex<Vec<String>>,
@@ -47,6 +47,11 @@ impl AcpChild {
     /// Spawn `program` (words, first is the binary) on stdio. Handshake
     /// `initialize` then `session/new` before returning.
     pub fn spawn(program: &str) -> io::Result<Arc<AcpChild>> {
+        Self::spawn_resume(program, None)
+    }
+
+    /// Spawn and reopen `resume` when the child can load or resume it.
+    pub fn spawn_resume(program: &str, resume: Option<&str>) -> io::Result<Arc<AcpChild>> {
         let (cmd, args) = split_cmd(program)?;
         let mut command = Command::new(&cmd);
         command.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -85,8 +90,12 @@ impl AcpChild {
             .name("anvil-acp".into())
             .spawn(move || pump_stdout(pump, stdout))
             .map_err(io::Error::other)?;
-        acp.handshake()?;
+        acp.handshake(resume)?;
         Ok(acp)
+    }
+
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id.lock().ok().and_then(|s| s.clone())
     }
 
     pub fn state(&self) -> WindowState {
@@ -329,8 +338,8 @@ impl AcpChild {
         self.alive.store(false, Ordering::Relaxed);
     }
 
-    fn handshake(&self) -> io::Result<()> {
-        self.call(
+    fn handshake(&self, resume: Option<&str>) -> io::Result<()> {
+        let init = self.call(
             "initialize",
             json!({
                 "protocolVersion": 1,
@@ -342,6 +351,31 @@ impl AcpChild {
             .unwrap_or_else(|_| std::path::PathBuf::from("/"))
             .display()
             .to_string();
+        let caps = init.get("agentCapabilities");
+        let can_load = caps
+            .and_then(|c| c.get("loadSession"))
+            .and_then(|v| v.as_bool())
+            == Some(true);
+        let can_resume = caps
+            .and_then(|c| c.pointer("/sessionCapabilities/resume"))
+            .is_some();
+        if let Some(id) = resume.filter(|s| !s.is_empty()) {
+            let params = json!({
+                "sessionId": id,
+                "cwd": cwd,
+                "mcpServers": [],
+            });
+            // load replays the transcript into this pane; resume
+            // reopens the same id without replay.
+            if can_load && self.call("session/load", params.clone()).is_ok() {
+                self.set_session_id(id)?;
+                return Ok(());
+            }
+            if can_resume && self.call("session/resume", params).is_ok() {
+                self.set_session_id(id)?;
+                return Ok(());
+            }
+        }
         let result = self.call(
             "session/new",
             json!({
@@ -354,10 +388,14 @@ impl AcpChild {
             .and_then(|v| v.as_str())
             .ok_or_else(|| io::Error::other("session/new had no sessionId"))?
             .to_string();
+        self.set_session_id(sid)
+    }
+
+    fn set_session_id(&self, sid: impl Into<String>) -> io::Result<()> {
         *self
             .session_id
             .lock()
-            .map_err(|_| io::Error::other("acp busy"))? = Some(sid);
+            .map_err(|_| io::Error::other("acp busy"))? = Some(sid.into());
         Ok(())
     }
 
@@ -370,7 +408,8 @@ impl AcpChild {
             .insert(id, tx);
         self.send(id, method, params)?;
         rx.recv_timeout(Duration::from_secs(20))
-            .map_err(|_| io::Error::other(format!("acp {method} timed out")))
+            .map_err(|_| io::Error::other(format!("acp {method} timed out")))?
+            .map_err(|e| io::Error::other(format!("acp {method}: {e}")))
     }
 
     fn reply(&self, id: &Value, result: Value) -> io::Result<()> {
@@ -464,13 +503,19 @@ fn pump_stdout(acp: Arc<AcpChild>, stdout: impl std::io::Read) {
         }
         let id = msg.get("id").and_then(json_id);
         if let Some(id) = id {
-            let result = msg.get("result").cloned().unwrap_or(Value::Null);
-            if let Ok(mut pending) = acp.pending_prompt.lock() {
-                if *pending == Some(id) {
-                    *pending = None;
-                    if let Ok(mut state) = acp.state.lock() {
-                        if *state == WindowState::Turning {
-                            *state = WindowState::Idle;
+            let result = if let Some(err) = msg.get("error") {
+                Err(err.to_string())
+            } else {
+                Ok(msg.get("result").cloned().unwrap_or(Value::Null))
+            };
+            if result.is_ok() {
+                if let Ok(mut pending) = acp.pending_prompt.lock() {
+                    if *pending == Some(id) {
+                        *pending = None;
+                        if let Ok(mut state) = acp.state.lock() {
+                            if *state == WindowState::Turning {
+                                *state = WindowState::Idle;
+                            }
                         }
                     }
                 }
@@ -559,9 +604,12 @@ while True:
     method = m.get("method")
     i = m.get("id")
     if method == "initialize":
-        send({"jsonrpc":"2.0","id":i,"result":{"protocolVersion":1,"agentCapabilities":{}}})
+        send({"jsonrpc":"2.0","id":i,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":True,"sessionCapabilities":{"resume":{}}}}})
     elif method == "session/new":
         send({"jsonrpc":"2.0","id":i,"result":{"sessionId":"s1"}})
+    elif method == "session/load" or method == "session/resume":
+        sid = m.get("params",{}).get("sessionId","")
+        send({"jsonrpc":"2.0","id":i,"result":{"sessionId":sid}})
     elif method == "session/prompt":
         text = ""
         for block in m.get("params",{}).get("prompt",[]):
@@ -637,5 +685,47 @@ while True:
             thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(acp.state(), WindowState::Turning);
+    }
+
+    #[test]
+    fn spawn_reopens_the_named_session() {
+        let (_keep, path) = fake_agent();
+        let acp = AcpChild::spawn_resume(&format!("python3 {path}"), Some("ses_pane_1")).unwrap();
+        assert_eq!(acp.session_id().as_deref(), Some("ses_pane_1"));
+    }
+
+    #[test]
+    fn missing_session_falls_back_to_new() {
+        let mut file = tempfile::Builder::new().suffix(".py").tempfile().unwrap();
+        file.write_all(
+            br#"
+import json, sys
+def recv():
+    line = sys.stdin.readline()
+    if not line:
+        return None
+    return json.loads(line)
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+while True:
+    m = recv()
+    if m is None:
+        break
+    method = m.get("method")
+    i = m.get("id")
+    if method == "initialize":
+        send({"jsonrpc":"2.0","id":i,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":True}}})
+    elif method == "session/load":
+        send({"jsonrpc":"2.0","id":i,"error":{"code":-32000,"message":"gone"}})
+    elif method == "session/new":
+        send({"jsonrpc":"2.0","id":i,"result":{"sessionId":"fresh"}})
+"#,
+        )
+        .unwrap();
+        file.flush().unwrap();
+        let path = file.path().display().to_string();
+        let acp = AcpChild::spawn_resume(&format!("python3 {path}"), Some("gone")).unwrap();
+        assert_eq!(acp.session_id().as_deref(), Some("fresh"));
     }
 }

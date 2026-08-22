@@ -46,6 +46,9 @@ pub enum AgentCmd {
         /// Cmdline needles for an inhibit door (repeatable).
         #[arg(long)]
         inhibit: Vec<String>,
+        /// Extra argv to reopen a pane's inner session. `{session}` is the id.
+        #[arg(long)]
+        resume: Option<String>,
         /// Replace a row that already exists.
         #[arg(long)]
         replace: bool,
@@ -81,6 +84,7 @@ pub fn run(cli: AgentCli) -> io::Result<()> {
             adopt,
             http,
             inhibit,
+            resume,
             replace,
         } => add(
             &root,
@@ -91,6 +95,7 @@ pub fn run(cli: AgentCli) -> io::Result<()> {
                 acp_only,
                 adopt,
                 door: door_from_flags(http, inhibit),
+                resume,
                 ..Default::default()
             },
             replace,

@@ -58,9 +58,11 @@ The host assigns each child a stable `sessionId` for as long as
 that process lives. The id is what `session/list` returns and what
 `session/prompt` names.
 
-A child may have its own inner ACP sessions. Those stay inside the
-child. The host's `sessionId` names the *process*, not a
-conversation inside grok.
+A child may have its own inner ACP sessions. The host's
+`sessionId` names the *process*. The inner id is stored on the
+pane. When the host respawns that child it calls `session/load`
+(or `session/resume`) with that id so the conversation is this
+pane's, not a new one.
 
 Human names (`plugin`, `ui`, `anvil`) are `SessionInfo.title`. The
 viewer shows titles. The wire uses `sessionId`.

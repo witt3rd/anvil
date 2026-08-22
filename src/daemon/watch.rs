@@ -19,6 +19,7 @@ pub struct HttpWatch {
     spec: HttpDoor,
     state: Mutex<WindowState>,
     activity: Mutex<Option<String>>,
+    session_id: Mutex<Option<String>>,
     stop: AtomicBool,
 }
 
@@ -29,6 +30,7 @@ impl HttpWatch {
             spec,
             state: Mutex::new(WindowState::Idle),
             activity: Mutex::new(None),
+            session_id: Mutex::new(None),
             stop: AtomicBool::new(false),
         });
         let pump = watch.clone();
@@ -85,6 +87,10 @@ impl HttpWatch {
         self.activity.lock().ok().and_then(|a| a.clone())
     }
 
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id.lock().ok().and_then(|s| s.clone())
+    }
+
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
@@ -118,9 +124,14 @@ impl HttpWatch {
             }
             ticks = ticks.wrapping_add(1);
             if ticks % 5 == 1 {
-                if let Some(act) = refresh_activity(base, &self.spec) {
-                    if let Ok(mut slot) = self.activity.lock() {
-                        *slot = Some(act);
+                if let Some((id, act)) = refresh_work(base, &self.spec) {
+                    if let Ok(mut slot) = self.session_id.lock() {
+                        *slot = Some(id);
+                    }
+                    if let Some(act) = act {
+                        if let Ok(mut slot) = self.activity.lock() {
+                            *slot = Some(act);
+                        }
                     }
                 }
             }
@@ -248,16 +259,18 @@ pub fn current_session_id(body: &str) -> Option<String> {
     best.map(|(_, id)| id)
 }
 
-fn refresh_activity(base: &str, spec: &HttpDoor) -> Option<String> {
+fn refresh_work(base: &str, spec: &HttpDoor) -> Option<(String, Option<String>)> {
     let sessions = spec.sessions.as_deref()?;
     let list = http_get(base, sessions).ok()?;
     let (id, title) = current_work_session(&list)?;
     if !placeholder_title(&title) {
-        return Some(terse(&title, 28));
+        return Some((id, Some(terse(&title, 28))));
     }
     let path = spec.messages.as_deref()?.replace("{id}", &id);
-    let msgs = http_get(base, &path).ok()?;
-    last_user_line(&msgs).map(|s| terse(&s, 28))
+    let act = http_get(base, &path)
+        .ok()
+        .and_then(|msgs| last_user_line(&msgs).map(|s| terse(&s, 28)));
+    Some((id, act))
 }
 
 /// Newest session that is real work, not a courier fork.

@@ -124,8 +124,11 @@ The client (`anvil`) attaches to `$XDG_RUNTIME_DIR/anvil.sock` and
 will start a detached daemon if none is listening — that is for a
 dev tree. A shipped box holds the daemon with the unit. Opening a
 session spawns each named agent pane again (`session.json`
-`agents`). The process is new; the pane and the catalog name are
-not.
+`agents`). The process is new; the pane, the catalog name, and that
+pane's inner session id are not. ACP calls `session/load` or
+`session/resume` with that id. A native TUI gets the catalog
+`resume` argv (`{session}`). Do not use `--continue`: that is the
+last conversation on the box, not this pane's.
 
 The rail's turning mark is OpenCode's HTTP door (`--port`). Prefix
 `a` / `A` pass that flag. A shell that runs `oc` with no `--port`
@@ -137,7 +140,7 @@ not a text editor. Shipped rows live in `agents.default.json`.
 The daemon implements doors, not brands. Adding support:
 
 ```
-anvil agent add NAME --program P [--acp-only] [--acp-program P] [--adopt A] [--http]
+anvil agent add NAME --program P [--acp-only] [--acp-program P] [--adopt A] [--http] [--resume 'F']
 anvil agent from oc --as my-oc
 anvil agent seed
 ```

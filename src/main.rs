@@ -53,7 +53,7 @@ $XDG_RUNTIME_DIR/anvil.sock (ANVIL_SOCK). State is ~/.anvil (ANVIL_ROOT).";
 const AFTER_HELP: &str = "\
 Catalog:
   anvil agent list | show NAME | default [NAME]
-  anvil agent add NAME --program P [--acp-only] [--acp-program P] [--adopt A] [--http]
+  anvil agent add NAME --program P [--acp-only] [--acp-program P] [--adopt A] [--http] [--resume 'F']
   anvil agent from SHIPPED [--as NAME]
   anvil agent rm NAME
   anvil agent seed [--force]
