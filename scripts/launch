@@ -14,6 +14,13 @@ dev_file="${ANVIL_DEV_ROOT_FILE:-$state/dev-root}"
 if [ "${1:-}" = "channel" ]; then
   shift
   case "${1:-show}" in
+    -h | --help)
+      echo "usage: anvil channel [show|stable|dev [worktree]]"
+      echo "  show     which release binary PATH will exec"
+      echo "  stable   this clone"
+      echo "  dev DIR  a worktree; then cargo build --release there"
+      exit 0
+      ;;
     show | "")
       chan=$(cat "$chan_file" 2>/dev/null || echo stable)
       printf 'channel=%s\n' "$chan"
