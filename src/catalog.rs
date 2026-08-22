@@ -23,11 +23,10 @@ impl Seat {
     }
 }
 
-/// A local HTTP server the native TUI exposes. Paths are whatever
-/// that TUI documents; empty fields use the defaults below.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A local HTTP server the native TUI exposes. Every path is config.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HttpDoor {
-    /// Extra argv, `{port}` replaced. Default binds 127.0.0.1.
+    /// Extra argv, `{port}` replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,61 +39,55 @@ pub struct HttpDoor {
     pub append: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submit: Option<String>,
+    /// `{id}` is the session id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages: Option<String>,
 }
 
 impl HttpDoor {
-    pub fn bind_argv(&self, port: u16) -> String {
-        let tmpl = self
-            .bind
+    pub fn bind_argv(&self, port: u16) -> Option<String> {
+        self.bind
             .as_deref()
-            .unwrap_or("--hostname 127.0.0.1 --port {port}");
-        tmpl.replace("{port}", &port.to_string())
-    }
-
-    pub fn health(&self) -> &str {
-        self.health.as_deref().unwrap_or("/global/health")
-    }
-
-    pub fn status(&self) -> &str {
-        self.status.as_deref().unwrap_or("/session/status")
-    }
-
-    pub fn sessions(&self) -> &str {
-        self.sessions.as_deref().unwrap_or("/session")
-    }
-
-    pub fn append(&self) -> &str {
-        self.append.as_deref().unwrap_or("/tui/append-prompt")
-    }
-
-    pub fn submit(&self) -> &str {
-        self.submit.as_deref().unwrap_or("/tui/submit-prompt")
+            .map(|tmpl| tmpl.replace("{port}", &port.to_string()))
     }
 }
 
-impl Default for HttpDoor {
-    fn default() -> Self {
-        HttpDoor {
-            bind: None,
-            health: None,
-            status: None,
-            sessions: None,
-            append: None,
-            submit: None,
-        }
-    }
+/// Session files under `$HOME/<home>` for a title on an inhibit door.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionFiles {
+    pub home: String,
+    #[serde(default = "active_default")]
+    pub active: String,
+    #[serde(default = "summary_default")]
+    pub summary: String,
+    #[serde(default = "history_default")]
+    pub history: String,
+    #[serde(default)]
+    pub title_keys: Vec<String>,
+    #[serde(default)]
+    pub strip_tags: Vec<String>,
 }
 
-/// A descendant cmdline means a turn is in flight. Optional `home`
-/// is a directory under `$HOME` with `active_sessions.json` for a title.
+fn active_default() -> String {
+    "active_sessions.json".into()
+}
+fn summary_default() -> String {
+    "summary.json".into()
+}
+fn history_default() -> String {
+    "chat_history.jsonl".into()
+}
+
+/// A descendant cmdline means a turn is in flight.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InhibitDoor {
     /// Every string must appear in some descendant's cmdline.
     #[serde(default)]
     pub contains: Vec<String>,
-    /// e.g. `".grok"` — title from that product's session files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub home: Option<String>,
+    pub files: Option<SessionFiles>,
 }
 
 /// How the rail and the courier see a **native** seat.
@@ -202,11 +195,12 @@ impl Agent {
         };
         if let Door::Http(http) = self.door() {
             if let Ok(port) = free_port() {
-                let flags = http.bind_argv(port);
-                return (
-                    format!("{head} {flags}").trim().to_string(),
-                    Some(format!("http://127.0.0.1:{port}")),
-                );
+                if let Some(flags) = http.bind_argv(port) {
+                    return (
+                        format!("{head} {flags}").trim().to_string(),
+                        Some(format!("http://127.0.0.1:{port}")),
+                    );
+                }
             }
         }
         (head, None)
@@ -249,53 +243,8 @@ pub struct Agents {
 
 impl Default for Agents {
     fn default() -> Self {
-        Agents {
-            default: "oc".into(),
-            agents: vec![
-                Agent {
-                    name: "oc".into(),
-                    program: "oc".into(),
-                    watch: None,
-                    acp_only: false,
-                    acp_program: Some("oc acp".into()),
-                    adopt: vec!["oc".into(), "opencode".into()],
-                    door: Door::Http(HttpDoor::default()),
-                },
-                Agent {
-                    name: "oc-work".into(),
-                    program: "oc-work".into(),
-                    watch: None,
-                    acp_only: false,
-                    acp_program: Some("oc-work acp".into()),
-                    adopt: vec!["oc-work".into()],
-                    door: Door::Http(HttpDoor::default()),
-                },
-                Agent {
-                    name: "grok".into(),
-                    program: "grok".into(),
-                    watch: None,
-                    acp_only: false,
-                    acp_program: None,
-                    adopt: vec!["grok".into()],
-                    door: Door::Inhibit(InhibitDoor {
-                        contains: vec![
-                            "systemd-inhibit".into(),
-                            "turn in progress".into(),
-                        ],
-                        home: Some(".grok".into()),
-                    }),
-                },
-                Agent {
-                    name: "rung".into(),
-                    program: "rung-agent --acp".into(),
-                    watch: None,
-                    acp_only: true,
-                    acp_program: None,
-                    adopt: Vec::new(),
-                    door: Door::None,
-                },
-            ],
-        }
+        serde_json::from_str(include_str!("../agents.default.json"))
+            .expect("agents.default.json is valid catalog")
     }
 }
 
@@ -319,7 +268,7 @@ impl Agents {
         self.by_name(&self.default)
             .or_else(|| self.agents.first())
             .cloned()
-            .unwrap_or_else(Agents::fallback)
+            .unwrap_or_default()
     }
 
     pub fn by_name(&self, name: &str) -> Option<&Agent> {
@@ -380,20 +329,6 @@ fn cmd_means(bins: &[&str], argv0: &str, alias: &str) -> bool {
     false
 }
 
-impl Agents {
-    fn fallback() -> Agent {
-        Agent {
-            name: "oc".into(),
-            program: "oc".into(),
-            watch: None,
-            acp_only: false,
-            acp_program: Some("oc acp".into()),
-            adopt: vec!["oc".into(), "opencode".into()],
-            door: Door::Http(HttpDoor::default()),
-        }
-    }
-}
-
 /// A process tree matched a catalog row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdoptHit {
@@ -446,9 +381,12 @@ mod tests {
         )
         .unwrap();
         assert!(a.door().is_http());
-        let (cmd, url) = a.tui_spawn();
-        assert!(cmd.starts_with("oc --hostname 127.0.0.1 --port "));
-        assert!(url.unwrap().starts_with("http://127.0.0.1:"));
+        let shipped = Agents::default()
+            .by_name("oc")
+            .unwrap()
+            .tui_spawn();
+        assert!(shipped.0.contains("--port "));
+        assert!(shipped.1.unwrap().starts_with("http://127.0.0.1:"));
     }
 
     #[test]

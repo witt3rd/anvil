@@ -44,22 +44,36 @@ impl HttpWatch {
     pub fn prompt(&self, text: &str) -> io::Result<()> {
         let append = serde_json::to_string(&json!({ "text": text }))
             .map_err(io::Error::other)?;
-        if http_post(&self.base, self.spec.append(), &append).is_ok() {
-            let _ = http_post(&self.base, self.spec.submit(), "{}");
-            return Ok(());
+        if let Some(path) = self.spec.append.as_deref() {
+            if http_post(&self.base, path, &append).is_ok() {
+                if let Some(submit) = self.spec.submit.as_deref() {
+                    let _ = http_post(&self.base, submit, "{}");
+                }
+                return Ok(());
+            }
         }
-        let list = http_get(&self.base, self.spec.sessions())?;
+        let sessions = self
+            .spec
+            .sessions
+            .as_deref()
+            .ok_or_else(|| io::Error::other("this door has no sessions path"))?;
+        let list = http_get(&self.base, sessions)?;
         let sid = current_session_id(&list)
             .ok_or_else(|| io::Error::other("the agent has no session"))?;
         let body = serde_json::to_string(&json!({
             "parts": [{ "type": "text", "text": text }]
         }))
         .map_err(io::Error::other)?;
-        http_post(
-            &self.base,
-            &format!("{}/{sid}/prompt_async", self.spec.sessions().trim_end_matches('/')),
-            &body,
-        )?;
+        let path = self
+            .spec
+            .prompt
+            .as_deref()
+            .unwrap_or("")
+            .replace("{id}", &sid);
+        if path.is_empty() {
+            return Err(io::Error::other("this door has no prompt path"));
+        }
+        http_post(&self.base, &path, &body)?;
         Ok(())
     }
 
@@ -81,23 +95,30 @@ impl HttpWatch {
             if self.stop.load(Ordering::Relaxed) {
                 return;
             }
-            if http_get(base, self.spec.health()).is_ok() {
+            if let Some(health) = self.spec.health.as_deref() {
+                if http_get(base, health).is_ok() {
+                    break;
+                }
+            } else {
                 break;
             }
             thread::sleep(Duration::from_millis(100));
         }
         let mut ticks = 0u32;
         while !self.stop.load(Ordering::Relaxed) {
-            let next = match http_get(base, self.spec.status()) {
-                Ok(body) => status_from_json(&body),
-                Err(_) => WindowState::Idle,
+            let next = match self.spec.status.as_deref() {
+                Some(status) => match http_get(base, status) {
+                    Ok(body) => status_from_json(&body),
+                    Err(_) => WindowState::Idle,
+                },
+                None => WindowState::Idle,
             };
             if let Ok(mut state) = self.state.lock() {
                 *state = next;
             }
             ticks = ticks.wrapping_add(1);
             if ticks % 5 == 1 {
-                if let Some(act) = refresh_activity(base, self.spec.sessions()) {
+                if let Some(act) = refresh_activity(base, &self.spec) {
                     if let Ok(mut slot) = self.activity.lock() {
                         *slot = Some(act);
                     }
@@ -227,17 +248,15 @@ pub fn current_session_id(body: &str) -> Option<String> {
     best.map(|(_, id)| id)
 }
 
-fn refresh_activity(base: &str, sessions: &str) -> Option<String> {
+fn refresh_activity(base: &str, spec: &HttpDoor) -> Option<String> {
+    let sessions = spec.sessions.as_deref()?;
     let list = http_get(base, sessions).ok()?;
     let (id, title) = current_work_session(&list)?;
     if !placeholder_title(&title) {
         return Some(terse(&title, 28));
     }
-    let msgs = http_get(
-        base,
-        &format!("{}/{id}/message?limit=8", sessions.trim_end_matches('/')),
-    )
-    .ok()?;
+    let path = spec.messages.as_deref()?.replace("{id}", &id);
+    let msgs = http_get(base, &path).ok()?;
     last_user_line(&msgs).map(|s| terse(&s, 28))
 }
 

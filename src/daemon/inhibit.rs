@@ -6,15 +6,15 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::catalog::SessionFiles;
 use super::adopt;
 
-pub fn activity(pid: u32, home: &str) -> Option<String> {
-    let hit = live(pid, home)?;
-    let summary = read_summary(&hit, home)?;
-    if let Some(title) = summary.title().filter(|t| !placeholder(t)) {
-        return Some(terse(title, 28));
+pub fn activity(pid: u32, files: &SessionFiles) -> Option<String> {
+    let hit = live(pid, files)?;
+    if let Some(title) = read_title(&hit, files).filter(|t| !placeholder(t)) {
+        return Some(terse(&title, 28));
     }
-    last_user(&hit, home).map(|s| terse(&s, 28))
+    last_user(&hit, files).map(|s| terse(&s, 28))
 }
 
 pub fn turning(pid: u32, needles: &[String]) -> bool {
@@ -47,27 +47,11 @@ struct Active {
     cwd: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct Summary {
-    #[serde(default)]
-    generated_title: Option<String>,
-    #[serde(default)]
-    session_summary: Option<String>,
-}
-
-impl Summary {
-    fn title(&self) -> Option<&str> {
-        self.generated_title
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .or(self.session_summary.as_deref().filter(|s| !s.is_empty()))
-    }
-}
-
-fn live(root: u32, home: &str) -> Option<Hit> {
-    let active: Vec<Active> =
-        serde_json::from_str(&fs::read_to_string(product_home(home).join("active_sessions.json")).ok()?)
-            .ok()?;
+fn live(root: u32, files: &SessionFiles) -> Option<Hit> {
+    let active: Vec<Active> = serde_json::from_str(
+        &fs::read_to_string(product_home(&files.home).join(&files.active)).ok()?,
+    )
+    .ok()?;
     for a in &active {
         if a.pid == root || ancestor_of(a.pid, root) {
             return Some(Hit {
@@ -108,13 +92,26 @@ fn ppid(pid: u32) -> Option<u32> {
     rest.split_whitespace().nth(1)?.parse().ok()
 }
 
-fn read_summary(hit: &Hit, home: &str) -> Option<Summary> {
-    let text = fs::read_to_string(session_dir(home, &hit.cwd).join(&hit.session_id).join("summary.json")).ok()?;
-    serde_json::from_str(&text).ok()
+fn read_title(hit: &Hit, files: &SessionFiles) -> Option<String> {
+    let text = fs::read_to_string(
+        session_dir(&files.home, &hit.cwd)
+            .join(&hit.session_id)
+            .join(&files.summary),
+    )
+    .ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    for key in &files.title_keys {
+        if let Some(s) = v.get(key).and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
+            return Some(s.to_string());
+        }
+    }
+    None
 }
 
-fn last_user(hit: &Hit, home: &str) -> Option<String> {
-    let path = session_dir(home, &hit.cwd).join(&hit.session_id).join("chat_history.jsonl");
+fn last_user(hit: &Hit, files: &SessionFiles) -> Option<String> {
+    let path = session_dir(&files.home, &hit.cwd)
+        .join(&hit.session_id)
+        .join(&files.history);
     let text = fs::read_to_string(path).ok()?;
     let mut last = None;
     for line in text.lines().rev() {
@@ -124,7 +121,7 @@ fn last_user(hit: &Hit, home: &str) -> Option<String> {
         if v.get("type").and_then(|t| t.as_str()) != Some("user") {
             continue;
         }
-        if let Some(s) = user_text(&v) {
+        if let Some(s) = user_text(&v, &files.strip_tags) {
             last = Some(s);
             break;
         }
@@ -132,7 +129,7 @@ fn last_user(hit: &Hit, home: &str) -> Option<String> {
     last
 }
 
-fn user_text(v: &serde_json::Value) -> Option<String> {
+fn user_text(v: &serde_json::Value, strip_tags: &[String]) -> Option<String> {
     let content = v.get("content")?;
     let raw = if let Some(s) = content.as_str() {
         s.to_string()
@@ -151,11 +148,14 @@ fn user_text(v: &serde_json::Value) -> Option<String> {
     } else {
         return None;
     };
-    let t = raw
-        .trim()
-        .strip_prefix("<user_query>")
-        .unwrap_or(raw.trim());
-    let t = t.split("</user_query>").next().unwrap_or(t).trim();
+    let mut t = raw.trim().to_string();
+    for tag in strip_tags {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        if let Some(rest) = t.strip_prefix(&open) {
+            t = rest.split(&close).next().unwrap_or(rest).trim().to_string();
+        }
+    }
     if t.is_empty() {
         None
     } else {
@@ -225,7 +225,10 @@ mod tests {
             "type": "user",
             "content": [{"type": "text", "text": "<user_query>\ncreate smith\n</user_query>"}]
         });
-        assert_eq!(user_text(&v).as_deref(), Some("create smith"));
+        assert_eq!(
+            user_text(&v, &["user_query".into()]).as_deref(),
+            Some("create smith")
+        );
     }
 
     #[test]
@@ -235,11 +238,14 @@ mod tests {
     }
 
     #[test]
-    fn summary_prefers_generated_title() {
-        let s: Summary = serde_json::from_str(
+    fn title_keys_pick_the_first_hit() {
+        let v: serde_json::Value = serde_json::from_str(
             r#"{"generated_title":"Create Rust project smith like anvil","session_summary":"older"}"#,
         )
         .unwrap();
-        assert_eq!(s.title(), Some("Create Rust project smith like anvil"));
+        let title = ["generated_title", "session_summary"]
+            .iter()
+            .find_map(|k| v.get(*k).and_then(|x| x.as_str()).filter(|s| !s.is_empty()));
+        assert_eq!(title, Some("Create Rust project smith like anvil"));
     }
 }

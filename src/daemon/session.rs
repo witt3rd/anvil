@@ -503,9 +503,9 @@ impl Session {
             .and_then(|w| w.activity())
             .or_else(|| {
                 let name = self.names.get(id)?;
-                let home = self.catalog.by_name(name)?.door().inhibit()?.home.clone()?;
+                let files = self.catalog.by_name(name)?.door().inhibit()?.files.clone()?;
                 let pid = self.panes.get(id)?.pid()?;
-                super::inhibit::activity(pid, &home)
+                super::inhibit::activity(pid, &files)
             })
     }
 
