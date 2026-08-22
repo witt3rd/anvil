@@ -5,19 +5,42 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// One named agent: the program to spawn, and how the rail watches it.
+/// How to seat an agent that has both a native TUI and ACP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seat {
+    /// Their own TUI on a PTY.
+    Native,
+    /// Anvil's prompt/response viewer over ACP stdio.
+    Anvil,
+}
+
+impl Seat {
+    pub fn label(self) -> &'static str {
+        match self {
+            Seat::Native => "native TUI",
+            Seat::Anvil => "anvil",
+        }
+    }
+}
+
+/// One named agent. Every agent is ACP-capable so the rail can see a
+/// turn. `acp_only` is the inverse: no native TUI, so the seat is
+/// always anvil. Otherwise the operator picks native or anvil at launch.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Agent {
     pub name: String,
+    /// Native TUI, or the ACP program when `acp_only`.
     pub program: String,
-    /// `"http"` — OpenCode's `/session/status` door. The TUI is launched
-    /// with `--hostname 127.0.0.1 --port N` so the wrapper stays argv0.
+    /// `"http"` — OpenCode's `/session/status` door on a native seat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch: Option<String>,
-    /// The process speaks ACP on stdio. The pane is the prompt/response
-    /// view, not a PTY.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub acp: bool,
+    /// No native TUI. Old catalogs used `"acp": true` for this.
+    #[serde(default, alias = "acp", skip_serializing_if = "is_false")]
+    pub acp_only: bool,
+    /// ACP stdio program when the native TUI is a different command.
+    /// Unused when `acp_only` — `program` is already ACP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_program: Option<String>,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -40,25 +63,29 @@ impl Default for Agents {
                     name: "oc".into(),
                     program: "oc".into(),
                     watch: Some("http".into()),
-                    acp: false,
+                    acp_only: false,
+                    acp_program: Some("oc acp".into()),
                 },
                 Agent {
                     name: "oc-work".into(),
                     program: "oc-work".into(),
                     watch: Some("http".into()),
-                    acp: false,
+                    acp_only: false,
+                    acp_program: Some("oc-work acp".into()),
                 },
                 Agent {
                     name: "grok".into(),
                     program: "grok".into(),
                     watch: None,
-                    acp: false,
+                    acp_only: false,
+                    acp_program: None,
                 },
                 Agent {
                     name: "rung".into(),
                     program: "rung-agent --acp".into(),
                     watch: None,
-                    acp: true,
+                    acp_only: true,
+                    acp_program: None,
                 },
             ],
         }
@@ -116,12 +143,36 @@ impl Agents {
             name: "oc".into(),
             program: "oc".into(),
             watch: Some("http".into()),
-            acp: false,
+            acp_only: false,
+            acp_program: Some("oc acp".into()),
         }
     }
 }
 
 impl Agent {
+    pub fn seats(&self) -> Vec<Seat> {
+        let mut out = Vec::new();
+        if !self.acp_only {
+            out.push(Seat::Native);
+        }
+        if self.acp_cmd().is_some() {
+            out.push(Seat::Anvil);
+        }
+        if out.is_empty() {
+            out.push(Seat::Native);
+        }
+        out
+    }
+
+    /// ACP stdio command, if this agent can sit in anvil's viewer.
+    pub fn acp_cmd(&self) -> Option<&str> {
+        if self.acp_only {
+            Some(self.program.as_str())
+        } else {
+            self.acp_program.as_deref()
+        }
+    }
+
     /// TUI command and optional HTTP door for the rail.
     /// `watch: "http"` (or a known OpenCode wrapper) keeps `program` as
     /// argv0 and appends `--hostname 127.0.0.1 --port N`.
@@ -210,6 +261,16 @@ mod tests {
         );
     }
 
+    fn oc() -> Agent {
+        Agent {
+            name: "oc".into(),
+            program: "oc".into(),
+            watch: Some("http".into()),
+            acp_only: false,
+            acp_program: Some("oc acp".into()),
+        }
+    }
+
     #[test]
     fn load_writes_the_default_file() {
         let dir = std::env::temp_dir().join(format!("anvil-agents-{}", std::process::id()));
@@ -217,19 +278,42 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let agents = Agents::load(&dir);
         assert_eq!(agents.default, "oc");
-        assert!(agents.agents.iter().any(|a| a.name == "rung" && a.acp));
+        let rung = agents.agents.iter().find(|a| a.name == "rung").unwrap();
+        assert!(rung.acp_only);
+        assert_eq!(rung.seats(), vec![Seat::Anvil]);
+        let oc = agents.agents.iter().find(|a| a.name == "oc").unwrap();
+        assert_eq!(oc.seats(), vec![Seat::Native, Seat::Anvil]);
         assert!(dir.join("agents.json").is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn tui_spawn_keeps_the_wrapper() {
-        let oc = Agent {
-            name: "oc".into(),
-            program: "oc".into(),
-            watch: Some("http".into()),
-            acp: false,
+    fn old_acp_true_is_acp_only() {
+        let agent: Agent = serde_json::from_str(
+            r#"{"name":"rung","program":"rung-agent --acp","acp":true}"#,
+        )
+        .unwrap();
+        assert!(agent.acp_only);
+        assert_eq!(agent.acp_cmd(), Some("rung-agent --acp"));
+        assert_eq!(agent.seats(), vec![Seat::Anvil]);
+    }
+
+    #[test]
+    fn grok_is_native_until_it_has_an_acp_program() {
+        let grok = Agent {
+            name: "grok".into(),
+            program: "grok".into(),
+            watch: None,
+            acp_only: false,
+            acp_program: None,
         };
+        assert_eq!(grok.seats(), vec![Seat::Native]);
+        assert_eq!(grok.acp_cmd(), None);
+    }
+
+    #[test]
+    fn tui_spawn_keeps_the_wrapper() {
+        let oc = oc();
         let (cmd, watch) = oc.tui_spawn();
         assert!(cmd.starts_with("oc --hostname 127.0.0.1 --port "));
         assert!(watch.unwrap().starts_with("http://127.0.0.1:"));
@@ -238,7 +322,8 @@ mod tests {
             name: "oc-work".into(),
             program: "oc-work".into(),
             watch: Some("http".into()),
-            acp: false,
+            acp_only: false,
+            acp_program: Some("oc-work acp".into()),
         };
         let (cmd, _) = work.tui_spawn();
         assert!(cmd.starts_with("oc-work --hostname 127.0.0.1 --port "));

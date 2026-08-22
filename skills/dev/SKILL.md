@@ -19,7 +19,8 @@ Whenever a vim motion is bound, bind the matching arrow too:
 
 A list that needs a selection takes a mouse: click a row to pick
 it, wheel to move (`j`/`k`). Enter confirms. Prefix pane focus,
-the session popup, and the agent catalog are the current lists.
+the session popup, the agent catalog, and the native/anvil list
+are the current lists.
 
 # Build
 
@@ -104,9 +105,14 @@ The rail's turning mark is OpenCode's HTTP door (`--port`). Prefix
 has no door — OpenCode's default port `0` does not listen. The
 unit's PATH must include `~/.local/bin` or spawn cannot find `oc`.
 
-An ACP catalog row (`acp: true`) is stdio, not a PTY. Prefix `A`
-and pick `rung` (`rung-agent --acp`). The pane is the
-prompt/response viewer. Turning is an in-flight `session/prompt`.
+Every catalog row is ACP-capable so a turn can be watched. Mark
+the inverse: `acp_only: true` when there is no native TUI
+(old files used `"acp": true`). Otherwise `program` is their TUI
+and `acp_program` is the ACP stdio command (`oc acp`). Prefix
+`a` launches the default agent's native TUI when they have one,
+else anvil. Prefix `A` picks the agent; if both seats exist, a
+second list asks native TUI or anvil. `rung` is `acp_only`.
+Turning on anvil is an in-flight `session/prompt`.
 
 # Not yet published
 
