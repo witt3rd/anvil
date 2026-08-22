@@ -22,6 +22,10 @@ it, wheel to move (`j`/`k`). Enter confirms. Prefix pane focus,
 the session popup, the agent catalog, and the native/anvil list
 are the current lists.
 
+Prefix `m` is the current window's note. It is a text box, not a
+list: enter is a newline, esc saves the markdown blob on the
+window. Space on `- [ ]` / `- [x]` toggles the task.
+
 # Build
 
 ```bash

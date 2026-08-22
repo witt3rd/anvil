@@ -251,6 +251,7 @@ mod tests {
             windows: vec![WindowView {
                 window: "w".into(),
                 state: WindowState::Idle,
+                note: String::new(),
                 panes,
             }],
         }

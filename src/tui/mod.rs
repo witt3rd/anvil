@@ -7,6 +7,7 @@ pub mod agents;
 pub mod clip;
 pub mod focus;
 pub mod keymap;
+pub mod notes;
 pub mod sat;
 pub mod select;
 pub mod sessions;
@@ -31,6 +32,7 @@ use crate::proto::{Reply, Request, Value};
 
 use agents::{Agent, Agents, Seat, unique_name};
 use keymap::{Action, AppWhichKey, Scope, build_which_key_state};
+use notes::Notes;
 
 /// The opencode palette, shipped with anvil and loaded through
 /// opaline's public loader — opaline itself stays untouched.
@@ -135,6 +137,7 @@ pub struct Client {
     host: String,
     sat: crate::daemon::sat::Snap,
     prompting: Option<String>,
+    notes: Option<Notes>,
     selection: Option<select::Selection>,
     toast: Option<Toast>,
     recency: HashMap<String, side::Recency>,
@@ -193,6 +196,7 @@ impl Client {
             host: host_name(),
             sat: crate::daemon::sat::Snap::load(&agents::default_root()),
             prompting: None,
+            notes: None,
             selection: None,
             toast: None,
             recency: HashMap::new(),
@@ -276,6 +280,7 @@ impl Client {
             session,
             name: name.into(),
             window: Some(window),
+            note: None,
         })?;
         Ok(())
     }
@@ -287,9 +292,22 @@ impl Client {
             session,
             name: name.into(),
             window: None,
+            note: None,
         })?;
         self.attached = Some(name.into());
         self.enumerate()?;
+        Ok(())
+    }
+
+    fn save_note(&mut self, window: &str, note: &str) -> io::Result<()> {
+        let session = self.attached.clone().ok_or_else(|| io::Error::other("no session"))?;
+        self.call(Request::Rename {
+            id: String::new(),
+            session,
+            name: window.into(),
+            window: Some(window.into()),
+            note: Some(note.into()),
+        })?;
         Ok(())
     }
 
@@ -783,6 +801,27 @@ impl Client {
                 _ => return Ok(()),
             }
         }
+        if self.notes.is_some() {
+            let keep = self.notes.as_mut().is_some_and(|n| n.key(key));
+            if !keep {
+                if let Some(n) = self.notes.take() {
+                    let window = n.window.clone();
+                    let text = n.text();
+                    match self.save_note(&window, &text) {
+                        Ok(()) => {
+                            self.last_error = None;
+                            return self.refresh();
+                        }
+                        Err(err) => {
+                            self.notes = Some(n);
+                            self.last_error = Some(err.to_string());
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
         if self.prompting.is_some() {
             match key.code {
                 KeyCode::Esc => {
@@ -1055,6 +1094,21 @@ impl Client {
                 self.prompting = Some(String::new());
                 Ok(())
             }
+            Action::Notes => {
+                let Some(window) = self.focused_window() else {
+                    self.last_error = Some("no window".into());
+                    return Ok(());
+                };
+                let text = self
+                    .view
+                    .as_ref()
+                    .and_then(|v| v.windows.iter().find(|w| w.window == window))
+                    .map(|w| w.note.clone())
+                    .unwrap_or_default();
+                self.last_error = None;
+                self.notes = Some(Notes::open(window, &text));
+                Ok(())
+            }
             Action::Help => unreachable!(),
         };
         self.which_key.set_scope(Scope::Global);
@@ -1147,8 +1201,35 @@ impl Client {
         row: u16,
         kind: ratatui::crossterm::event::MouseEventKind,
     ) -> io::Result<bool> {
-        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEventKind};
         let area = Rect::new(0, 0, self.tty.0, self.tty.1);
+        if let Some(notes) = self.notes.as_mut() {
+            let popup = notes::notes_box(area);
+            match kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if pick_contains(popup, col, row) {
+                        let inner = pick_inner(popup);
+                        let visible = inner.height.max(1) as usize;
+                        let scroll = notes.row().saturating_sub(visible.saturating_sub(1));
+                        notes.click(inner, col, row, scroll);
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    notes.key(ratatui::crossterm::event::KeyEvent::new(
+                        KeyCode::Down,
+                        ratatui::crossterm::event::KeyModifiers::NONE,
+                    ));
+                }
+                MouseEventKind::ScrollUp => {
+                    notes.key(ratatui::crossterm::event::KeyEvent::new(
+                        KeyCode::Up,
+                        ratatui::crossterm::event::KeyModifiers::NONE,
+                    ));
+                }
+                _ => {}
+            }
+            return Ok(true);
+        }
         if let Some(idx) = self.sessions_pick {
             let n = self.sessions.len();
             let popup = pick_box(area, n, 36, 64);
@@ -1552,6 +1633,9 @@ impl Client {
         }
         if self.picking.is_some() {
             self.draw_agents_popup(frame, area);
+        }
+        if self.notes.is_some() {
+            self.draw_notes(frame, area);
         }
 
         if self.which_key.active || !self.which_key.current_sequence.is_empty() {
@@ -2030,6 +2114,17 @@ impl Client {
                 ("esc", "cancel"),
             ];
         }
+        if let Some(notes) = &self.notes {
+            let mut hints = vec![
+                ("enter", "newline"),
+                ("esc", "save"),
+                ("↑↓", "move"),
+            ];
+            if notes.on_task() {
+                hints.insert(0, ("space", "check"));
+            }
+            return hints;
+        }
         if self.naming.is_some() || self.prompting.is_some() {
             return vec![("enter", "ok"), ("esc", "cancel")];
         }
@@ -2050,6 +2145,7 @@ impl Client {
         }
         hints.push(("ctrl-b a", "new agent"));
         hints.push(("ctrl-b c", "new shell"));
+        hints.push(("ctrl-b m", "notes"));
         if self.window_count() > 1 {
             hints.push(("ctrl-b ]", "next"));
         }
@@ -2112,7 +2208,11 @@ impl Client {
             Style::default().fg(self.c("text.dim")).bg(panel)
         };
         let mut spans: Vec<Span> = Vec::new();
-        if self.sessions_pick.is_some() || self.picking.is_some() || self.seat_pick.is_some() {
+        if self.sessions_pick.is_some()
+            || self.picking.is_some()
+            || self.seat_pick.is_some()
+            || self.notes.is_some()
+        {
             // The popup is the list; the footer is only keys.
         } else if let Some(draft) = &self.prompting {
             spans.push(Span::styled(format!("prompt: {draft}_"), key));
@@ -2290,6 +2390,76 @@ impl Client {
                     inner.width.saturating_sub(2) as usize,
                     Style::default().fg(self.c("text.dim")),
                 );
+            }
+        }
+    }
+
+    fn draw_notes(&self, frame: &mut ratatui::Frame, area: Rect) {
+        let Some(notes) = &self.notes else {
+            return;
+        };
+        let popup = notes::notes_box(area);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Block::default()
+                .title(format!(" {} ", notes.window))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.c("border.focused")))
+                .bg(self.c("bg.panel")),
+            popup,
+        );
+        let inner = pick_inner(popup);
+        let visible = inner.height.max(1) as usize;
+        let scroll = notes.row().saturating_sub(visible.saturating_sub(1));
+        for i in scroll..notes.line_count().min(scroll + visible) {
+            let y = inner.y + (i - scroll) as u16;
+            if y >= inner.bottom() {
+                break;
+            }
+            let line = notes.line(i);
+            let here = i == notes.row();
+            let bg = if here {
+                self.c("bg.elevated")
+            } else {
+                self.c("bg.panel")
+            };
+            if here {
+                frame.render_widget(
+                    Block::default().bg(bg),
+                    Rect {
+                        x: inner.x,
+                        y,
+                        width: inner.width,
+                        height: 1,
+                    },
+                );
+            }
+            let body = Style::default().fg(self.c("text.primary")).bg(bg);
+            frame.buffer_mut().set_stringn(inner.x, y, line, inner.width as usize, body);
+            if let Some((at, checked)) = notes::task_box(line) {
+                let mark = if checked { "[x]" } else { "[ ]" };
+                let box_style = Style::default()
+                    .fg(if checked {
+                        self.c("accent.primary")
+                    } else {
+                        self.c("text.muted")
+                    })
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD);
+                frame.buffer_mut().set_stringn(
+                    inner.x.saturating_add(at as u16),
+                    y,
+                    mark,
+                    inner.width.saturating_sub(at as u16) as usize,
+                    box_style,
+                );
+            }
+            if here {
+                let cursor_x = inner.x.saturating_add(notes.col() as u16);
+                if cursor_x < inner.right() {
+                    frame.buffer_mut()[(cursor_x, y)]
+                        .set_style(Style::default().add_modifier(Modifier::REVERSED));
+                }
             }
         }
     }
@@ -2705,12 +2875,14 @@ impl Request {
                 session,
                 name,
                 window,
+                note,
                 ..
             } => Request::Rename {
                 id: id.into(),
                 session,
                 name,
                 window,
+                note,
             },
             Request::Destroy { session, .. } => Request::Destroy { id: id.into(), session },
             Request::Read { session, pane, .. } => Request::Read {
@@ -2937,6 +3109,7 @@ mod tests {
                 crate::daemon::session::WindowView {
                     window: "oc".into(),
                     state: WindowState::Idle,
+                    note: String::new(),
                     panes: vec![crate::daemon::session::PaneView {
                         pane: "1".into(),
                         x: 0,
@@ -2951,6 +3124,7 @@ mod tests {
                 crate::daemon::session::WindowView {
                     window: "grok".into(),
                     state: WindowState::Idle,
+                    note: String::new(),
                     panes: vec![crate::daemon::session::PaneView {
                         pane: "2".into(),
                         x: 0,

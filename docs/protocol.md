@@ -37,6 +37,7 @@ the args tell them apart.
 | `attach` | `session` | the client now views this session |
 | `rename` | `session`, `name` | the session under its new name |
 | `rename` | `session`, `window`, `name` | the window under its new name |
+| `rename` | `session`, `window`, `name`, `note` | the window's markdown blob |
 | `destroy` | `session` | the session is gone; its windows and panes with it |
 | `read` | `session` | the session's windows, their panes, each pane's geometry, the focused pane, and each process |
 

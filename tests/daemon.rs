@@ -231,6 +231,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         session: "work".into(),
         name: "deep".into(),
         window: None,
+        note: None,
     });
     let Value::Sessions { sessions } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
         panic!("expected session names")

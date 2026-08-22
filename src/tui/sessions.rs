@@ -69,6 +69,7 @@ mod tests {
                 WindowView {
                     window: "oc".into(),
                     state: WindowState::Idle,
+                    note: String::new(),
                     panes: vec![PaneView {
                         pane: "1".into(),
                         x: 0,
@@ -83,6 +84,7 @@ mod tests {
                 WindowView {
                     window: "sh".into(),
                     state: WindowState::Dead,
+                    note: String::new(),
                     panes: vec![PaneView {
                         pane: "2".into(),
                         x: 0,
