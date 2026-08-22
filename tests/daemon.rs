@@ -264,6 +264,38 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
 }
 
 #[test]
+fn a_window_note_round_trips_on_the_wire() {
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(dir.path());
+    let mut client = Client::connect(&daemon.sock);
+    client.ok(|id| Request::Create {
+        id: id.into(),
+        session: "work".into(),
+        window: None,
+    });
+    client.ok(|id| Request::Attach {
+        id: id.into(),
+        session: "work".into(),
+    });
+    client.ok(|id| Request::Rename {
+        id: id.into(),
+        session: "work".into(),
+        name: "sh".into(),
+        window: Some("sh".into()),
+        note: Some("- [ ] keep this\nsecond line".into()),
+    });
+    let Value::View(view) = client.ok(|id| Request::Read {
+        id: id.into(),
+        session: Some("work".into()),
+        pane: None,
+    }) else {
+        panic!("expected a view")
+    };
+    let note = &view.windows.iter().find(|w| w.window == "sh").unwrap().note;
+    assert_eq!(note, "- [ ] keep this\nsecond line");
+}
+
+#[test]
 fn stop_takes_the_daemon_down() {
     let dir = tempfile::tempdir().unwrap();
     let daemon = Daemon::start(dir.path());

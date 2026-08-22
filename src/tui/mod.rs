@@ -308,6 +308,18 @@ impl Client {
             window: Some(window.into()),
             note: Some(note.into()),
         })?;
+        self.refresh()?;
+        let stored = self
+            .view
+            .as_ref()
+            .and_then(|v| v.windows.iter().find(|w| w.window == window))
+            .map(|w| w.note.as_str())
+            .unwrap_or("");
+        if stored != note {
+            return Err(io::Error::other(
+                "the daemon did not keep the note; it is an older binary. anvil --restart",
+            ));
+        }
         Ok(())
     }
 
