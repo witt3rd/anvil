@@ -73,8 +73,9 @@ The client does not poll. A PTY child has a thinner signal: alive
 or dead, and whatever the process writes to the title.
 
 The **rail** is three cells: `┃` on the current row, then the
-mark. Rail marks start on the same rows as the open names, so
-the list does not jump when it collapses. The sidebar keeps
+mark. Each entry still occupies two rows — the mark on the name
+row, the clause row blank — so marks sit on the same rows as the
+open names and the list does not jump when it collapses. The sidebar keeps
 a blank row above the footer; the panes do not shrink.
 The `─` stays on the same split as the open list.
 Agents occupy the block below. The column is `bg.base` — no
@@ -130,8 +131,13 @@ Prefix `a` opens a new window on the default agent (`agents.json`).
 The catalog names the program (`oc`, `oc-work`, `grok`). An
 OpenCode wrapper stays argv0; `--hostname` / `--port` are appended
 so the daemon can watch `/session/status`. Prefix `A` picks from
-the catalog. Prefix `c` opens a shell. Prefix `,` renames the current
-window.
+the catalog — a vertical list. Prefix `c` opens a shell. Prefix
+`,` renames the current window.
+
+Vim motion keys always have the matching arrow: `h`/`←`, `j`/`↓`,
+`k`/`↑`, `l`/`→`. A list that needs a selection (the catalog, the
+sessions popup, the sidebar) always takes a click. The wheel
+moves the same way as `j`/`k`. Enter still confirms.
 
 ## The tiles
 

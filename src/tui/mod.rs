@@ -627,15 +627,11 @@ impl Client {
                     return Ok(());
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if n > 0 {
-                        self.sessions_pick = Some((idx + 1) % n);
-                    }
+                    self.sessions_pick = Some(step_pick(idx, n, true));
                     return Ok(());
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    if n > 0 {
-                        self.sessions_pick = Some((idx + n - 1) % n);
-                    }
+                    self.sessions_pick = Some(step_pick(idx, n, false));
                     return Ok(());
                 }
                 KeyCode::Char('n') => {
@@ -677,15 +673,11 @@ impl Client {
                     return Ok(());
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if n > 0 {
-                        self.picking = Some((idx + 1) % n);
-                    }
+                    self.picking = Some(step_pick(idx, n, true));
                     return Ok(());
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    if n > 0 {
-                        self.picking = Some((idx + n - 1) % n);
-                    }
+                    self.picking = Some(step_pick(idx, n, false));
                     return Ok(());
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
@@ -1057,6 +1049,65 @@ impl Client {
         Ok(())
     }
 
+    /// A popup list eats the mouse: click a row to pick it, wheel
+    /// moves like `j`/`k`, click outside cancels.
+    fn picker_mouse(
+        &mut self,
+        col: u16,
+        row: u16,
+        kind: ratatui::crossterm::event::MouseEventKind,
+    ) -> io::Result<bool> {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let area = Rect::new(0, 0, self.tty.0, self.tty.1);
+        if let Some(idx) = self.sessions_pick {
+            let n = self.sessions.len();
+            let popup = pick_box(area, n, 36, 64);
+            match kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if !pick_contains(popup, col, row) {
+                        self.sessions_pick = None;
+                        return Ok(true);
+                    }
+                    if let Some(i) = pick_row(pick_inner(popup), n, idx, row) {
+                        self.sessions_pick = Some(i);
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    self.sessions_pick = Some(step_pick(idx, n, true));
+                }
+                MouseEventKind::ScrollUp => {
+                    self.sessions_pick = Some(step_pick(idx, n, false));
+                }
+                _ => {}
+            }
+            return Ok(true);
+        }
+        if let Some(idx) = self.picking {
+            let n = self.catalog.agents.len();
+            let popup = pick_box(area, n, 28, 48);
+            match kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if !pick_contains(popup, col, row) {
+                        self.picking = None;
+                        return Ok(true);
+                    }
+                    if let Some(i) = pick_row(pick_inner(popup), n, idx, row) {
+                        self.picking = Some(i);
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    self.picking = Some(step_pick(idx, n, true));
+                }
+                MouseEventKind::ScrollUp => {
+                    self.picking = Some(step_pick(idx, n, false));
+                }
+                _ => {}
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Left click: a sidebar row focuses that window or agent; a tile
     /// focuses that pane.
     fn click(&mut self, col: u16, row: u16) -> io::Result<()> {
@@ -1096,6 +1147,9 @@ impl Client {
     fn mouse(&mut self, ev: ratatui::crossterm::event::MouseEvent) -> io::Result<()> {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         let (col, row, kind) = (ev.column, ev.row, ev.kind);
+        if self.picker_mouse(col, row, kind)? {
+            return Ok(());
+        }
         if self.drag.is_some() {
             return match kind {
                 MouseEventKind::Drag(_) => self.mouse_drag(col, row),
@@ -1379,6 +1433,9 @@ impl Client {
         self.draw_status(frame, area);
         if self.sessions_pick.is_some() {
             self.draw_sessions_popup(frame, area);
+        }
+        if self.picking.is_some() {
+            self.draw_agents_popup(frame, area);
         }
 
         if self.which_key.active || !self.which_key.current_sequence.is_empty() {
@@ -1833,6 +1890,7 @@ impl Client {
         if self.sessions_pick.is_some() {
             return vec![
                 ("j/k", "move"),
+                ("click", "pick"),
                 ("enter", "switch"),
                 ("n", "new"),
                 ("x", "drop"),
@@ -1842,6 +1900,7 @@ impl Client {
         if self.picking.is_some() {
             return vec![
                 ("j/k", "move"),
+                ("click", "pick"),
                 ("enter", "launch"),
                 ("d", "default"),
                 ("esc", "cancel"),
@@ -1929,22 +1988,8 @@ impl Client {
             Style::default().fg(self.c("text.dim")).bg(panel)
         };
         let mut spans: Vec<Span> = Vec::new();
-        if self.sessions_pick.is_some() {
+        if self.sessions_pick.is_some() || self.picking.is_some() {
             // The popup is the list; the footer is only keys.
-        } else if let Some(idx) = self.picking {
-            for (i, agent) in self.catalog.agents.iter().enumerate() {
-                if i > 0 {
-                    spans.push(Span::raw("  "));
-                }
-                let style = if i == idx { key } else { desc };
-                let label = if i == idx {
-                    format!("[{}]", agent.name)
-                } else {
-                    agent.name.clone()
-                };
-                spans.push(Span::styled(label, style));
-            }
-            spans.push(Span::styled("  |  ", pipe));
         } else if let Some(draft) = &self.prompting {
             spans.push(Span::styled(format!("prompt: {draft}_"), key));
             if let Some(err) = &self.last_error {
@@ -1983,22 +2028,85 @@ impl Client {
         );
     }
 
+    fn draw_agents_popup(&self, frame: &mut ratatui::Frame, area: Rect) {
+        let Some(sel) = self.picking else {
+            return;
+        };
+        let agents = &self.catalog.agents;
+        let popup = pick_box(area, agents.len(), 28, 48);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Block::default()
+                .title(" agents ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.c("border.focused")))
+                .bg(self.c("bg.panel")),
+            popup,
+        );
+        let inner = pick_inner(popup);
+        let visible = (inner.height / PICK_ROW).max(1) as usize;
+        let scroll = sel.saturating_sub(visible.saturating_sub(1));
+        for (n, agent) in agents.iter().enumerate().skip(scroll).take(visible) {
+            let y = inner.y + ((n - scroll) as u16) * PICK_ROW;
+            if y >= inner.bottom() {
+                break;
+            }
+            let here = agent.name == self.catalog.default;
+            let picked = n == sel;
+            let title_style = if picked {
+                Style::default()
+                    .fg(self.c("text.primary"))
+                    .add_modifier(Modifier::BOLD)
+            } else if here {
+                Style::default().fg(self.c("accent.primary"))
+            } else {
+                Style::default().fg(self.c("text.muted"))
+            };
+            if picked {
+                frame.render_widget(
+                    Block::default().bg(self.c("bg.elevated")),
+                    Rect {
+                        x: inner.x,
+                        y,
+                        width: inner.width,
+                        height: PICK_ROW.min(inner.bottom().saturating_sub(y)),
+                    },
+                );
+            }
+            let mark = if here { "┃" } else { " " };
+            frame.buffer_mut().set_stringn(
+                inner.x,
+                y,
+                mark,
+                1,
+                Style::default().fg(self.c("accent.primary")),
+            );
+            frame.buffer_mut().set_stringn(
+                inner.x + 2,
+                y,
+                &agent.name,
+                inner.width.saturating_sub(2) as usize,
+                title_style,
+            );
+            if y + 1 < inner.bottom() {
+                let clause = if here { "default" } else { agent.program.as_str() };
+                frame.buffer_mut().set_stringn(
+                    inner.x + 2,
+                    y + 1,
+                    clause,
+                    inner.width.saturating_sub(2) as usize,
+                    Style::default().fg(self.c("text.dim")),
+                );
+            }
+        }
+    }
+
     fn draw_sessions_popup(&self, frame: &mut ratatui::Frame, area: Rect) {
         let Some(sel) = self.sessions_pick else {
             return;
         };
         let rows = &self.session_rows;
-        let row_h: u16 = 2;
-        let max_h = area.height.saturating_sub(6).max(6);
-        let inner_h = ((rows.len() as u16).saturating_mul(row_h) + 1).min(max_h.saturating_sub(2));
-        let height = inner_h.saturating_add(2).min(max_h);
-        let width = (area.width * 2 / 3).clamp(36, 64);
-        let popup = Rect {
-            x: area.x + (area.width.saturating_sub(width)) / 2,
-            y: area.y + (area.height.saturating_sub(height)) / 2,
-            width,
-            height,
-        };
+        let popup = pick_box(area, rows.len(), 36, 64);
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Block::default()
@@ -2008,17 +2116,12 @@ impl Client {
                 .bg(self.c("bg.panel")),
             popup,
         );
-        let inner = Rect {
-            x: popup.x + 1,
-            y: popup.y + 1,
-            width: popup.width.saturating_sub(2),
-            height: popup.height.saturating_sub(2),
-        };
-        let visible = (inner.height / row_h).max(1) as usize;
+        let inner = pick_inner(popup);
+        let visible = (inner.height / PICK_ROW).max(1) as usize;
         let scroll = sel.saturating_sub(visible.saturating_sub(1));
         let current = self.attached.as_deref();
         for (n, row) in rows.iter().enumerate().skip(scroll).take(visible) {
-            let y = inner.y + ((n - scroll) as u16) * row_h;
+            let y = inner.y + ((n - scroll) as u16) * PICK_ROW;
             if y >= inner.bottom() {
                 break;
             }
@@ -2040,7 +2143,7 @@ impl Client {
                         x: inner.x,
                         y,
                         width: inner.width,
-                        height: row_h.min(inner.bottom().saturating_sub(y)),
+                        height: PICK_ROW.min(inner.bottom().saturating_sub(y)),
                     },
                 );
             }
@@ -2493,6 +2596,58 @@ fn error_owns_footer(naming: Option<&Naming>, last_error: Option<&str>) -> bool 
     last_error.is_some() && naming.is_none()
 }
 
+const PICK_ROW: u16 = 2;
+
+fn pick_box(area: Rect, n: usize, min_w: u16, max_w: u16) -> Rect {
+    let max_h = area.height.saturating_sub(6).max(6);
+    let inner_h = ((n as u16).saturating_mul(PICK_ROW) + 1).min(max_h.saturating_sub(2));
+    let height = inner_h.saturating_add(2).min(max_h);
+    let width = (area.width * 2 / 3).clamp(min_w, max_w);
+    Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    }
+}
+
+fn pick_inner(popup: Rect) -> Rect {
+    Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    }
+}
+
+fn pick_contains(popup: Rect, col: u16, row: u16) -> bool {
+    col >= popup.x
+        && col < popup.x.saturating_add(popup.width)
+        && row >= popup.y
+        && row < popup.y.saturating_add(popup.height)
+}
+
+fn pick_row(inner: Rect, n: usize, sel: usize, row: u16) -> Option<usize> {
+    if n == 0 || row < inner.y || row >= inner.bottom() {
+        return None;
+    }
+    let visible = (inner.height / PICK_ROW).max(1) as usize;
+    let scroll = sel.saturating_sub(visible.saturating_sub(1));
+    let i = ((row - inner.y) / PICK_ROW) as usize + scroll;
+    (i < n && i < scroll + visible).then_some(i)
+}
+
+fn step_pick(idx: usize, n: usize, down: bool) -> usize {
+    if n == 0 {
+        return idx;
+    }
+    if down {
+        (idx + 1) % n
+    } else {
+        (idx + n - 1) % n
+    }
+}
+
 fn run_loop(
     client: &mut Client,
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
@@ -2605,6 +2760,21 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn pick_row_hits_the_clause_line_too() {
+        let area = Rect::new(0, 0, 80, 24);
+        let popup = pick_box(area, 3, 28, 48);
+        let inner = pick_inner(popup);
+        let first = inner.y;
+        assert_eq!(pick_row(inner, 3, 0, first), Some(0));
+        assert_eq!(pick_row(inner, 3, 0, first + 1), Some(0));
+        assert_eq!(pick_row(inner, 3, 0, first + 2), Some(1));
+        assert!(!pick_contains(popup, 0, 0));
+        assert!(pick_contains(popup, popup.x + 1, popup.y + 1));
+        assert_eq!(step_pick(0, 3, true), 1);
+        assert_eq!(step_pick(0, 3, false), 2);
     }
 
     #[test]

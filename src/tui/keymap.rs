@@ -110,6 +110,7 @@ pub fn build_keymap() -> AppKeymap {
         s.bind("v", Action::SplitVertical, Category::Pane);
         s.bind("-", Action::SplitHorizontal, Category::Pane);
         s.bind("x", Action::ClosePane, Category::Pane);
+        // Vim motions always have the matching arrow.
         s.bind("h", Action::FocusLeft, Category::Pane);
         s.bind("j", Action::FocusDown, Category::Pane);
         s.bind("k", Action::FocusUp, Category::Pane);
