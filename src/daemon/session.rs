@@ -99,6 +99,9 @@ struct PaneAgent {
     acp: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     program: String,
+    /// The process's own conversation id on this pane.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    session: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,6 +135,8 @@ pub struct Session {
     names: HashMap<String, String>,
     /// pane id → last spawn program, for disk.
     programs: HashMap<String, String>,
+    /// pane id → the process's inner session id.
+    inner: HashMap<String, String>,
     /// panes whose name came from a shell that launched a catalog agent.
     adopted: HashSet<String>,
     catalog: Agents,
@@ -216,6 +221,7 @@ impl Sessions {
             watch: HashMap::new(),
             names: HashMap::new(),
             programs: HashMap::new(),
+            inner: HashMap::new(),
             adopted: HashSet::new(),
             catalog: Agents::load(&self.root),
         }));
@@ -266,6 +272,7 @@ impl Sessions {
             watch: HashMap::new(),
             names: HashMap::new(),
             programs: HashMap::new(),
+            inner: HashMap::new(),
             adopted: HashSet::new(),
             catalog: Agents::load(&self.root),
         };
@@ -342,6 +349,7 @@ impl Session {
     pub fn view(&mut self) -> SessionView {
         self.reap_dead_panes();
         self.adopt_agents();
+        self.harvest_sessions();
         let mut windows = Vec::new();
         for window in &self.windows {
             let mut panes = Vec::new();
@@ -689,10 +697,16 @@ impl Session {
         self.names.remove(pane_id);
         if let Some(name) = name.filter(|n| !n.is_empty()) {
             self.names.insert(pane_id.to_string(), name.to_string());
+        } else {
+            self.inner.remove(pane_id);
         }
         self.programs.insert(pane_id.to_string(), program.to_string());
         if acp {
-            let child = AcpChild::spawn(program)?;
+            let resume = self.inner.get(pane_id).cloned();
+            let child = AcpChild::spawn_resume(program, resume.as_deref())?;
+            if let Some(sid) = child.session_id() {
+                self.inner.insert(pane_id.to_string(), sid);
+            }
             self.acp.insert(pane_id.to_string(), child);
             let _ = self.persist();
             return Ok(());
@@ -717,6 +731,7 @@ impl Session {
         }
         self.names.remove(pane_id);
         self.programs.remove(pane_id);
+        self.inner.remove(pane_id);
         self.adopted.remove(pane_id);
     }
 
@@ -735,12 +750,46 @@ impl Session {
                 name: name.clone(),
                 acp: self.acp.contains_key(id),
                 program: self.programs.get(id).cloned().unwrap_or_default(),
+                session: self.inner.get(id).cloned().unwrap_or_default(),
             })
             .collect()
     }
 
+    /// Remember each process's inner session id so a later spawn
+    /// reopens that conversation, not the last one on the box.
+    fn harvest_sessions(&mut self) {
+        let ids: Vec<String> = self.names.keys().cloned().collect();
+        let mut changed = false;
+        for id in ids {
+            let Some(sid) = self.pane_session(&id) else {
+                continue;
+            };
+            if self.inner.get(&id) != Some(&sid) {
+                self.inner.insert(id, sid);
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = self.persist();
+        }
+    }
+
+    fn pane_session(&self, id: &str) -> Option<String> {
+        if let Some(acp) = self.acp.get(id) {
+            return acp.session_id().filter(|s| !s.is_empty());
+        }
+        if let Some(w) = self.watch.get(id) {
+            return w.session_id().filter(|s| !s.is_empty());
+        }
+        let name = self.names.get(id)?;
+        let files = self.catalog.by_name(name)?.door().inhibit()?.files.clone()?;
+        let pid = self.panes.get(id)?.pid()?;
+        super::inhibit::session_id(pid, &files).filter(|s| !s.is_empty())
+    }
+
     /// Spawn each named agent again. Catalog wins (fresh HTTP ports).
-    /// Unknown names use the stored program.
+    /// Unknown names use the stored program. A stored inner session
+    /// is resumed on that pane.
     fn resurrect(&mut self, records: Vec<PaneAgent>) {
         if records.is_empty() {
             return;
@@ -750,6 +799,10 @@ impl Session {
             if rec.name.is_empty() {
                 continue;
             }
+            if !rec.session.is_empty() {
+                self.inner.insert(rec.pane.clone(), rec.session.clone());
+            }
+            let sid = (!rec.session.is_empty()).then_some(rec.session.as_str());
             let result = if let Some(agent) = catalog.by_name(&rec.name) {
                 if rec.acp {
                     match agent.acp_cmd() {
@@ -757,7 +810,7 @@ impl Session {
                         None => continue,
                     }
                 } else {
-                    let (program, watch) = agent.tui_spawn();
+                    let (program, watch) = agent.tui_spawn_session(sid);
                     self.spawn(
                         &rec.pane,
                         &program,
@@ -1196,6 +1249,85 @@ mod tests {
             work.lock().unwrap().read_pane("1").alive,
             "the agent pane should be running again"
         );
+    }
+
+    #[test]
+    fn acp_inner_session_is_persisted() {
+        let (_dir, sessions) = sessions();
+        let (_keep, path) = crate::daemon::acp::tests::fake_agent();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", &format!("python3 {path}"), true, None, Some("rung"))
+            .unwrap();
+        let recs = work.lock().unwrap().agent_records();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].session, "s1");
+    }
+
+    #[test]
+    fn reopen_resumes_this_pane_session() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let sessions = Sessions::open(root.clone()).unwrap();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, Some("stub"))
+            .unwrap();
+        drop(work);
+
+        let mut script = tempfile::Builder::new().suffix(".py").tempfile().unwrap();
+        let log = dir.path().join("argv.log");
+        script
+            .write_all(
+                format!(
+                    "import sys, time\nopen({:?},'w').write(' '.join(sys.argv[1:]))\ntime.sleep(30)\n",
+                    log
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        script.flush().unwrap();
+        let path = script.path().display().to_string();
+
+        crate::catalog::Agents {
+            default: "stub".into(),
+            agents: vec![crate::catalog::Agent {
+                name: "stub".into(),
+                program: format!("python3 {path}"),
+                resume: Some("--session {session}".into()),
+                ..Default::default()
+            }],
+        }
+        .save(&root)
+        .unwrap();
+
+        let session_path = root.join("work").join("session.json");
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&session_path).unwrap()).unwrap();
+        file["agents"][0]["session"] = serde_json::json!("ses_pane_1");
+        std::fs::write(&session_path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+        let restarted = Sessions::open(root).unwrap();
+        let work = restarted.get("work").unwrap();
+        let mut argv = String::new();
+        for _ in 0..50 {
+            if let Ok(text) = std::fs::read_to_string(&log) {
+                if !text.is_empty() {
+                    argv = text;
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = work.lock().unwrap().close_pane("1");
+        assert!(argv.contains("--session ses_pane_1"), "{argv}");
+        assert!(!argv.contains("--continue"), "{argv}");
+        let _keep = script;
     }
 
     #[test]

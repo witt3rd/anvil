@@ -138,6 +138,10 @@ pub struct Agent {
     pub adopt: Vec<String>,
     #[serde(default, skip_serializing_if = "door_is_none")]
     pub door: Door,
+    /// Extra argv to reopen one inner session. `{session}` is that
+    /// pane's id — not a global continue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<String>,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -184,15 +188,28 @@ impl Agent {
 
     /// Native argv and optional HTTP base. `{port}` comes from a free bind.
     pub fn tui_spawn(&self) -> (String, Option<String>) {
+        self.tui_spawn_session(None)
+    }
+
+    /// Native argv that reopens `session` when the row has `resume`.
+    pub fn tui_spawn_session(&self, session: Option<&str>) -> (String, Option<String>) {
         let mut words: Vec<&str> = self.program.split_whitespace().collect();
         if words.last() == Some(&"acp") {
             words.pop();
         }
-        let head = if words.is_empty() {
+        let mut head = if words.is_empty() {
             self.program.clone()
         } else {
             words.join(" ")
         };
+        if let Some(id) = session.filter(|s| !s.is_empty()) {
+            if let Some(tmpl) = self.resume.as_deref() {
+                let flags = tmpl.replace("{session}", id);
+                if !flags.trim().is_empty() {
+                    head = format!("{head} {flags}").trim().to_string();
+                }
+            }
+        }
         if let Door::Http(http) = self.door() {
             if let Ok(port) = free_port() {
                 if let Some(flags) = http.bind_argv(port) {
@@ -427,6 +444,19 @@ mod tests {
             .tui_spawn();
         assert!(shipped.0.contains("--port "));
         assert!(shipped.1.unwrap().starts_with("http://127.0.0.1:"));
+    }
+
+    #[test]
+    fn resume_names_this_session_not_a_continue() {
+        let oc = Agents::default().by_name("oc").unwrap().clone();
+        assert_eq!(oc.resume.as_deref(), Some("--session {session}"));
+        let (cmd, _) = oc.tui_spawn_session(Some("ses_pane_1"));
+        assert!(cmd.contains("--session ses_pane_1"), "{cmd}");
+        assert!(!cmd.contains("--continue"), "{cmd}");
+        let (fresh, _) = oc.tui_spawn();
+        assert!(!fresh.contains("--session"), "{fresh}");
+        let (empty, _) = oc.tui_spawn_session(Some(""));
+        assert!(!empty.contains("--session"), "{empty}");
     }
 
     #[test]

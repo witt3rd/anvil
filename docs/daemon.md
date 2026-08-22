@@ -19,6 +19,11 @@ daemon
    drop SSH: sessions, windows, and panes stay. Processes keep
    running. The process stays on the turn. When the daemon stops,
    the processes end. The sessions stay on disk and reopen.
+   Named agent panes spawn again. Each pane also stores the
+   process's own session id and resumes *that* conversation —
+   ACP `session/load` or `session/resume`, or the catalog `resume`
+   argv with `{session}`. A global continue is not that: it is the
+   last conversation on the box, not this pane's.
 2. **The daemon is the parent.** It holds the process's input and
    output. On a PTY, that is the master; the process runs on the
    slave. On reattach, the client repaints from the daemon's view.

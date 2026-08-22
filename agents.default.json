@@ -6,6 +6,7 @@
       "program": "oc",
       "acp_program": "oc acp",
       "adopt": ["oc", "opencode"],
+      "resume": "--session {session}",
       "door": {
         "kind": "http",
         "bind": "--hostname 127.0.0.1 --port {port}",
@@ -23,6 +24,7 @@
       "program": "oc-work",
       "acp_program": "oc-work acp",
       "adopt": ["oc-work"],
+      "resume": "--session {session}",
       "door": {
         "kind": "http",
         "bind": "--hostname 127.0.0.1 --port {port}",

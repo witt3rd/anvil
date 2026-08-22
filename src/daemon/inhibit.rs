@@ -9,6 +9,10 @@ use serde::Deserialize;
 use crate::catalog::SessionFiles;
 use super::adopt;
 
+pub fn session_id(pid: u32, files: &SessionFiles) -> Option<String> {
+    live(pid, files).map(|h| h.session_id)
+}
+
 pub fn activity(pid: u32, files: &SessionFiles) -> Option<String> {
     let hit = live(pid, files)?;
     if let Some(title) = read_title(&hit, files).filter(|t| !placeholder(t)) {
