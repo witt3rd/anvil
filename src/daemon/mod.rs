@@ -337,15 +337,37 @@ pub fn restart(sock: &Path, root: &Path) -> io::Result<()> {
     ensure_running(sock, root)
 }
 
+/// True when the process in the pid file is this binary. A stranger
+/// (another tree's ELF) is not; attach would drop new wire fields.
+fn daemon_is_this_binary(sock: &Path) -> bool {
+    let Some(pid) = pid_of(sock) else {
+        return true;
+    };
+    let daemon = PathBuf::from(format!("/proc/{pid}/exe"));
+    let Ok(us) = std::env::current_exe() else {
+        return true;
+    };
+    match (fs::canonicalize(&daemon), fs::canonicalize(&us)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// The client starts the daemon when it is not running — the same
 /// binary, detached. Its output goes to a log under the state root.
 /// Returns only when the wire speaks the anvil protocol, so a caller
 /// that connects now talks to our daemon. A live listener that speaks
 /// another protocol stays: it may be the real program in service, and
 /// the caller runs against a separate socket instead.
+///
+/// A live anvil daemon that is a different ELF is replaced. New ops
+/// (a window's note) would otherwise succeed on the wire and vanish.
 pub fn ensure_running(sock: &Path, root: &Path) -> io::Result<()> {
     if running(sock) {
-        return Ok(());
+        if daemon_is_this_binary(sock) {
+            return Ok(());
+        }
+        stop(sock)?;
     }
     if UnixStream::connect(sock).is_ok() {
         return Err(io::Error::other(format!(

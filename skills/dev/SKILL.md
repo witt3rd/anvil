@@ -68,8 +68,10 @@ anvil channel dev /path/to/worktree     # builds if stale
 ```
 
 Channel is not git. `~/.anvil/channel` and `~/.anvil/dev-root` remember
-the pick. After a switch, restart the unit so the daemon is the same
-binary the client will exec:
+the pick. The client replaces a live daemon that is not this ELF — otherwise
+new wire fields (a window's note) succeed and vanish. Processes
+that daemon held end. After a channel switch, restart the unit so
+systemd and the client agree:
 
 ```bash
 systemctl --user restart anvil
