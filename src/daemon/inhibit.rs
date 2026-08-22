@@ -1,5 +1,5 @@
-//! Grok's on-disk session: title and whether a turn is in flight.
-//! The TUI has no HTTP door; the files under `~/.grok` are the watch.
+//! Process-tree door: a turn is a descendant cmdline that matches
+//! every `contains` needle. Optional session files under `$HOME/<home>`.
 
 use std::fs;
 use std::path::PathBuf;
@@ -8,32 +8,28 @@ use serde::Deserialize;
 
 use super::adopt;
 
-/// Terse activity for the grok process tree rooted at `pid`.
-pub fn activity(pid: u32) -> Option<String> {
-    let hit = live(pid)?;
-    let summary = read_summary(&hit)?;
+pub fn activity(pid: u32, home: &str) -> Option<String> {
+    let hit = live(pid, home)?;
+    let summary = read_summary(&hit, home)?;
     if let Some(title) = summary.title().filter(|t| !placeholder(t)) {
         return Some(terse(title, 28));
     }
-    last_user(&hit).map(|s| terse(&s, 28))
+    last_user(&hit, home).map(|s| terse(&s, 28))
 }
 
-/// A grok child running `systemd-inhibit … turn in progress`.
-pub fn turning(pid: u32) -> bool {
-    if let Some(hit) = live(pid) {
-        if tree_has_inhibit(hit.pid) {
-            return true;
-        }
+pub fn turning(pid: u32, needles: &[String]) -> bool {
+    if needles.is_empty() {
+        return false;
     }
-    tree_has_inhibit(pid)
+    tree_matches(pid, needles)
 }
 
-fn tree_has_inhibit(root: u32) -> bool {
+fn tree_matches(root: u32, needles: &[String]) -> bool {
     let mut pids = vec![root];
     pids.extend(adopt::descendants(root));
     pids.iter().any(|p| {
         let cmd = cmdline(*p);
-        cmd.contains("systemd-inhibit") && cmd.contains("turn in progress")
+        needles.iter().all(|n| cmd.contains(n.as_str()))
     })
 }
 
@@ -68,9 +64,9 @@ impl Summary {
     }
 }
 
-fn live(root: u32) -> Option<Hit> {
+fn live(root: u32, home: &str) -> Option<Hit> {
     let active: Vec<Active> =
-        serde_json::from_str(&fs::read_to_string(grok_home().join("active_sessions.json")).ok()?)
+        serde_json::from_str(&fs::read_to_string(product_home(home).join("active_sessions.json")).ok()?)
             .ok()?;
     for a in &active {
         if a.pid == root || ancestor_of(a.pid, root) {
@@ -112,13 +108,13 @@ fn ppid(pid: u32) -> Option<u32> {
     rest.split_whitespace().nth(1)?.parse().ok()
 }
 
-fn read_summary(hit: &Hit) -> Option<Summary> {
-    let text = fs::read_to_string(session_dir(&hit.cwd).join(&hit.session_id).join("summary.json")).ok()?;
+fn read_summary(hit: &Hit, home: &str) -> Option<Summary> {
+    let text = fs::read_to_string(session_dir(home, &hit.cwd).join(&hit.session_id).join("summary.json")).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-fn last_user(hit: &Hit) -> Option<String> {
-    let path = session_dir(&hit.cwd).join(&hit.session_id).join("chat_history.jsonl");
+fn last_user(hit: &Hit, home: &str) -> Option<String> {
+    let path = session_dir(home, &hit.cwd).join(&hit.session_id).join("chat_history.jsonl");
     let text = fs::read_to_string(path).ok()?;
     let mut last = None;
     for line in text.lines().rev() {
@@ -171,17 +167,15 @@ fn placeholder(title: &str) -> bool {
     title.is_empty() || title.starts_with("New session")
 }
 
-fn grok_home() -> PathBuf {
-    if let Ok(p) = std::env::var("GROK_HOME") {
-        return PathBuf::from(p);
-    }
+fn product_home(home: &str) -> PathBuf {
+    let home = home.trim_start_matches('/');
     std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".grok"))
-        .unwrap_or_else(|_| PathBuf::from(".grok"))
+        .map(|h| PathBuf::from(h).join(home))
+        .unwrap_or_else(|_| PathBuf::from(home))
 }
 
-fn session_dir(cwd: &str) -> PathBuf {
-    grok_home().join("sessions").join(encode_cwd(cwd))
+fn session_dir(home: &str, cwd: &str) -> PathBuf {
+    product_home(home).join("sessions").join(encode_cwd(cwd))
 }
 
 fn encode_cwd(cwd: &str) -> String {
@@ -218,7 +212,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cwd_encodes_like_grok() {
+    fn cwd_percent_encodes_paths() {
         assert_eq!(
             encode_cwd("/home/dt/src/witt3rd/smith"),
             "%2Fhome%2Fdt%2Fsrc%2Fwitt3rd%2Fsmith"

@@ -1,79 +1,28 @@
 //! Notice a catalog agent that started inside a shell, not via spawn.
+//! Matching is the catalog's `adopt` list — not a table of brands.
 
 use std::fs;
-use std::path::Path;
 
-/// What a process tree looks like when it is a catalog agent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hit {
-    pub name: String,
-    pub watch: Option<String>,
-}
+use crate::catalog::{AdoptHit, Agents};
 
-/// Walk `root` and its children for oc / oc-work / opencode / grok.
-pub fn detect(root: u32) -> Option<Hit> {
-    let mut best: Option<Hit> = None;
+/// Walk `root` and its children for a catalog row.
+pub fn detect(root: u32, catalog: &Agents) -> Option<AdoptHit> {
+    let mut best: Option<AdoptHit> = None;
     for pid in std::iter::once(root).chain(descendants(root)) {
         let cmd = cmdline(pid);
-        let Some(mut hit) = match_cmd(&cmd) else {
+        let Some(mut hit) = catalog.adopt_cmd(&cmd) else {
             continue;
         };
-        if hit.watch.is_none() && hit.name != "grok" {
+        if hit.watch.is_none() && hit.listen {
             if let Some(port) = listen_port(pid) {
                 hit.watch = Some(format!("http://127.0.0.1:{port}"));
             }
         }
-        if best.as_ref().is_none_or(|b| b.name != "oc-work") {
+        if best.as_ref().is_none_or(|b| hit.name.len() >= b.name.len()) {
             best = Some(hit);
         }
     }
     best
-}
-
-pub fn match_cmd(cmd: &str) -> Option<Hit> {
-    let words: Vec<&str> = cmd.split_whitespace().collect();
-    let bins: Vec<&str> = words.iter().filter_map(|w| file_name(w)).collect();
-    let argv0 = bins.first().copied().unwrap_or("");
-    let script = if argv0 == "bash" || argv0 == "sh" {
-        bins.get(1).copied()
-    } else {
-        None
-    };
-    let name = if argv0 == "oc-work" || script == Some("oc-work") {
-        "oc-work"
-    } else if argv0 == "oc" || argv0 == "opencode" || script == Some("oc") {
-        "oc"
-    } else if argv0 == "grok" || script == Some("grok") {
-        "grok"
-    } else if argv0 == "node" && bins.iter().any(|b| *b == "grok") {
-        "grok"
-    } else {
-        return None;
-    };
-    let watch = port_from_args(&words).map(|p| format!("http://127.0.0.1:{p}"));
-    Some(Hit {
-        name: name.into(),
-        watch,
-    })
-}
-
-pub fn port_from_args(words: &[&str]) -> Option<u16> {
-    let mut i = 0;
-    while i < words.len() {
-        let w = words[i];
-        if let Some(rest) = w.strip_prefix("--port=") {
-            return rest.parse().ok();
-        }
-        if w == "--port" {
-            return words.get(i + 1)?.parse().ok();
-        }
-        i += 1;
-    }
-    None
-}
-
-fn file_name(path: &str) -> Option<&str> {
-    Path::new(path).file_name()?.to_str()
 }
 
 fn cmdline(pid: u32) -> String {
@@ -93,8 +42,6 @@ pub fn descendants(pid: u32) -> Vec<u32> {
 }
 
 fn children_of(pid: u32) -> Vec<u32> {
-    // Doppler and friends spawn on a worker thread; the main
-    // task's children file is empty.
     let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
         return Vec::new();
     };
@@ -112,7 +59,6 @@ fn children_of(pid: u32) -> Vec<u32> {
     out
 }
 
-/// First listening TCP port for this pid (IPv4 or IPv6).
 fn listen_port(pid: u32) -> Option<u16> {
     let inodes = socket_inodes(pid);
     if inodes.is_empty() {
@@ -128,7 +74,6 @@ fn listen_in(inodes: &[u64], path: &str) -> Option<u16> {
         if cols.len() < 10 {
             continue;
         }
-        // st 0A = listen
         if cols[3] != "0A" {
             continue;
         }
@@ -141,7 +86,6 @@ fn listen_in(inodes: &[u64], path: &str) -> Option<u16> {
     None
 }
 
-/// `/proc/net/tcp{,6}` local address: hex-ip `:` hex-port.
 fn parse_hex_port(local: &str) -> Option<u16> {
     u16::from_str_radix(local.rsplit_once(':')?.1, 16).ok()
 }
@@ -174,48 +118,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn match_cmd_knows_the_wrappers() {
-        let oc = match_cmd("oc --hostname 127.0.0.1 --port 4096").unwrap();
-        assert_eq!(oc.name, "oc");
-        assert_eq!(oc.watch.as_deref(), Some("http://127.0.0.1:4096"));
-
-        let work = match_cmd("/home/dt/.local/bin/oc-work").unwrap();
-        assert_eq!(work.name, "oc-work");
-        assert!(work.watch.is_none());
-
-        let raw = match_cmd("opencode").unwrap();
-        assert_eq!(raw.name, "oc");
-
-        let grok = match_cmd("grok").unwrap();
-        assert_eq!(grok.name, "grok");
-        assert!(grok.watch.is_none());
-
-        let wrapped = match_cmd(
-            "node /home/dt/.local/share/mise/installs/npm-xai-official-grok/latest/node_modules/@xai-official/grok/bin/grok",
-        )
-        .unwrap();
-        assert_eq!(wrapped.name, "grok");
-        assert!(match_cmd("git clone grok").is_none());
-
-        let wrap = match_cmd("/bin/bash /home/dt/.local/bin/oc").unwrap();
-        assert_eq!(wrap.name, "oc");
-        let wrap_w = match_cmd("/bin/bash /home/dt/.local/bin/oc-work").unwrap();
-        assert_eq!(wrap_w.name, "oc-work");
-
-        assert!(match_cmd("sh").is_none());
-        assert!(match_cmd("git clone opencode").is_none());
-    }
-
-    #[test]
-    fn port_flag_forms() {
-        assert_eq!(port_from_args(&["oc", "--port", "9"]), Some(9));
-        assert_eq!(port_from_args(&["oc", "--port=11"]), Some(11));
-        assert_eq!(port_from_args(&["oc"]), None);
-    }
-
-    #[test]
     fn proc_net_port_is_the_hex_after_the_colon() {
         assert_eq!(parse_hex_port("0100007F:1F90"), Some(8080));
-        assert_eq!(parse_hex_port("00000000000000000000000001000000:0FA0"), Some(4000));
+        assert_eq!(
+            parse_hex_port("00000000000000000000000001000000:0FA0"),
+            Some(4000)
+        );
     }
 }

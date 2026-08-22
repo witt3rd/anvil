@@ -4,7 +4,7 @@
 
 pub mod acp;
 pub mod adopt;
-pub mod grok;
+pub mod inhibit;
 pub mod keys;
 pub mod pane;
 pub mod sat;

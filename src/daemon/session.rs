@@ -16,7 +16,7 @@ use super::acp::{AcpChild, WindowState};
 use super::pane::{Grid, Pane};
 use super::tiling::Tiling;
 use super::watch::HttpWatch;
-use crate::tui::agents::Agents;
+use crate::catalog::Agents;
 
 const FILE: &str = "session.json";
 const DEFAULT_COLS: u16 = 80;
@@ -134,6 +134,7 @@ pub struct Session {
     programs: HashMap<String, String>,
     /// panes whose name came from a shell that launched a catalog agent.
     adopted: HashSet<String>,
+    catalog: Agents,
 }
 
 /// The sessions the daemon owns. Named, on disk under a root.
@@ -216,6 +217,7 @@ impl Sessions {
             names: HashMap::new(),
             programs: HashMap::new(),
             adopted: HashSet::new(),
+            catalog: Agents::load(&self.root),
         }));
         self.live
             .lock()
@@ -265,6 +267,7 @@ impl Sessions {
             names: HashMap::new(),
             programs: HashMap::new(),
             adopted: HashSet::new(),
+            catalog: Agents::load(&self.root),
         };
         session.resurrect(agents);
         let session = Arc::new(Mutex::new(session));
@@ -357,11 +360,11 @@ impl Session {
                         rows,
                         name: self.names.get(&id).cloned(),
                         activity: self.pane_activity(&id),
-                        state: pane_state(&id, &self.panes, &self.acp, &self.watch),
+                        state: self.pane_mark(&id),
                     }
                 })
                 .collect();
-            let state = window_state(&panes, &self.panes, &self.acp, &self.watch);
+            let state = self.window_mark(&panes);
             windows.push(WindowView {
                 window: window.id.clone(),
                 panes,
@@ -383,14 +386,13 @@ impl Session {
             let Some(pid) = self.panes.get(&id).and_then(|p| p.pid()) else {
                 continue;
             };
-            match super::adopt::detect(pid) {
+            match super::adopt::detect(pid, &self.catalog) {
                 Some(hit) => {
-                    self.names.insert(id.clone(), hit.name);
+                    self.names.insert(id.clone(), hit.name.clone());
                     self.adopted.insert(id.clone());
                     if let Some(url) = hit.watch {
                         if !self.watch.contains_key(&id) {
-                            self.watch
-                                .insert(id, super::watch::HttpWatch::start(&url));
+                            self.start_http(&id, &url, Some(&hit.name));
                         }
                     }
                 }
@@ -500,11 +502,33 @@ impl Session {
             .get(id)
             .and_then(|w| w.activity())
             .or_else(|| {
-                self.panes
-                    .get(id)
-                    .and_then(|p| p.pid())
-                    .and_then(super::grok::activity)
+                let name = self.names.get(id)?;
+                let home = self.catalog.by_name(name)?.door().inhibit()?.home.clone()?;
+                let pid = self.panes.get(id)?.pid()?;
+                super::inhibit::activity(pid, &home)
             })
+    }
+
+    fn pane_turning(&self, pane_id: &str, pid: u32) -> bool {
+        let Some(name) = self.names.get(pane_id) else {
+            return false;
+        };
+        let Some(spec) = self.catalog.by_name(name).map(|a| a.door()) else {
+            return false;
+        };
+        let Some(inh) = spec.inhibit() else {
+            return false;
+        };
+        super::inhibit::turning(pid, &inh.contains)
+    }
+
+    fn start_http(&mut self, pane_id: &str, url: &str, name: Option<&str>) {
+        let spec = name
+            .and_then(|n| self.catalog.by_name(n))
+            .and_then(|a| a.door().http().cloned())
+            .unwrap_or_default();
+        self.watch
+            .insert(pane_id.to_string(), HttpWatch::start(url, spec));
     }
 
     /// A process that has ended takes its pane with it. `exit` in a
@@ -679,8 +703,7 @@ impl Session {
         let pane = Pane::spawn(program, cols, rows)?;
         self.panes.insert(pane_id.to_string(), pane);
         if let Some(url) = watch {
-            self.watch
-                .insert(pane_id.to_string(), HttpWatch::start(url));
+            self.start_http(pane_id, url, name);
         }
         self.persist()
     }
@@ -722,7 +745,7 @@ impl Session {
         if records.is_empty() {
             return;
         }
-        let catalog = Agents::load(self.root.parent().unwrap_or(&self.root));
+        let catalog = self.catalog.clone();
         for rec in records {
             if rec.name.is_empty() {
                 continue;
@@ -997,81 +1020,73 @@ impl Grid {
     }
 }
 
-fn pane_state(
-    pane_id: &str,
-    pty: &HashMap<String, Arc<Pane>>,
-    acp: &HashMap<String, Arc<AcpChild>>,
-    watch: &HashMap<String, Arc<HttpWatch>>,
-) -> WindowState {
-    if let Some(w) = watch.get(pane_id) {
-        let s = w.state();
-        if s != WindowState::Idle && s != WindowState::Dead {
-            return s;
+impl Session {
+    fn pane_mark(&self, pane_id: &str) -> WindowState {
+        if let Some(w) = self.watch.get(pane_id) {
+            let s = w.state();
+            if s != WindowState::Idle && s != WindowState::Dead {
+                return s;
+            }
+        }
+        if let Some(child) = self.acp.get(pane_id) {
+            if !child.alive() {
+                return WindowState::Dead;
+            }
+            return child.state();
+        }
+        if let Some(pane) = self.panes.get(pane_id) {
+            if !pane.alive() {
+                return WindowState::Dead;
+            }
+            if pane.pid().is_some_and(|pid| self.pane_turning(pane_id, pid)) {
+                return WindowState::Turning;
+            }
+            WindowState::Idle
+        } else {
+            WindowState::Idle
         }
     }
-    if let Some(child) = acp.get(pane_id) {
-        if !child.alive() {
-            return WindowState::Dead;
-        }
-        return child.state();
-    }
-    if let Some(pane) = pty.get(pane_id) {
-        if !pane.alive() {
-            return WindowState::Dead;
-        }
-        if pane.pid().is_some_and(super::grok::turning) {
-            return WindowState::Turning;
-        }
-        WindowState::Idle
-    } else {
-        WindowState::Idle
-    }
-}
 
-fn window_state(
-    panes: &[PaneView],
-    pty: &HashMap<String, Arc<Pane>>,
-    acp: &HashMap<String, Arc<AcpChild>>,
-    watch: &HashMap<String, Arc<HttpWatch>>,
-) -> WindowState {
-    let mut any_live = false;
-    let mut any_process = false;
-    let mut turning = false;
-    for p in panes {
-        if let Some(w) = watch.get(&p.pane) {
-            match w.state() {
-                WindowState::NeedsYou => return WindowState::NeedsYou,
-                WindowState::Turning => turning = true,
-                WindowState::Idle | WindowState::Dead => {}
+    fn window_mark(&self, panes: &[PaneView]) -> WindowState {
+        let mut any_live = false;
+        let mut any_process = false;
+        let mut turning = false;
+        for p in panes {
+            if let Some(w) = self.watch.get(&p.pane) {
+                match w.state() {
+                    WindowState::NeedsYou => return WindowState::NeedsYou,
+                    WindowState::Turning => turning = true,
+                    WindowState::Idle | WindowState::Dead => {}
+                }
             }
-        }
-        if let Some(child) = acp.get(&p.pane) {
-            any_process = true;
-            match child.state() {
-                WindowState::NeedsYou => return WindowState::NeedsYou,
-                WindowState::Turning => turning = true,
-                WindowState::Idle | WindowState::Dead => {}
-            }
-            if child.alive() {
-                any_live = true;
-            }
-        } else if let Some(pane) = pty.get(&p.pane) {
-            any_process = true;
-            if pane.alive() {
-                any_live = true;
-                if pane.pid().is_some_and(super::grok::turning) {
-                    turning = true;
+            if let Some(child) = self.acp.get(&p.pane) {
+                any_process = true;
+                match child.state() {
+                    WindowState::NeedsYou => return WindowState::NeedsYou,
+                    WindowState::Turning => turning = true,
+                    WindowState::Idle | WindowState::Dead => {}
+                }
+                if child.alive() {
+                    any_live = true;
+                }
+            } else if let Some(pane) = self.panes.get(&p.pane) {
+                any_process = true;
+                if pane.alive() {
+                    any_live = true;
+                    if pane.pid().is_some_and(|pid| self.pane_turning(&p.pane, pid)) {
+                        turning = true;
+                    }
                 }
             }
         }
-    }
-    if turning {
-        return WindowState::Turning;
-    }
-    if any_process && !any_live {
-        WindowState::Dead
-    } else {
-        WindowState::Idle
+        if turning {
+            return WindowState::Turning;
+        }
+        if any_process && !any_live {
+            WindowState::Dead
+        } else {
+            WindowState::Idle
+        }
     }
 }
 

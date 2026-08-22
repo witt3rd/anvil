@@ -98,7 +98,7 @@ pub enum Request {
         /// watches it for rail state.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         watch: Option<String>,
-        /// Catalog name when this process is an agent (`oc`, `grok`).
+        /// Catalog name when this process is an agent.
         /// Absent on a shell.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,

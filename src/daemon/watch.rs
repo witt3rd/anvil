@@ -1,5 +1,5 @@
-//! Watch an agent's HTTP door (OpenCode's server) for rail state,
-//! and send a prompt through that same door — the TUI's context.
+//! Watch an HTTP door for rail state, and send a prompt through it.
+//! Paths come from the catalog (`HttpDoor`), not from a brand name.
 
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -10,29 +10,31 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::catalog::HttpDoor;
 use super::acp::WindowState;
 
 /// Polls `base` (`http://127.0.0.1:port`) for session status.
 pub struct HttpWatch {
     base: String,
+    spec: HttpDoor,
     state: Mutex<WindowState>,
     activity: Mutex<Option<String>>,
     stop: AtomicBool,
 }
 
 impl HttpWatch {
-    pub fn start(base: &str) -> Arc<HttpWatch> {
+    pub fn start(base: &str, spec: HttpDoor) -> Arc<HttpWatch> {
         let watch = Arc::new(HttpWatch {
             base: base.to_string(),
+            spec,
             state: Mutex::new(WindowState::Idle),
             activity: Mutex::new(None),
             stop: AtomicBool::new(false),
         });
         let pump = watch.clone();
-        let base = base.to_string();
         let _ = thread::Builder::new()
             .name("anvil-watch".into())
-            .spawn(move || pump.run(&base));
+            .spawn(move || pump.run());
         watch
     }
 
@@ -42,11 +44,11 @@ impl HttpWatch {
     pub fn prompt(&self, text: &str) -> io::Result<()> {
         let append = serde_json::to_string(&json!({ "text": text }))
             .map_err(io::Error::other)?;
-        if http_post(&self.base, "/tui/append-prompt", &append).is_ok() {
-            let _ = http_post(&self.base, "/tui/submit-prompt", "{}");
+        if http_post(&self.base, self.spec.append(), &append).is_ok() {
+            let _ = http_post(&self.base, self.spec.submit(), "{}");
             return Ok(());
         }
-        let list = http_get(&self.base, "/session")?;
+        let list = http_get(&self.base, self.spec.sessions())?;
         let sid = current_session_id(&list)
             .ok_or_else(|| io::Error::other("the agent has no session"))?;
         let body = serde_json::to_string(&json!({
@@ -55,7 +57,7 @@ impl HttpWatch {
         .map_err(io::Error::other)?;
         http_post(
             &self.base,
-            &format!("/session/{sid}/prompt_async"),
+            &format!("{}/{sid}/prompt_async", self.spec.sessions().trim_end_matches('/')),
             &body,
         )?;
         Ok(())
@@ -73,19 +75,20 @@ impl HttpWatch {
         self.stop.store(true, Ordering::Relaxed);
     }
 
-    fn run(&self, base: &str) {
+    fn run(&self) {
+        let base = self.base.as_str();
         for _ in 0..50 {
             if self.stop.load(Ordering::Relaxed) {
                 return;
             }
-            if http_get(base, "/global/health").is_ok() {
+            if http_get(base, self.spec.health()).is_ok() {
                 break;
             }
             thread::sleep(Duration::from_millis(100));
         }
         let mut ticks = 0u32;
         while !self.stop.load(Ordering::Relaxed) {
-            let next = match http_get(base, "/session/status") {
+            let next = match http_get(base, self.spec.status()) {
                 Ok(body) => status_from_json(&body),
                 Err(_) => WindowState::Idle,
             };
@@ -94,7 +97,7 @@ impl HttpWatch {
             }
             ticks = ticks.wrapping_add(1);
             if ticks % 5 == 1 {
-                if let Some(act) = refresh_activity(base) {
+                if let Some(act) = refresh_activity(base, self.spec.sessions()) {
                     if let Ok(mut slot) = self.activity.lock() {
                         *slot = Some(act);
                     }
@@ -105,7 +108,7 @@ impl HttpWatch {
     }
 }
 
-/// Map OpenCode `/session/status` JSON onto a rail mark.
+/// Map a status JSON blob onto a rail mark.
 pub fn status_from_json(body: &str) -> WindowState {
     let Ok(v) = serde_json::from_str::<Value>(body) else {
         return WindowState::Idle;
@@ -224,13 +227,17 @@ pub fn current_session_id(body: &str) -> Option<String> {
     best.map(|(_, id)| id)
 }
 
-fn refresh_activity(base: &str) -> Option<String> {
-    let list = http_get(base, "/session").ok()?;
+fn refresh_activity(base: &str, sessions: &str) -> Option<String> {
+    let list = http_get(base, sessions).ok()?;
     let (id, title) = current_work_session(&list)?;
     if !placeholder_title(&title) {
         return Some(terse(&title, 28));
     }
-    let msgs = http_get(base, &format!("/session/{id}/message?limit=8")).ok()?;
+    let msgs = http_get(
+        base,
+        &format!("{}/{id}/message?limit=8", sessions.trim_end_matches('/')),
+    )
+    .ok()?;
     last_user_line(&msgs).map(|s| terse(&s, 28))
 }
 

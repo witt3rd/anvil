@@ -149,7 +149,7 @@ impl Pane {
         }
         cmd.env("TERM", "xterm-256color");
         // systemd --user PATH is /usr/bin. Catalog agents live in
-        // ~/.local/bin (oc, oc-work) and mise shims.
+        // ~/.local/bin and mise shims so catalog programs resolve.
         if let Ok(home) = std::env::var("HOME") {
             cmd.env("HOME", &home);
             let mut path = format!("{home}/.local/bin:{home}/.local/share/mise/shims");
