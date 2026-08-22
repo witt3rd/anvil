@@ -99,6 +99,11 @@ The client (`anvil`) attaches to `$XDG_RUNTIME_DIR/anvil.sock` and
 will start a detached daemon if none is listening — that is for a
 dev tree. A shipped box holds the daemon with the unit.
 
+The rail's turning mark is OpenCode's HTTP door (`--port`). Prefix
+`a` / `A` pass that flag. A shell that runs `oc` with no `--port`
+has no door — OpenCode's default port `0` does not listen. The
+unit's PATH must include `~/.local/bin` or spawn cannot find `oc`.
+
 # Not yet published
 
 Ship is install-from-git. These remain:

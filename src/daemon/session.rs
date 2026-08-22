@@ -343,9 +343,6 @@ impl Session {
     fn adopt_agents(&mut self) {
         let ids: Vec<String> = self.panes.keys().cloned().collect();
         for id in ids {
-            if self.names.contains_key(&id) && !self.adopted.contains(&id) {
-                continue;
-            }
             let Some(pid) = self.panes.get(&id).and_then(|p| p.pid()) else {
                 continue;
             };
