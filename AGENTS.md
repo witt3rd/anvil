@@ -108,6 +108,12 @@ That is ship. Publishing to crates.io, a free crate name, a release
 tag, a unit file in this tree, and an install the crate itself owns
 are not that yet. The list lives in `skills/dev/`.
 
+## Client
+
+Vim motion keys (`h` `j` `k` `l`) always have the matching arrow.
+A list that needs a selection always takes a click, and the wheel.
+The pairs and the pickers live in `docs/tui.md`.
+
 ## Git
 
 Work on a branch off `main`.
@@ -133,4 +139,4 @@ anyone's machines.
 Universal for anyone working in this tree. Single owner, no
 external contributors.
 
-Last updated: 2026-08-21.
+Last updated: 2026-08-22.

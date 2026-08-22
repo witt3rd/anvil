@@ -202,14 +202,17 @@ pub fn layout(
         height: area.height.saturating_sub(FOOT_PAD),
         ..area
     };
-    let item_h: u16 = if open { 2 } else { 1 };
+    // Two rows per entry on the rail too: the mark sits on the name
+    // row, the clause row stays blank. One-row packing makes the next
+    // window jump up when the list collapses.
+    let item_h: u16 = 2;
     let windows: Vec<SideItem> = view
         .windows
         .iter()
         .map(|w| SideItem::Window(w.window.clone()))
         .collect();
     let agent_items = agents(view, recency);
-    let (win_area, divider_y, agent_area) = sections(area, open, split);
+    let (win_area, divider_y, agent_area) = sections(area, split);
 
     let mut hits = Vec::new();
     let (mut y, windows_header) = list_start(win_area.y, win_area.bottom(), open, true);
@@ -263,11 +266,11 @@ fn list_start(top: u16, bottom: u16, open: bool, windows: bool) -> (u16, Option<
     (y, Some(header))
 }
 
-fn sections(area: Rect, open: bool, split: f32) -> (Rect, Option<u16>, Rect) {
+fn sections(area: Rect, split: f32) -> (Rect, Option<u16>, Rect) {
     if area.height < 3 {
         return (area, None, Rect::default());
     }
-    let item_h: u16 = if open { 2 } else { 1 };
+    let item_h: u16 = 2;
     let min_win = WIN_HEAD_ROWS + item_h;
     let min_agent = AGENT_HEAD_ROWS.max(1);
     let usable = area.height.saturating_sub(1);
@@ -451,6 +454,10 @@ mod tests {
         assert_eq!(rail.divider_y, Some(9));
         assert_eq!(rail.at(3), Some(&SideItem::Window("ansible".into())));
         assert_eq!(open.at(3), Some(&SideItem::Window("ansible".into())));
+        assert_eq!(rail.at(5), Some(&SideItem::Window("sh".into())));
+        assert_eq!(open.at(5), Some(&SideItem::Window("sh".into())));
+        assert_eq!(rail.hits[0].1, 2);
+        assert_eq!(rail.hits[1].0, open.hits[1].0);
         assert!(matches!(rail.at(12), Some(SideItem::Agent { name, .. }) if name == "oc"));
         assert!(rail.at(0).is_none());
         assert!(rail.at(9).is_none());

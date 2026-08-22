@@ -6,6 +6,21 @@ description: >
   of the mothballed program.
 ---
 
+# Client
+
+Whenever a vim motion is bound, bind the matching arrow too:
+
+| vim | arrow |
+|---|---|
+| `h` | Left |
+| `j` | Down |
+| `k` | Up |
+| `l` | Right |
+
+A list that needs a selection takes a mouse: click a row to pick
+it, wheel to move (`j`/`k`). Enter confirms. Prefix pane focus,
+the session popup, and the agent catalog are the current lists.
+
 # Build
 
 ```bash
