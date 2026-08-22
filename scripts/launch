@@ -1,0 +1,72 @@
+#!/bin/sh
+# PATH entry for `anvil`. Channel is which release binary we exec:
+# stable (the clone this script lives in) or dev (a worktree).
+# Not git. Install as a symlink:
+#   ln -sf "$(pwd)/scripts/launch" ~/.local/bin/anvil
+set -eu
+
+here=$(dirname "$(readlink -f "$0")")
+stable_root="${ANVIL_STABLE_ROOT:-$(CDPATH= cd "$here/.." && pwd)}"
+state="${ANVIL_ROOT:-$HOME/.anvil}"
+chan_file="${ANVIL_CHANNEL_FILE:-$state/channel}"
+dev_file="${ANVIL_DEV_ROOT_FILE:-$state/dev-root}"
+
+if [ "${1:-}" = "channel" ]; then
+  shift
+  case "${1:-show}" in
+    show | "")
+      chan=$(cat "$chan_file" 2>/dev/null || echo stable)
+      printf 'channel=%s\n' "$chan"
+      printf 'stable=%s\n' "$stable_root"
+      if [ -f "$dev_file" ]; then
+        printf 'dev=%s\n' "$(cat "$dev_file")"
+      else
+        printf 'dev=(unset)\n'
+      fi
+      ;;
+    stable)
+      mkdir -p "$(dirname "$chan_file")"
+      printf 'stable\n' >"$chan_file"
+      printf 'now stable (%s)\n' "$stable_root"
+      ;;
+    dev)
+      mkdir -p "$(dirname "$chan_file")" "$(dirname "$dev_file")"
+      if [ -n "${2:-}" ]; then
+        printf '%s\n' "$(CDPATH= cd "$2" && pwd)" >"$dev_file"
+      fi
+      if [ ! -s "$dev_file" ]; then
+        echo "anvil channel dev: pass a worktree: anvil channel dev /path/to/worktree" >&2
+        exit 2
+      fi
+      printf 'dev\n' >"$chan_file"
+      printf 'now dev (%s)\n' "$(cat "$dev_file")"
+      ;;
+    *)
+      echo "usage: anvil channel [show|stable|dev [worktree]]" >&2
+      exit 2
+      ;;
+  esac
+  exit 0
+fi
+
+chan=$(cat "$chan_file" 2>/dev/null || echo stable)
+case "$chan" in
+  dev)
+    if [ ! -s "$dev_file" ]; then
+      echo "anvil: channel is dev but $dev_file is unset" >&2
+      exit 127
+    fi
+    root=$(cat "$dev_file")
+    ;;
+  *)
+    root=$stable_root
+    ;;
+esac
+
+bin="$root/target/release/anvil"
+if [ ! -x "$bin" ]; then
+  echo "anvil: no $chan binary at $bin" >&2
+  echo "  cargo build --release   # in $root" >&2
+  exit 127
+fi
+exec "$bin" "$@"

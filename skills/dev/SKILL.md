@@ -33,6 +33,27 @@ cargo run
 cargo run -- --restart    # this tree's daemon + client
 ```
 
+# Channel
+
+`~/.local/bin/anvil` is a symlink to `scripts/launch`. It execs
+`target/release/anvil` from one tree:
+
+```bash
+ln -sf "$(pwd)/scripts/launch" ~/.local/bin/anvil
+cargo build --release
+anvil channel show
+anvil channel stable                    # this clone (main)
+anvil channel dev /path/to/worktree     # then cargo build --release there
+```
+
+Channel is not git. `~/.anvil/channel` and `~/.anvil/dev-root` remember
+the pick. After a switch, restart the unit so the daemon is the same
+binary the client will exec:
+
+```bash
+systemctl --user restart anvil
+```
+
 # Ship
 
 From a clone, with Rust and a C linker on PATH:
@@ -40,7 +61,7 @@ From a clone, with Rust and a C linker on PATH:
 ```bash
 cargo test
 cargo build --release
-install -m 0755 target/release/anvil ~/.local/bin/anvil
+ln -sf "$(pwd)/scripts/launch" ~/.local/bin/anvil
 ```
 
 Dependencies must resolve from the network. Path deps cannot ship.
