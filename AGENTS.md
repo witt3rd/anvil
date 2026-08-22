@@ -81,7 +81,7 @@ docs/tui.md        chrome: rail, roster, tiles
 docs/acp.md        ACP: the host, the children, the viewers
 docs/protocol.md   the mux wire
 quarantine/        mothballed previous tree (do not grow)
-skills/dev/        how to build and how to fault in
+skills/dev/        how to build, fault in, and ship
 ```
 
 ## Commands
@@ -95,10 +95,22 @@ cargo run -- --restart    # this tree: stop daemon, start this binary, attach
 To read the old program: `quarantine/`. To run it: that tree has its
 own `Cargo.toml`.
 
+## Ship
+
+A clone on any Unix box with Rust and a C linker is enough. Dependencies
+come from the network — crates.io or git — never a path on the author's
+disk. `cargo test` and `cargo build --release` succeed. The binary is
+`~/.local/bin/anvil`. The daemon is `anvil daemon`; the client is
+`anvil`. A systemd --user unit holds the daemon so detach never kills
+it.
+
+That is ship. Publishing to crates.io, a free crate name, a release
+tag, a unit file in this tree, and an install the crate itself owns
+are not that yet. The list lives in `skills/dev/`.
+
 ## Git
 
-House `git` skill. Primary `~/src/witt3rd/anvil` stays on `main`.
-Work: `git wt-new feat/foo`. `origin` is `git@github.com:witt3rd/anvil.git`.
+Work on a branch off `main`.
 
 ## Caretaker
 
@@ -113,9 +125,12 @@ earned it. `skills/dev/` is the lived how-to.
 ACP, roster, and write live here, in `docs/acp.md`, and in
 `docs/tui.md` until a word earns the kernel page.
 
+This file and `skills/` are public. They describe the program, not
+anyone's machines.
+
 ## Scope
 
 Universal for anyone working in this tree. Single owner, no
 external contributors.
 
-Last updated: 2026-08-17.
+Last updated: 2026-08-21.
