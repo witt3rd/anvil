@@ -68,10 +68,12 @@ anvil channel dev /path/to/worktree     # builds if stale
 ```
 
 Channel is not git. `~/.anvil/channel` and `~/.anvil/dev-root` remember
-the pick. The client replaces a live daemon that is not this ELF — otherwise
-new wire fields (a window's note) succeed and vanish. Processes
-that daemon held end. After a channel switch, restart the unit so
-systemd and the client agree:
+the pick. One ELF: the client probes `enumerate.build` (git of this
+binary) before attach. A mismatch stops the listener and starts this
+build — the systemd unit if it is enabled, else this process detached.
+An older daemon with no `build` is a mismatch. Processes that daemon
+held end. After a channel switch the next `anvil` does this; you can
+also:
 
 ```bash
 systemctl --user restart anvil

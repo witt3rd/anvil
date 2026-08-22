@@ -167,8 +167,13 @@ impl Reply {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum Value {
-    /// enumerate: the names of the sessions the daemon owns.
-    Sessions { sessions: Vec<String> },
+    /// enumerate: the names of the sessions the daemon owns, and
+    /// the git of this ELF (`build`). Absent on an older daemon.
+    Sessions {
+        sessions: Vec<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        build: String,
+    },
     /// read a session: its windows, their panes, each pane's geometry,
     /// and the focused pane.
     View(SessionView),
@@ -223,5 +228,15 @@ mod tests {
         assert_eq!(wire, r#"{"id":"a","ok":false,"error":"no such session"}"#);
         let back: Reply = serde_json::from_str(&wire).unwrap();
         assert_eq!(err, back);
+    }
+
+    #[test]
+    fn enumerate_build_defaults_on_old_wire() {
+        let v: Value = serde_json::from_str(r#"{"sessions":["work"]}"#).unwrap();
+        let Value::Sessions { sessions, build } = v else {
+            panic!("{v:?}");
+        };
+        assert_eq!(sessions, vec!["work".to_string()]);
+        assert!(build.is_empty());
     }
 }

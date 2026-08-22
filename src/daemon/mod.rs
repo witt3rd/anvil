@@ -96,30 +96,58 @@ fn reclaim_stale(sock: &Path) {
     let _ = fs::remove_file(pid_path(sock));
 }
 
-/// The wire probe: does the listener speak the anvil protocol? A
-/// connectable socket alone is not our daemon — a stranger on the
-/// path must not count as running.
-fn speaks_anvil(sock: &Path) -> bool {
-    let Ok(mut stream) = UnixStream::connect(sock) else {
-        return false;
-    };
-    if stream.set_read_timeout(Some(std::time::Duration::from_secs(1))).is_err() {
-        return false;
-    }
-    let mut line = match serde_json::to_string(&Request::Enumerate { id: "probe".into() }) {
-        Ok(line) => line,
-        Err(_) => return false,
-    };
+/// Probe the listener. `None` if nothing anvil-shaped is there.
+/// `Some("")` is an older daemon with no `build` on enumerate.
+fn probe(sock: &Path) -> Option<String> {
+    let mut stream = UnixStream::connect(sock).ok()?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .ok()?;
+    let mut line = serde_json::to_string(&Request::Enumerate { id: "probe".into() }).ok()?;
     line.push('\n');
-    if stream.write_all(line.as_bytes()).is_err() {
-        return false;
-    }
+    stream.write_all(line.as_bytes()).ok()?;
     let mut reply = String::new();
-    let mut reader = BufReader::new(stream);
-    if reader.read_line(&mut reply).is_err() || serde_json::from_str::<Reply>(&reply).is_err() {
-        return false;
+    BufReader::new(stream).read_line(&mut reply).ok()?;
+    let reply: Reply = serde_json::from_str(&reply).ok()?;
+    if !reply.ok {
+        return None;
     }
-    true
+    match reply.value {
+        Some(Value::Sessions { build, .. }) => Some(build),
+        Some(_) => Some(String::new()),
+        None => None,
+    }
+}
+
+fn speaks_anvil(sock: &Path) -> bool {
+    probe(sock).is_some()
+}
+
+fn probe_is_this(sock: &Path) -> bool {
+    probe(sock).as_deref() == Some(crate::build_id())
+}
+
+fn wait_until_ours(sock: &Path) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while std::time::Instant::now() < deadline {
+        if probe_is_this(sock) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    false
+}
+
+fn systemd_user(args: &[&str]) -> bool {
+    Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// One client connection. Each request gets one reply. EOF is a
@@ -162,6 +190,7 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
     match request {
         Request::Enumerate { .. } => Ok(Value::Sessions {
             sessions: sessions.list(),
+            build: crate::build_id().to_string(),
         }),
         Request::Create {
             session, window, ..
@@ -337,44 +366,44 @@ pub fn restart(sock: &Path, root: &Path) -> io::Result<()> {
     ensure_running(sock, root)
 }
 
-/// True when the process in the pid file is this binary. A stranger
-/// (another tree's ELF) is not; attach would drop new wire fields.
-fn daemon_is_this_binary(sock: &Path) -> bool {
-    let Some(pid) = pid_of(sock) else {
-        return true;
-    };
-    let daemon = PathBuf::from(format!("/proc/{pid}/exe"));
-    let Ok(us) = std::env::current_exe() else {
-        return true;
-    };
-    match (fs::canonicalize(&daemon), fs::canonicalize(&us)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
-}
-
-/// The client starts the daemon when it is not running — the same
-/// binary, detached. Its output goes to a log under the state root.
-/// Returns only when the wire speaks the anvil protocol, so a caller
-/// that connects now talks to our daemon. A live listener that speaks
-/// another protocol stays: it may be the real program in service, and
-/// the caller runs against a separate socket instead.
+/// The client starts the daemon when it is not running — this ELF,
+/// detached. It will not attach to another build: enumerate carries
+/// `build`, and a mismatch replaces the listener.
 ///
-/// A live anvil daemon that is a different ELF is replaced. New ops
-/// (a window's note) would otherwise succeed on the wire and vanish.
+/// A live listener that speaks another protocol stays: set ANVIL_SOCK.
 pub fn ensure_running(sock: &Path, root: &Path) -> io::Result<()> {
-    if running(sock) {
-        if daemon_is_this_binary(sock) {
-            return Ok(());
-        }
-        stop(sock)?;
+    if probe_is_this(sock) {
+        return Ok(());
     }
-    if UnixStream::connect(sock).is_ok() {
+    if probe(sock).is_none() && UnixStream::connect(sock).is_ok() {
         return Err(io::Error::other(format!(
             "the socket at {} speaks another protocol; set ANVIL_SOCK for a separate daemon",
             sock.display()
         )));
     }
+    if probe(sock).is_some() {
+        stop(sock)?;
+    }
+    let _ = systemd_user(&["stop", "anvil"]);
+    if systemd_user(&["is-enabled", "anvil"]) && systemd_user(&["start", "anvil"]) {
+        if wait_until_ours(sock) {
+            return Ok(());
+        }
+        stop(sock)?;
+        let _ = systemd_user(&["stop", "anvil"]);
+    }
+    spawn_this(sock, root)?;
+    if wait_until_ours(sock) {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "the daemon at {} is not this binary ({})",
+        sock.display(),
+        crate::build_id()
+    )))
+}
+
+fn spawn_this(sock: &Path, root: &Path) -> io::Result<()> {
     let exe = std::env::current_exe()?;
     if let Some(parent) = sock.parent() {
         fs::create_dir_all(parent)?;
@@ -397,17 +426,6 @@ pub fn ensure_running(sock: &Path, root: &Path) -> io::Result<()> {
         .stderr(Stdio::from(err))
         .env("ANVIL_SOCK", sock);
     let child = cmd.spawn()?;
-    // Detached: the daemon stays up when the client goes.
     drop(child);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while !speaks_anvil(sock) {
-        if std::time::Instant::now() > deadline {
-            return Err(io::Error::other(format!(
-                "the daemon at {} did not come up",
-                sock.display()
-            )));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
     Ok(())
 }

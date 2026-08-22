@@ -116,7 +116,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
     let mut client = Client::connect(&daemon.sock);
 
     // enumerate — nothing yet
-    let Value::Sessions { sessions } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
+    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
         panic!("expected session names")
     };
     assert!(sessions.is_empty());
@@ -133,7 +133,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         session: "work".into(),
         window: None,
     });
-    let Value::Sessions { sessions } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
+    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
         panic!("expected session names")
     };
     assert_eq!(sessions, vec!["work".to_string()]);
@@ -233,7 +233,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         window: None,
         note: None,
     });
-    let Value::Sessions { sessions } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
+    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
         panic!("expected session names")
     };
     assert_eq!(sessions, vec!["deep".to_string()]);
@@ -257,10 +257,23 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         id: id.into(),
         session: "deep".into(),
     });
-    let Value::Sessions { sessions } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
+    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
         panic!("expected session names")
     };
     assert!(sessions.is_empty());
+}
+
+#[test]
+fn enumerate_names_this_build() {
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = Daemon::start(dir.path());
+    let mut client = Client::connect(&daemon.sock);
+    let Value::Sessions { build, .. } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
+        panic!("expected session names")
+    };
+    assert_eq!(build, anvil::build_id());
+    assert!(!build.is_empty());
+    assert_ne!(build, "unknown");
 }
 
 #[test]

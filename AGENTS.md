@@ -95,6 +95,8 @@ cargo run -- --restart    # this tree: stop daemon, start this binary, attach
 `~/.local/bin/anvil` is `scripts/launch`: it execs `target/release/anvil`
 from this clone (stable) or a worktree (dev). `anvil channel` picks.
 If that ELF lags the tree, launch rebuilds it (`cargo build --release`).
+The client will not attach to another build: `enumerate` carries
+`build`, and a mismatch replaces the listener.
 
 To read the old program: `quarantine/`. To run it: that tree has its
 own `Cargo.toml`.
