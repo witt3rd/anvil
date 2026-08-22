@@ -34,6 +34,19 @@ cargo run
 cargo run -- --restart    # this tree's daemon + client
 ```
 
+# Git
+
+Two modes, matching `AGENTS.md`. A single change iterates on
+`main`: small commits, no leftover dirty tree. Stage only the
+files this change owns — never `git add -A`.
+
+Push a branch when that change is ready to merge. Before the PR,
+`git fetch origin` and rebase onto `origin/main` if it moved.
+
+A second change that does not touch the same files is a worktree
+off `main`. After that merge, remove the worktree and its branch
+together. `git worktree list` is the check.
+
 # Channel
 
 `~/.local/bin/anvil` is a symlink to `scripts/launch`. It execs
