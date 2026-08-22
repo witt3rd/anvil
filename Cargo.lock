@@ -904,6 +904,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "opaline"
 version = "0.4.1"
+source = "git+https://github.com/hyperb1iss/opaline.git?tag=v0.4.1#3239870b02d1c5209bb04a6aebdc5a3fc0507a0d"
 dependencies = [
  "ratatui-core",
  "serde",
