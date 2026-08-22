@@ -3,6 +3,10 @@
 # stable (the clone this script lives in) or dev (a worktree).
 # Not git. Install as a symlink:
 #   ln -sf "$(pwd)/scripts/launch" ~/.local/bin/anvil
+#
+# The ELF lags git. If HEAD or src is newer than target/release/anvil,
+# this script runs `cargo build --release` in that tree (when cargo is
+# on PATH and stderr is a tty), then execs. ANVIL_SKIP_BUILD=1 skips.
 set -eu
 
 here=$(dirname "$(readlink -f "$0")")
@@ -10,6 +14,90 @@ stable_root="${ANVIL_STABLE_ROOT:-$(CDPATH= cd "$here/.." && pwd)}"
 state="${ANVIL_ROOT:-$HOME/.anvil}"
 chan_file="${ANVIL_CHANNEL_FILE:-$state/channel}"
 dev_file="${ANVIL_DEV_ROOT_FILE:-$state/dev-root}"
+
+channel_root() {
+  chan=$(cat "$chan_file" 2>/dev/null || echo stable)
+  case "$chan" in
+    dev)
+      if [ ! -s "$dev_file" ]; then
+        echo "anvil: channel is dev but $dev_file is unset" >&2
+        exit 127
+      fi
+      cat "$dev_file"
+      ;;
+    *)
+      printf '%s\n' "$stable_root"
+      ;;
+  esac
+}
+
+head_rev() {
+  git -C "$1" rev-parse HEAD 2>/dev/null || true
+}
+
+built_rev() {
+  cat "$1/target/release/.rev" 2>/dev/null || true
+}
+
+tree_newer_than() {
+  bin=$1
+  root=$2
+  [ -x "$bin" ] || return 0
+  [ -n "$(find "$root/src" "$root/Cargo.toml" "$root/Cargo.lock" "$root/themes" \
+    -type f -newer "$bin" -print -quit 2>/dev/null)" ]
+}
+
+needs_build() {
+  root=$1
+  bin="$root/target/release/anvil"
+  [ -x "$bin" ] || return 0
+  head=$(head_rev "$root")
+  built=$(built_rev "$root")
+  if [ -n "$head" ] && [ "$head" != "$built" ]; then
+    return 0
+  fi
+  tree_newer_than "$bin" "$root"
+}
+
+ensure_release() {
+  root=$1
+  label=$2
+  bin="$root/target/release/anvil"
+  if ! needs_build "$root"; then
+    return 0
+  fi
+  # systemd ExecStart=`anvil daemon` must not compile. A client
+  # (`anvil`, `anvil --help`) rebuilds even inside a unit.
+  if [ "${ANVIL_SKIP_BUILD:-}" = 1 ] || [ "${3:-}" = daemon-unit ]; then
+    if [ ! -x "$bin" ]; then
+      echo "anvil: no $label binary at $bin" >&2
+      echo "  (cd $root && cargo build --release)" >&2
+      exit 127
+    fi
+    echo "anvil: $label binary lags $root" >&2
+    echo "  (cd $root && cargo build --release)" >&2
+    return 0
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "anvil: $label binary lags $root (no cargo)" >&2
+    echo "  (cd $root && cargo build --release)" >&2
+    if [ ! -x "$bin" ]; then
+      exit 127
+    fi
+    return 0
+  fi
+  echo "anvil: building $label in $root" >&2
+  (CDPATH= cd "$root" && cargo build --release)
+  mkdir -p "$root/target/release"
+  head=$(head_rev "$root")
+  if [ -n "$head" ]; then
+    printf '%s\n' "$head" >"$root/target/release/.rev"
+  fi
+  if [ ! -x "$bin" ]; then
+    echo "anvil: cargo build --release left no $bin" >&2
+    exit 127
+  fi
+}
 
 if [ "${1:-}" = "channel" ]; then
   shift
@@ -23,6 +111,7 @@ if [ "${1:-}" = "channel" ]; then
       ;;
     show | "")
       chan=$(cat "$chan_file" 2>/dev/null || echo stable)
+      root=$(channel_root)
       printf 'channel=%s\n' "$chan"
       printf 'stable=%s\n' "$stable_root"
       if [ -f "$dev_file" ]; then
@@ -30,11 +119,20 @@ if [ "${1:-}" = "channel" ]; then
       else
         printf 'dev=(unset)\n'
       fi
+      printf 'root=%s\n' "$root"
+      printf 'head=%s\n' "$(head_rev "$root" | cut -c1-12)"
+      printf 'built=%s\n' "$(built_rev "$root" | cut -c1-12)"
+      if needs_build "$root"; then
+        printf 'stale=yes\n'
+      else
+        printf 'stale=no\n'
+      fi
       ;;
     stable)
       mkdir -p "$(dirname "$chan_file")"
       printf 'stable\n' >"$chan_file"
       printf 'now stable (%s)\n' "$stable_root"
+      ensure_release "$stable_root" stable
       ;;
     dev)
       mkdir -p "$(dirname "$chan_file")" "$(dirname "$dev_file")"
@@ -46,7 +144,9 @@ if [ "${1:-}" = "channel" ]; then
         exit 2
       fi
       printf 'dev\n' >"$chan_file"
-      printf 'now dev (%s)\n' "$(cat "$dev_file")"
+      root=$(cat "$dev_file")
+      printf 'now dev (%s)\n' "$root"
+      ensure_release "$root" dev
       ;;
     *)
       echo "usage: anvil channel [show|stable|dev [worktree]]" >&2
@@ -57,23 +157,10 @@ if [ "${1:-}" = "channel" ]; then
 fi
 
 chan=$(cat "$chan_file" 2>/dev/null || echo stable)
-case "$chan" in
-  dev)
-    if [ ! -s "$dev_file" ]; then
-      echo "anvil: channel is dev but $dev_file is unset" >&2
-      exit 127
-    fi
-    root=$(cat "$dev_file")
-    ;;
-  *)
-    root=$stable_root
-    ;;
-esac
-
-bin="$root/target/release/anvil"
-if [ ! -x "$bin" ]; then
-  echo "anvil: no $chan binary at $bin" >&2
-  echo "  cargo build --release   # in $root" >&2
-  exit 127
+root=$(channel_root)
+skip=
+if [ -n "${INVOCATION_ID:-}" ] && [ "${1:-}" = "daemon" ]; then
+  skip=daemon-unit
 fi
-exec "$bin" "$@"
+ensure_release "$root" "$chan" "$skip"
+exec "$root/target/release/anvil" "$@"
