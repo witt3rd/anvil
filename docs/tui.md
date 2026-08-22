@@ -184,6 +184,13 @@ already in the buffer. The eye lands on the active tile.
 
 A default window is two panes: the agent and a shell.
 
+A daemon restart cannot keep the old process (the daemon is its
+parent). It does spawn each **named** agent pane again from the
+catalog — a new HTTP port for OpenCode, the same ACP command for
+anvil's viewer. A pane that was only a shell stays empty until
+the client puts a shell on it. The operator should not reattach
+to a roster of agent windows sitting at a prompt.
+
 ## The courier
 
 The daemon writes to a process. A note to another window is that
