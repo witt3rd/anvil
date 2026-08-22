@@ -16,6 +16,9 @@ struct Cli {
     /// Stop the daemon on this socket, start this binary, attach.
     #[arg(long)]
     restart: bool,
+    /// State directory (`ANVIL_ROOT`, else `~/.anvil`).
+    #[arg(long, global = true)]
+    root: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -31,6 +34,8 @@ enum Command {
         #[arg(long)]
         root: Option<PathBuf>,
     },
+    /// Maintain the agent catalog (`agents.json`).
+    Agent(anvil::catalog_cmd::AgentCli),
 }
 
 const LONG_ABOUT: &str = "\
@@ -46,6 +51,13 @@ Prefix is Ctrl-B. Prefix q detaches. The socket is \
 $XDG_RUNTIME_DIR/anvil.sock (ANVIL_SOCK). State is ~/.anvil (ANVIL_ROOT).";
 
 const AFTER_HELP: &str = "\
+Catalog:
+  anvil agent list | show NAME | default [NAME]
+  anvil agent add NAME --program P [--acp-only] [--acp-program P] [--adopt A] [--http]
+  anvil agent from SHIPPED [--as NAME]
+  anvil agent rm NAME
+  anvil agent seed [--force]
+
 Channel (PATH wrapper scripts/launch, not this binary):
   anvil channel show
   anvil channel stable
@@ -56,12 +68,24 @@ fn main() -> io::Result<()> {
     match cli.command {
         Some(Command::Daemon { sock, root }) => {
             let sock = sock.unwrap_or_else(daemon::default_sock);
-            let root = root.unwrap_or_else(|| std::env::var("ANVIL_ROOT").unwrap_or_else(|_| default_root()).into());
+            let root = root
+                .or(cli.root)
+                .unwrap_or_else(|| std::env::var("ANVIL_ROOT").unwrap_or_else(|_| default_root()).into());
             daemon::run(root, sock)
+        }
+        Some(Command::Agent(cmd)) => {
+            let mut cmd = cmd;
+            if cmd.root.is_none() {
+                cmd.root = cli.root;
+            }
+            anvil::catalog_cmd::run(cmd)
         }
         None => {
             let sock = daemon::default_sock();
-            let root = std::env::var("ANVIL_ROOT").unwrap_or_else(|_| default_root());
+            let root = cli
+                .root
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| std::env::var("ANVIL_ROOT").unwrap_or_else(|_| default_root()));
             if cli.restart {
                 daemon::restart(&sock, std::path::Path::new(&root))?;
             } else {
@@ -97,6 +121,7 @@ mod tests {
         assert!(help.contains("daemon"), "{help}");
         assert!(help.contains("--restart"), "{help}");
         assert!(help.contains("channel"), "{help}");
+        assert!(help.contains("agent"), "{help}");
         assert!(help.contains("Ctrl-B"), "{help}");
         assert!(!help.contains("Terminal multiplexer"), "{help}");
     }

@@ -250,18 +250,51 @@ impl Default for Agents {
 
 impl Agents {
     pub fn load(root: &Path) -> Agents {
+        Self::load_from(root).unwrap_or_else(|_| Agents::default())
+    }
+
+    /// Load the catalog. Writes the shipped file only when missing.
+    /// A file that will not parse is an error — it is not overwritten.
+    pub fn load_from(root: &Path) -> std::io::Result<Agents> {
         let path = root.join("agents.json");
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(agents) = serde_json::from_str(&text) {
-                return agents;
-            }
+        if !path.is_file() {
+            let agents = Agents::default();
+            agents.save(root)?;
+            return Ok(agents);
         }
-        let agents = Agents::default();
-        let _ = std::fs::create_dir_all(root);
-        if let Ok(text) = serde_json::to_string_pretty(&agents) {
-            let _ = std::fs::write(path, text);
+        let text = std::fs::read_to_string(&path)?;
+        serde_json::from_str(&text).map_err(std::io::Error::other)
+    }
+
+    pub fn save(&self, root: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(root)?;
+        let path = root.join("agents.json");
+        let tmp = root.join("agents.json.tmp");
+        let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    pub fn upsert(&mut self, agent: Agent) {
+        if let Some(slot) = self.agents.iter_mut().find(|a| a.name == agent.name) {
+            *slot = agent;
+        } else {
+            self.agents.push(agent);
         }
-        agents
+    }
+
+    pub fn remove(&mut self, name: &str) -> bool {
+        let n = self.agents.len();
+        self.agents.retain(|a| a.name != name);
+        if self.default == name {
+            self.default = self
+                .agents
+                .first()
+                .map(|a| a.name.clone())
+                .unwrap_or_default();
+        }
+        self.agents.len() < n
     }
 
     pub fn default_agent(&self) -> Agent {
@@ -284,9 +317,16 @@ impl Agents {
             return;
         }
         self.default = name.to_string();
-        if let Ok(text) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(root.join("agents.json"), text);
-        }
+        let _ = self.save(root);
+    }
+
+    /// HTTP door copied from the shipped catalog — config, not a brand.
+    pub fn shipped_http() -> HttpDoor {
+        Agents::default()
+            .agents
+            .iter()
+            .find_map(|a| a.door().http().cloned())
+            .unwrap_or_default()
     }
 
     /// Longest adopt alias that appears as a basename in `cmd`.
@@ -417,5 +457,28 @@ mod tests {
             .find(|a| a.name == "rung")
             .unwrap();
         assert_eq!(rung.seats(), vec![Seat::Anvil]);
+    }
+
+    #[test]
+    fn save_round_trips_upsert_and_remove() {
+        let dir = std::env::temp_dir().join(format!("anvil-cat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut agents = Agents::default();
+        agents.upsert(Agent {
+            name: "claude".into(),
+            program: "claude".into(),
+            acp_program: Some("claude --acp".into()),
+            adopt: vec!["claude".into()],
+            ..Default::default()
+        });
+        agents.save(&dir).unwrap();
+        let loaded = Agents::load(&dir);
+        assert!(loaded.by_name("claude").is_some());
+        let mut loaded = loaded;
+        assert!(loaded.remove("claude"));
+        loaded.save(&dir).unwrap();
+        assert!(Agents::load(&dir).by_name("claude").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

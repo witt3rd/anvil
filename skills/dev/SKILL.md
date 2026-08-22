@@ -132,12 +132,17 @@ The rail's turning mark is OpenCode's HTTP door (`--port`). Prefix
 has no door — OpenCode's default port `0` does not listen. The
 unit's PATH must include `~/.local/bin` or spawn cannot find `oc`.
 
-A catalog row is the adapter. Shipped rows live in
-`agents.default.json` (copied to `<root>/agents.json` when
-missing). The daemon implements doors, not brands. Adding
-support is a row: `program`, optional `acp_program` / `acp_only`,
-`adopt` basenames, and a `door` (`http` with paths, `inhibit`
-with `contains` / `files`, or none). Prefix `a`
+A catalog row is the adapter. Maintain it with `anvil agent`,
+not a text editor. Shipped rows live in `agents.default.json`.
+The daemon implements doors, not brands. Adding support:
+
+```
+anvil agent add NAME --program P [--acp-only] [--acp-program P] [--adopt A] [--http]
+anvil agent from oc --as my-oc
+anvil agent seed
+```
+
+Prefix `a`
 launches the default native TUI when they have one, else anvil.
 Prefix `A` picks; two seats ask native or anvil. Turning on anvil
 is an in-flight `session/prompt`.

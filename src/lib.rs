@@ -3,6 +3,7 @@
 //! the default seat; `anvil daemon` is the daemon.
 
 pub mod catalog;
+pub mod catalog_cmd;
 pub mod daemon;
 pub mod proto;
 pub mod tui;
