@@ -287,33 +287,64 @@ fn sections(area: Rect, split: f32) -> (Rect, Option<u16>, Rect) {
 }
 
 pub fn window_clause(window: &WindowView) -> String {
-    if let Some(act) = window.panes.iter().find_map(|p| p.activity.as_deref()) {
-        return act.to_string();
-    }
-    let named: Vec<&str> = window
+    if let Some(clause) = window
         .panes
         .iter()
-        .filter_map(|p| p.name.as_deref())
-        .collect();
-    let shells = window.panes.len().saturating_sub(named.len());
-    match (named.as_slice(), shells) {
-        ([], 1) => "shell".into(),
-        ([], n) => format!("{n} shells"),
-        ([a], 0) => (*a).to_string(),
-        ([a], _) => format!("{a} · shell"),
-        (many, 0) => many.join(" · "),
-        (many, _) => format!("{} · shell", many.join(" · ")),
+        .filter(|p| p.name.is_some())
+        .find_map(pane_session)
+    {
+        return clause;
+    }
+    if window.panes.iter().any(|p| p.name.is_some()) {
+        return String::new();
+    }
+    match window.panes.len() {
+        0 => String::new(),
+        1 => "shell".into(),
+        n => format!("{n} shells"),
     }
 }
 
-pub fn agent_clause(window: &str, state: WindowState, activity: Option<&str>) -> String {
-    let label = activity.filter(|s| !s.is_empty()).unwrap_or(window);
+pub fn agent_clause(state: WindowState, activity: Option<&str>, session: Option<&str>) -> String {
+    let label = session_text(activity, session);
     match state {
+        WindowState::Turning if label.is_empty() => "turning".into(),
+        WindowState::NeedsYou if label.is_empty() => "needs you".into(),
+        WindowState::Dead if label.is_empty() => "dead".into(),
         WindowState::Turning => format!("{label} · turning"),
         WindowState::NeedsYou => format!("{label} · needs you"),
         WindowState::Dead => format!("{label} · dead"),
-        WindowState::Idle => label.to_string(),
+        WindowState::Idle => label,
     }
+}
+
+fn pane_session(pane: &crate::daemon::session::PaneView) -> Option<String> {
+    let text = session_text(pane.activity.as_deref(), pane.session.as_deref());
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn session_text(activity: Option<&str>, session: Option<&str>) -> String {
+    if let Some(act) = activity.filter(|s| !s.is_empty()) {
+        return act.to_string();
+    }
+    session
+        .filter(|s| !s.is_empty())
+        .map(session_label)
+        .unwrap_or_default()
+}
+
+fn session_label(id: &str) -> String {
+    const MAX: usize = 16;
+    if id.chars().count() <= MAX {
+        return id.to_string();
+    }
+    let mut out: String = id.chars().take(MAX.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 pub fn window_has_agent(window: &WindowView) -> bool {
@@ -343,6 +374,7 @@ mod tests {
                             rows: 10,
                             name: Some("oc".into()),
                             activity: None,
+                            session: None,
                             state: WindowState::Idle,
                         },
                         PaneView {
@@ -353,6 +385,7 @@ mod tests {
                             rows: 10,
                             name: None,
                             activity: None,
+                            session: None,
                             state: WindowState::Idle,
                         },
                     ],
@@ -369,6 +402,7 @@ mod tests {
                         rows: 10,
                         name: None,
                         activity: None,
+                        session: None,
                         state: WindowState::Idle,
                     }],
                 },
@@ -390,22 +424,28 @@ mod tests {
     #[test]
     fn window_clause_names_what_is_on_it() {
         let v = view();
-        assert_eq!(window_clause(&v.windows[0]), "oc · shell");
+        assert_eq!(window_clause(&v.windows[0]), "");
         assert_eq!(window_clause(&v.windows[1]), "shell");
     }
 
     #[test]
-    fn window_clause_prefers_activity() {
+    fn window_clause_is_the_agent_session() {
         let mut v = view();
+        v.windows[0].panes[0].session = Some("ses_pane_1".into());
+        assert_eq!(window_clause(&v.windows[0]), "ses_pane_1");
         v.windows[0].panes[0].activity = Some("RunPod RTX 6000 pricing".into());
         assert_eq!(window_clause(&v.windows[0]), "RunPod RTX 6000 pricing");
         assert_eq!(
-            agent_clause("oc", WindowState::Idle, Some("RunPod RTX 6000 pricing")),
+            agent_clause(WindowState::Idle, Some("RunPod RTX 6000 pricing"), None),
             "RunPod RTX 6000 pricing"
         );
         assert_eq!(
-            agent_clause("oc", WindowState::Turning, Some("RunPod RTX 6000 pricing")),
+            agent_clause(WindowState::Turning, Some("RunPod RTX 6000 pricing"), None),
             "RunPod RTX 6000 pricing · turning"
+        );
+        assert_eq!(
+            agent_clause(WindowState::Idle, None, Some("ses_pane_1")),
+            "ses_pane_1"
         );
     }
 
@@ -437,6 +477,7 @@ mod tests {
                     rows: 10,
                     name: None,
                     activity: None,
+                    session: None,
                     state: WindowState::Idle,
                 }],
             }],
@@ -475,6 +516,7 @@ mod tests {
             rows: 10,
             name: Some(name.into()),
             activity: None,
+            session: None,
             state: WindowState::Idle,
         }
     }

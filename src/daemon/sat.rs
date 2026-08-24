@@ -241,6 +241,7 @@ mod tests {
             rows: 10,
             name: name.map(str::to_string),
             activity: None,
+            session: None,
             state,
         }
     }
