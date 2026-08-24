@@ -123,15 +123,12 @@ The pairs and the pickers live in `docs/tui.md`.
 
 ## Git
 
-Two modes. A single change iterates on `main`: small commits, no
-leftover dirty tree. Push a branch when that change is ready to
-merge.
+Iterate on `main`. Small commits, no leftover dirty tree. Push
+`origin/main`. A worktree is only a second change that does not
+touch the same files.
 
-A second change that does not touch the same files is a
-worktree. After that merge, remove the worktree and its branch.
-
-Sync with `origin/main` before starting, and before a PR. The
-lived commands live in `skills/dev/`.
+Sync with `origin/main` before starting. The lived commands live
+in `skills/dev/`.
 
 ## Caretaker
 
@@ -154,4 +151,4 @@ anyone's machines.
 Universal for anyone working in this tree. Single owner, no
 external contributors.
 
-Last updated: 2026-08-22.
+Last updated: 2026-08-24.
