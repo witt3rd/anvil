@@ -1750,7 +1750,7 @@ impl Client {
                 let clause = w.map(side::window_clause).unwrap_or_default();
                 (here, mark, mark_style, name.clone(), clause)
             }
-            side::SideItem::Agent { pane, window, name } => {
+            side::SideItem::Agent { pane, window: _, name } => {
                 let here = focused_pane == pane;
                 let state = view
                     .windows
@@ -1760,18 +1760,19 @@ impl Client {
                     .map(|p| p.state)
                     .unwrap_or(WindowState::Idle);
                 let (mark, mark_style) = self.state_mark(state);
-                let activity = view
+                let pane_view = view
                     .windows
                     .iter()
                     .flat_map(|w| w.panes.iter())
-                    .find(|p| p.pane == *pane)
-                    .and_then(|p| p.activity.as_deref());
+                    .find(|p| p.pane == *pane);
+                let activity = pane_view.and_then(|p| p.activity.as_deref());
+                let session = pane_view.and_then(|p| p.session.as_deref());
                 (
                     here,
                     mark,
                     mark_style,
                     name.clone(),
-                    side::agent_clause(window, state, activity),
+                    side::agent_clause(state, activity, session),
                 )
             }
         };
@@ -3130,6 +3131,7 @@ mod tests {
                         rows: 20,
                         name: Some("oc".into()),
                         activity: None,
+                        session: None,
                         state: WindowState::Idle,
                     }],
                 },
@@ -3145,6 +3147,7 @@ mod tests {
                         rows: 20,
                         name: None,
                         activity: None,
+                        session: None,
                         state: WindowState::Idle,
                     }],
                 },

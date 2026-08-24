@@ -55,6 +55,9 @@ pub struct PaneView {
     /// the last user line when the title is still a placeholder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
+    /// The process's inner conversation id on this pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     #[serde(default)]
     pub state: WindowState,
 }
@@ -368,6 +371,7 @@ impl Session {
                         rows,
                         name: self.names.get(&id).cloned(),
                         activity: self.pane_activity(&id),
+                        session: self.inner.get(&id).cloned().filter(|s| !s.is_empty()),
                         state: self.pane_mark(&id),
                     }
                 })

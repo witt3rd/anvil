@@ -84,14 +84,13 @@ panel, no names.
 The **open sidebar** is 21 cells by default, `bg.panel`, and
 lives in `<root>/sidebar.json`. Each entry is two lines.
 The first is the mark and the name. The second is a clause:
-on a window, what lives there (`oc · shell`, `shell`), or the
-agent's activity when the HTTP door has a session title; on
-an agent, that same activity (OpenCode's title, grok's
-`generated_title` on disk, or the last user line), plus
-turning or needs-you when that is true. These are task
-summaries, not gerunds we invent — the agent already
-named the work. Grok's turn is the `systemd-inhibit`
-it holds while working. Headers `windows` and `agents` sit above each
+on a shell window, `shell`. On a window that holds an agent,
+that agent's current session — the conversation title when
+the door has one, otherwise the inner session id. On an
+agent row, the same session, plus turning or needs-you
+when that is true. These are the session, not the window
+and not an inventory of panes. Grok's turn is the
+`systemd-inhibit` it holds while working. Headers `windows` and `agents` sit above each
 list in `text.dim`, the same as the host. `windows` has a
 blank row above and below. `agents` sits on the row under
 the divider. The agents block is always there, even when empty.
