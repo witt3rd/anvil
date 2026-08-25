@@ -309,6 +309,10 @@ pub fn window_clause(window: &WindowView) -> String {
     }
 }
 
+pub fn agent_title(window: &str, name: &str) -> String {
+    format!("{window} - {name}")
+}
+
 pub fn agent_clause(state: WindowState, activity: Option<&str>, session: Option<&str>) -> String {
     let label = session_text(activity, session);
     match state {
@@ -426,6 +430,8 @@ mod tests {
             &agent_list[0],
             SideItem::Agent { name, window, .. } if name == "oc" && window == "ansible"
         ));
+        assert_eq!(agent_title("ansible", "oc"), "ansible - oc");
+        assert_eq!(agent_title("oc-2", "oc"), "oc-2 - oc");
     }
 
     #[test]

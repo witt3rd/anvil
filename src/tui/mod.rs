@@ -1969,7 +1969,7 @@ impl Client {
     ) {
         let focused_window = self.focused_window();
         let focused_pane = view.focused.as_str();
-        let (here, mark, mark_style, title, clause) = match item {
+        let (here, mark, mark_style, title, clause, cwd) = match item {
             side::SideItem::Window(name) => {
                 let w = view.windows.iter().find(|w| w.window == *name);
                 let here = focused_window.as_deref() == Some(name.as_str());
@@ -1978,13 +1978,9 @@ impl Client {
                     _ => ("·", Style::default().fg(self.c("text.muted"))),
                 };
                 let clause = w.map(side::window_clause).unwrap_or_default();
-                (here, mark, mark_style, name.clone(), clause)
+                (here, mark, mark_style, name.clone(), clause, None)
             }
-            side::SideItem::Agent {
-                pane,
-                window: _,
-                name,
-            } => {
+            side::SideItem::Agent { pane, window, name } => {
                 let here = focused_pane == pane;
                 let state = view
                     .windows
@@ -2001,18 +1997,21 @@ impl Client {
                     .find(|p| p.pane == *pane);
                 let activity = pane_view.and_then(|p| p.activity.as_deref());
                 let session = pane_view.and_then(|p| p.session.as_deref());
+                let cwd = pane_view.and_then(|p| p.cwd.as_deref());
                 (
                     here,
                     mark,
                     mark_style,
-                    name.clone(),
+                    side::agent_title(window, name),
                     side::agent_clause(state, activity, session),
+                    cwd,
                 )
             }
         };
         let accent = Style::default().fg(self.c("accent.primary")).bg(panel);
         let primary = Style::default().fg(self.c("text.primary")).bg(panel);
         let muted = Style::default().fg(self.c("text.muted")).bg(panel);
+        let dim = Style::default().fg(self.c("text.dim")).bg(panel);
         let mark_style = mark_style.bg(panel);
         if here {
             frame.buffer_mut().set_stringn(area.x, y, "┃", 1, accent);
@@ -2022,13 +2021,23 @@ impl Client {
             .set_stringn(area.x + 2, y, mark, 1, mark_style);
         if open {
             let title_style = if here { primary } else { muted };
-            frame.buffer_mut().set_stringn(
-                area.x + 4,
-                y,
-                &title,
-                area.width.saturating_sub(4) as usize,
-                title_style,
-            );
+            let width = area.width.saturating_sub(4);
+            frame
+                .buffer_mut()
+                .set_stringn(area.x + 4, y, &title, width as usize, title_style);
+            if let Some(cwd) = cwd.filter(|s| !s.is_empty()) {
+                let used = (title.chars().count() as u16).min(width);
+                if used + 2 < width {
+                    let shown = cwd::display(cwd);
+                    frame.buffer_mut().set_stringn(
+                        area.x + 4 + used + 1,
+                        y,
+                        &shown,
+                        (width - used - 1) as usize,
+                        dim,
+                    );
+                }
+            }
             if h > 1 && y + 1 < area.bottom() {
                 frame.buffer_mut().set_stringn(
                     area.x + 4,
