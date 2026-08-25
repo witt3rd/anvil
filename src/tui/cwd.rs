@@ -107,9 +107,9 @@ impl Places {
     }
 
     /// Empty draft and a complete directory keep the learned list.
-    /// A partial path lists real folders: children of the typed parent
-    /// first (prefix, then substring), then other known folders whose
-    /// names contain the last component.
+    /// A trailing slash lists only that folder's children. A partial
+    /// name lists those children first (prefix, then substring), then
+    /// other known folders whose names contain the last component.
     pub fn rows_for(&self, here: Option<&str>, draft: &str) -> Vec<Row> {
         self.rows_for_in(here, draft, &home())
     }
@@ -213,6 +213,11 @@ fn complete(draft: &str, places: &Places, here: Option<&str>, home: &Path) -> Ve
             .filter_map(|p| score_name(&p, &n).map(|s| (p.clone(), kind_of(&known, &p), s)))
             .collect();
         push_ranked(primary);
+    }
+
+    if n.is_empty() {
+        out.truncate(MATCH_CAP);
+        return out;
     }
 
     let mut secondary = Vec::new();
@@ -475,6 +480,30 @@ mod tests {
         );
         assert!(pos("weird").unwrap() < pos("noway").unwrap(), "{names:?}");
         assert!(!names.contains(&"li".into()), "{names:?}");
+    }
+
+    #[test]
+    fn trailing_slash_lists_only_that_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        for p in ["src/witt3rd", "src/li", "other/weird", "other/noway"] {
+            std::fs::create_dir_all(home.join(p)).unwrap();
+        }
+        let places = Places {
+            recent: vec![
+                home.join("src/li").to_string_lossy().into_owned(),
+                home.join("other/noway").to_string_lossy().into_owned(),
+            ],
+        };
+        let draft = format!("{}/src/", home.display());
+        let listed = names(&places.rows_for_in(None, &draft, home));
+        assert!(listed.contains(&"witt3rd".into()), "{listed:?}");
+        assert!(listed.contains(&"li".into()), "{listed:?}");
+        assert!(!listed.contains(&"weird".into()), "{listed:?}");
+        assert!(!listed.contains(&"noway".into()), "{listed:?}");
+        let home_rel = names(&places.rows_for_in(None, "/src/", home));
+        assert!(home_rel.contains(&"witt3rd".into()), "{home_rel:?}");
+        assert!(!home_rel.contains(&"weird".into()), "{home_rel:?}");
     }
 
     #[test]
