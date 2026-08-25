@@ -570,24 +570,8 @@ impl Client {
     }
 
     fn cwd_rows(&self, pick: &CwdPick) -> Vec<cwd::Row> {
-        let here = self.pane_cwd();
-        let mut rows = self.places.rows(here.as_deref());
-        let q = pick.draft.trim();
-        if !q.is_empty() {
-            let needle = q.to_lowercase();
-            rows.retain(|r| r.path.to_lowercase().contains(&needle));
-            let typed = cwd::normalize(q);
-            if cwd::is_dir(&typed) && !rows.iter().any(|r| r.path == typed) {
-                rows.insert(
-                    0,
-                    cwd::Row {
-                        path: typed,
-                        kind: cwd::Kind::Here,
-                    },
-                );
-            }
-        }
-        rows
+        self.places
+            .rows_for(self.pane_cwd().as_deref(), &pick.draft)
     }
 
     /// Native when they have a TUI; otherwise anvil.

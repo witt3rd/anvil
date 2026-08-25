@@ -146,7 +146,9 @@ anvil agent seed
 Prefix `a` asks which directory, then launches the default native
 TUI when they have one, else anvil. The default is this pane's
 cwd. Roots (`~/src/witt3rd`, `~/src/li`) appear as they accumulate
-from launches. Prefix `A` picks the agent first; two seats ask
+from launches. Typing a path lists matching folders in that
+directory first, then other folders whose names contain the
+typed fragment. Prefix `A` picks the agent first; two seats ask
 native or anvil. Turning on anvil is an in-flight `session/prompt`.
 
 # Not yet published
