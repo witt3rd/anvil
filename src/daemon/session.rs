@@ -394,6 +394,7 @@ impl Session {
     /// same way as prefix-a.
     fn adopt_agents(&mut self) {
         let ids: Vec<String> = self.panes.keys().cloned().collect();
+        let mut persist = false;
         for id in ids {
             let Some(pid) = self.panes.get(&id).and_then(|p| p.pid()) else {
                 continue;
@@ -402,6 +403,12 @@ impl Session {
                 Some(hit) => {
                     self.names.insert(id.clone(), hit.name.clone());
                     self.adopted.insert(id.clone());
+                    if let Some(sid) = hit.session.filter(|s| !s.is_empty()) {
+                        if self.inner.get(&id) != Some(&sid) {
+                            self.inner.insert(id.clone(), sid);
+                            persist = true;
+                        }
+                    }
                     if let Some(url) = hit.watch {
                         if !self.watch.contains_key(&id) {
                             self.start_http(&id, &url, Some(&hit.name));
@@ -410,13 +417,18 @@ impl Session {
                 }
                 None if self.adopted.contains(&id) => {
                     self.names.remove(&id);
+                    self.inner.remove(&id);
                     self.adopted.remove(&id);
+                    persist = true;
                     if let Some(w) = self.watch.remove(&id) {
                         w.stop();
                     }
                 }
                 None => {}
             }
+        }
+        if persist {
+            let _ = self.persist();
         }
     }
 
@@ -539,8 +551,13 @@ impl Session {
             .and_then(|n| self.catalog.by_name(n))
             .and_then(|a| a.door().http().cloned())
             .unwrap_or_default();
+        let cwd = self
+            .panes
+            .get(pane_id)
+            .and_then(|p| p.pid())
+            .and_then(super::adopt::cwd);
         self.watch
-            .insert(pane_id.to_string(), HttpWatch::start(url, spec));
+            .insert(pane_id.to_string(), HttpWatch::start(url, spec, cwd));
     }
 
     /// A process that has ended takes its pane with it. `exit` in a

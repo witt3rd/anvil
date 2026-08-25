@@ -232,14 +232,37 @@ impl Agent {
 }
 
 pub fn port_from_args(words: &[&str]) -> Option<u16> {
+    flag_value(words, "--port", None).and_then(|s| s.parse().ok())
+}
+
+/// The inner session named on argv, from the catalog `resume` flag.
+/// `--session {session}` also matches `-s`; `--resume {session}` matches `-r`.
+pub fn session_from_args(words: &[&str], resume: Option<&str>) -> Option<String> {
+    let flag = resume?
+        .split_whitespace()
+        .next()
+        .filter(|f| f.starts_with('-'))?;
+    let short = flag.strip_prefix("--").and_then(|name| {
+        let c = name.chars().next()?;
+        Some(format!("-{c}"))
+    });
+    flag_value(words, flag, short.as_deref()).filter(|s| !s.is_empty() && !s.starts_with('-'))
+}
+
+fn flag_value(words: &[&str], long: &str, short: Option<&str>) -> Option<String> {
+    let eq = format!("{long}=");
     let mut i = 0;
     while i < words.len() {
         let w = words[i];
-        if let Some(rest) = w.strip_prefix("--port=") {
-            return rest.parse().ok();
+        if let Some(rest) = w.strip_prefix(&eq) {
+            return Some(rest.to_string());
         }
-        if w == "--port" {
-            return words.get(i + 1)?.parse().ok();
+        if w == long || short.is_some_and(|s| w == s) {
+            let next = words.get(i + 1).copied().unwrap_or("");
+            if !next.is_empty() && !next.starts_with('-') {
+                return Some(next.to_string());
+            }
+            return None;
         }
         i += 1;
     }
@@ -359,10 +382,12 @@ impl Agents {
                 }
                 let score = alias.len();
                 let watch = port_from_args(&words).map(|p| format!("http://127.0.0.1:{p}"));
+                let session = session_from_args(&words, agent.resume.as_deref());
                 let hit = AdoptHit {
                     name: agent.name.clone(),
                     watch,
                     listen: agent.door().is_http(),
+                    session,
                 };
                 if best.as_ref().is_none_or(|(s, _)| score > *s) {
                     best = Some((score, hit));
@@ -392,6 +417,7 @@ pub struct AdoptHit {
     pub name: String,
     pub watch: Option<String>,
     pub listen: bool,
+    pub session: Option<String>,
 }
 
 /// A window name that is not yet taken: `opencode`, then `opencode-2`.
@@ -471,6 +497,20 @@ mod tests {
         let oc = agents.adopt_cmd("oc --port 9").unwrap();
         assert_eq!(oc.name, "oc");
         assert_eq!(oc.watch.as_deref(), Some("http://127.0.0.1:9"));
+        let named = agents
+            .adopt_cmd("oc --session ses_pane_1")
+            .unwrap();
+        assert_eq!(named.session.as_deref(), Some("ses_pane_1"));
+        let short = agents.adopt_cmd("oc -s ses_from_shell").unwrap();
+        assert_eq!(short.session.as_deref(), Some("ses_from_shell"));
+        assert!(agents.adopt_cmd("oc -c").unwrap().session.is_none());
+        let grok = agents
+            .adopt_cmd("grok --resume 01a01222-4853-71b2-83e5-963f202b6273")
+            .unwrap();
+        assert_eq!(
+            grok.session.as_deref(),
+            Some("01a01222-4853-71b2-83e5-963f202b6273")
+        );
         let raw = agents.adopt_cmd("opencode").unwrap();
         assert_eq!(raw.name, "oc");
         assert!(agents.adopt_cmd("git clone grok").is_none());

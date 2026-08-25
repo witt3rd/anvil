@@ -123,8 +123,10 @@ right; prefix `-` splits it down. Focus moves into the new
 pane. Closing a pane gives the leftover tile the space.
 
 A shell that launches a catalog program (`oc`, `oc-work`,
-`opencode`, `grok`) is adopted: the pane gets that name and,
-when a port is visible, the HTTP watch — the same as prefix `a`.
+`opencode`, `grok`) is adopted: the pane gets that name, the
+inner session named on argv (`-s` / `--session`, `--resume`),
+and, when a port is visible in the process tree, the HTTP watch
+— the same as prefix `a`.
 
 Prefix `a` opens a new window on the default agent (`agents.json`).
 The catalog names the program (`oc`, `oc-work`, `grok`). An

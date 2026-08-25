@@ -17,6 +17,7 @@ use super::acp::WindowState;
 pub struct HttpWatch {
     base: String,
     spec: HttpDoor,
+    directory: Option<String>,
     state: Mutex<WindowState>,
     activity: Mutex<Option<String>>,
     session_id: Mutex<Option<String>>,
@@ -24,10 +25,11 @@ pub struct HttpWatch {
 }
 
 impl HttpWatch {
-    pub fn start(base: &str, spec: HttpDoor) -> Arc<HttpWatch> {
+    pub fn start(base: &str, spec: HttpDoor, directory: Option<String>) -> Arc<HttpWatch> {
         let watch = Arc::new(HttpWatch {
             base: base.to_string(),
             spec,
+            directory,
             state: Mutex::new(WindowState::Idle),
             activity: Mutex::new(None),
             session_id: Mutex::new(None),
@@ -60,7 +62,8 @@ impl HttpWatch {
             .as_deref()
             .ok_or_else(|| io::Error::other("this door has no sessions path"))?;
         let list = http_get(&self.base, sessions)?;
-        let sid = current_session_id(&list)
+        let sid = current_work_session(&list, self.directory.as_deref())
+            .map(|(id, _)| id)
             .ok_or_else(|| io::Error::other("the agent has no session"))?;
         let body = serde_json::to_string(&json!({
             "parts": [{ "type": "text", "text": text }]
@@ -124,7 +127,7 @@ impl HttpWatch {
             }
             ticks = ticks.wrapping_add(1);
             if ticks % 5 == 1 {
-                if let Some((id, act)) = refresh_work(base, &self.spec) {
+                if let Some((id, act)) = refresh_work(base, &self.spec, self.directory.as_deref()) {
                     if let Ok(mut slot) = self.session_id.lock() {
                         *slot = Some(id);
                     }
@@ -259,10 +262,14 @@ pub fn current_session_id(body: &str) -> Option<String> {
     best.map(|(_, id)| id)
 }
 
-fn refresh_work(base: &str, spec: &HttpDoor) -> Option<(String, Option<String>)> {
+fn refresh_work(
+    base: &str,
+    spec: &HttpDoor,
+    directory: Option<&str>,
+) -> Option<(String, Option<String>)> {
     let sessions = spec.sessions.as_deref()?;
     let list = http_get(base, sessions).ok()?;
-    let (id, title) = current_work_session(&list)?;
+    let (id, title) = current_work_session(&list, directory)?;
     if !placeholder_title(&title) {
         return Some((id, Some(terse(&title, 28))));
     }
@@ -274,7 +281,18 @@ fn refresh_work(base: &str, spec: &HttpDoor) -> Option<(String, Option<String>)>
 }
 
 /// Newest session that is real work, not a courier fork.
-pub fn current_work_session(body: &str) -> Option<(String, String)> {
+/// When `directory` is set, prefer sessions in that project.
+pub fn current_work_session(body: &str, directory: Option<&str>) -> Option<(String, String)> {
+    pick_work_session(body, directory).or_else(|| {
+        if directory.is_some() {
+            pick_work_session(body, None)
+        } else {
+            None
+        }
+    })
+}
+
+fn pick_work_session(body: &str, directory: Option<&str>) -> Option<(String, String)> {
     let v: Value = serde_json::from_str(body).ok()?;
     let sessions = match &v {
         Value::Array(a) => a.as_slice(),
@@ -284,6 +302,12 @@ pub fn current_work_session(body: &str) -> Option<(String, String)> {
     let mut best: Option<(u64, String, String)> = None;
     let mut fallback: Option<(u64, String, String)> = None;
     for s in sessions {
+        if let Some(want) = directory {
+            let dir = s.get("directory").and_then(|d| d.as_str()).unwrap_or("");
+            if dir != want {
+                continue;
+            }
+        }
         let id = s.get("id")?.as_str()?.to_string();
         let title = s
             .get("title")
@@ -417,9 +441,20 @@ mod tests {
             {"id":"n","title":"New session - 2026","time":{"updated":20}},
             {"id":"w","title":"RunPod RTX 6000 pricing","time":{"updated":10}}
         ]"#;
-        let (id, title) = current_work_session(body).unwrap();
+        let (id, title) = current_work_session(body, None).unwrap();
         assert_eq!(id, "w");
         assert_eq!(title, "RunPod RTX 6000 pricing");
+    }
+
+    #[test]
+    fn work_session_prefers_this_directory() {
+        let body = r#"[
+            {"id":"other","title":"Elsewhere","directory":"/x","time":{"updated":90}},
+            {"id":"here","title":"This pane","directory":"/home/dt/src/witt3rd/anvil","time":{"updated":10}}
+        ]"#;
+        let (id, title) = current_work_session(body, Some("/home/dt/src/witt3rd/anvil")).unwrap();
+        assert_eq!(id, "here");
+        assert_eq!(title, "This pane");
     }
 
     #[test]

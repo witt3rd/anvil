@@ -128,9 +128,10 @@ pane's inner session id are not. ACP calls `session/load` or
 last conversation on the box, not this pane's.
 
 The rail's turning mark is OpenCode's HTTP door (`--port`). Prefix
-`a` / `A` pass that flag. A shell that runs `oc` with no `--port`
-has no door — OpenCode's default port `0` does not listen. The
-unit's PATH must include `~/.local/bin` or spawn cannot find `oc`.
+`a` / `A` pass that flag. A shell that runs `oc` is adopted: the
+session on argv (`-s` / `--session`) is this pane's, and a listen
+port anywhere in that process tree is the door. The unit's PATH
+must include `~/.local/bin` or spawn cannot find `oc`.
 
 A catalog row is the adapter. Maintain it with `anvil agent`,
 not a text editor. Shipped rows live in `agents.default.json`.

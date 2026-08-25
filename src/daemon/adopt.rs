@@ -14,15 +14,51 @@ pub fn detect(root: u32, catalog: &Agents) -> Option<AdoptHit> {
             continue;
         };
         if hit.watch.is_none() && hit.listen {
-            if let Some(port) = listen_port(pid) {
-                hit.watch = Some(format!("http://127.0.0.1:{port}"));
-            }
+            hit.watch = listen_in_tree(pid);
         }
-        if best.as_ref().is_none_or(|b| hit.name.len() >= b.name.len()) {
-            best = Some(hit);
+        best = Some(merge_hit(best.take(), hit));
+    }
+    if let Some(hit) = best.as_mut() {
+        if hit.watch.is_none() && hit.listen {
+            hit.watch = listen_in_tree(root);
         }
     }
     best
+}
+
+fn merge_hit(best: Option<AdoptHit>, hit: AdoptHit) -> AdoptHit {
+    let Some(mut best) = best else {
+        return hit;
+    };
+    if hit.name.len() > best.name.len() {
+        let watch = hit.watch.clone().or(best.watch.take());
+        let session = hit.session.clone().or(best.session.take());
+        return AdoptHit {
+            watch,
+            session,
+            ..hit
+        };
+    }
+    if best.watch.is_none() {
+        best.watch = hit.watch;
+    }
+    if best.session.is_none() {
+        best.session = hit.session;
+    }
+    best
+}
+
+fn listen_in_tree(root: u32) -> Option<String> {
+    std::iter::once(root)
+        .chain(descendants(root))
+        .find_map(listen_port)
+        .map(|p| format!("http://127.0.0.1:{p}"))
+}
+
+pub fn cwd(pid: u32) -> Option<String> {
+    fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
 }
 
 fn cmdline(pid: u32) -> String {
