@@ -122,7 +122,8 @@ pane's process as SGR mouse only when it has asked (DECSET
 1000/1002/1003). Shift-drag selects even then. Prefix `]` /
 `[` walk windows. Prefix `v` splits the focused pane to the
 right; prefix `-` splits it down. Focus moves into the new
-pane. Closing a pane gives the leftover tile the space.
+pane. The new pane's shell starts in that window's cwd.
+Closing a pane gives the leftover tile the space.
 
 A shell that launches a catalog program (`oc`, `oc-work`,
 `opencode`, `grok`) is adopted: the pane gets that name, the

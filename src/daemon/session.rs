@@ -384,12 +384,7 @@ impl Session {
                         name: self.names.get(&id).cloned(),
                         activity: self.pane_activity(&id),
                         session: self.inner.get(&id).cloned().filter(|s| !s.is_empty()),
-                        cwd: self
-                            .panes
-                            .get(&id)
-                            .and_then(|p| p.pid())
-                            .and_then(super::adopt::cwd)
-                            .or_else(|| self.cwds.get(&id).cloned()),
+                        cwd: self.cwd_of(&id),
                         state: self.pane_mark(&id),
                     }
                 })
@@ -697,11 +692,43 @@ impl Session {
         }
         let dir = if rows { Dir::Rows } else { Dir::Cols };
         let new_id = self.next_id.to_string();
+        if let Some(cwd) = self.window_cwd(&self.windows[idx]) {
+            self.cwds.insert(new_id.clone(), cwd);
+        }
         self.windows[idx].tree = split_into(&tree, &self.focused, dir, self.next_id);
         self.next_id += 1;
         self.focused = new_id;
         self.relay_panes();
         self.persist()
+    }
+
+    fn cwd_of(&self, pane: &str) -> Option<String> {
+        self.panes
+            .get(pane)
+            .and_then(|p| p.pid())
+            .and_then(super::adopt::cwd)
+            .or_else(|| self.cwds.get(pane).cloned())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// The directory this window works in: an agent pane's cwd, else
+    /// the focused pane, else any pane that has one.
+    fn window_cwd(&self, window: &Window) -> Option<String> {
+        let mut panes = Vec::new();
+        collect_panes(&window.tree, &mut panes);
+        for id in &panes {
+            if self.names.contains_key(id) {
+                if let Some(cwd) = self.cwd_of(id) {
+                    return Some(cwd);
+                }
+            }
+        }
+        if panes.iter().any(|id| id == &self.focused) {
+            if let Some(cwd) = self.cwd_of(&self.focused) {
+                return Some(cwd);
+            }
+        }
+        panes.into_iter().find_map(|id| self.cwd_of(&id))
     }
 
     /// Resize the tty: the panes relay out; the processes are told.
@@ -752,8 +779,6 @@ impl Session {
         }
         if let Some(dir) = cwd.filter(|s| !s.is_empty()) {
             self.cwds.insert(pane_id.to_string(), dir.to_string());
-        } else if name.is_none() {
-            self.cwds.remove(pane_id);
         }
         self.programs
             .insert(pane_id.to_string(), program.to_string());
@@ -1281,6 +1306,39 @@ mod tests {
         assert_eq!(b.y, a.rows + 1, "{a:?} {b:?}");
         assert_eq!(a.rows + b.rows, 23, "{a:?} {b:?}");
         assert_eq!(view.focused, "2");
+    }
+
+    #[test]
+    fn split_inherits_the_window_cwd() {
+        let (_dir, sessions) = sessions();
+        let proj = tempfile::tempdir().unwrap();
+        let cwd = proj.path().canonicalize().unwrap();
+        let cwd_s = cwd.to_string_lossy().into_owned();
+        sessions.create("work").unwrap();
+        let work = sessions.get("work").unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, Some("oc"), Some(&cwd_s))
+            .unwrap();
+        work.lock().unwrap().split("sh", false).unwrap();
+        let view = work.lock().unwrap().view();
+        let fresh = view.windows[0]
+            .panes
+            .iter()
+            .find(|p| p.pane == view.focused)
+            .unwrap();
+        assert_eq!(fresh.cwd.as_deref(), Some(cwd_s.as_str()), "{fresh:?}");
+        work.lock()
+            .unwrap()
+            .spawn(&view.focused, "sh", false, None, None, None)
+            .unwrap();
+        let view = work.lock().unwrap().view();
+        let fresh = view.windows[0]
+            .panes
+            .iter()
+            .find(|p| p.pane == view.focused)
+            .unwrap();
+        assert_eq!(fresh.cwd.as_deref(), Some(cwd_s.as_str()), "{fresh:?}");
     }
 
     #[test]

@@ -396,7 +396,7 @@ impl Client {
         }
     }
 
-    fn spawn(&mut self, pane: &str) -> io::Result<()> {
+    fn spawn(&mut self, pane: &str, cwd: Option<String>) -> io::Result<()> {
         self.call(Request::Spawn {
             id: String::new(),
             pane: pane.into(),
@@ -404,7 +404,7 @@ impl Client {
             acp: false,
             watch: None,
             name: None,
-            cwd: None,
+            cwd,
         })?;
         Ok(())
     }
@@ -787,7 +787,8 @@ impl Client {
             // No process yet (a fresh split): start a shell.
             // A process that already ended is reaped by the daemon.
             if !grid.alive && !grid.acp {
-                let _ = self.spawn(&id);
+                let cwd = window_cwd_for(&view, &id);
+                let _ = self.spawn(&id, cwd);
             }
             self.grids.insert(id, grid);
         }
@@ -3307,6 +3308,26 @@ pub fn run(sock: &Path) -> io::Result<()> {
 /// Otherwise the prompt stays visible and the error sits next to it.
 fn error_owns_footer(naming: Option<&Naming>, last_error: Option<&str>) -> bool {
     last_error.is_some() && naming.is_none()
+}
+
+/// Directory a new pane in this window should start in: the agent
+/// pane's cwd, else a sibling, else this pane.
+fn window_cwd_for(view: &SessionView, pane: &str) -> Option<String> {
+    let w = view
+        .windows
+        .iter()
+        .find(|w| w.panes.iter().any(|p| p.pane == pane))?;
+    w.panes
+        .iter()
+        .find(|p| p.name.is_some())
+        .and_then(|p| p.cwd.clone())
+        .or_else(|| {
+            w.panes
+                .iter()
+                .find(|p| p.pane != pane)
+                .and_then(|p| p.cwd.clone())
+        })
+        .or_else(|| w.panes.iter().find_map(|p| p.cwd.clone()))
 }
 
 const PICK_ROW: u16 = 2;
