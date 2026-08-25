@@ -27,11 +27,7 @@ pub fn clause(view: &SessionView) -> String {
         let dead = w.state == WindowState::Dead
             || (!w.panes.is_empty() && w.panes.iter().all(|p| p.state == WindowState::Dead));
         let activity = w.panes.iter().find_map(|p| p.activity.as_deref());
-        let agents: Vec<&str> = w
-            .panes
-            .iter()
-            .filter_map(|p| p.name.as_deref())
-            .collect();
+        let agents: Vec<&str> = w.panes.iter().filter_map(|p| p.name.as_deref()).collect();
         let label = if let Some(act) = activity {
             act.to_string()
         } else if agents.is_empty() {
@@ -79,6 +75,7 @@ mod tests {
                         name: Some("oc".into()),
                         activity: None,
                         session: None,
+                        cwd: None,
                         state: WindowState::Idle,
                     }],
                 },
@@ -95,6 +92,7 @@ mod tests {
                         name: None,
                         activity: None,
                         session: None,
+                        cwd: None,
                         state: WindowState::Dead,
                     }],
                 },

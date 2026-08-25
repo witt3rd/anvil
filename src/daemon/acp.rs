@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// What a window's ACP process is doing. The rail draws this.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -47,14 +47,25 @@ impl AcpChild {
     /// Spawn `program` (words, first is the binary) on stdio. Handshake
     /// `initialize` then `session/new` before returning.
     pub fn spawn(program: &str) -> io::Result<Arc<AcpChild>> {
-        Self::spawn_resume(program, None)
+        Self::spawn_resume(program, None, None)
     }
 
     /// Spawn and reopen `resume` when the child can load or resume it.
-    pub fn spawn_resume(program: &str, resume: Option<&str>) -> io::Result<Arc<AcpChild>> {
+    pub fn spawn_resume(
+        program: &str,
+        resume: Option<&str>,
+        cwd: Option<&str>,
+    ) -> io::Result<Arc<AcpChild>> {
         let (cmd, args) = split_cmd(program)?;
         let mut command = Command::new(&cmd);
-        command.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        command
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if let Some(dir) = cwd.filter(|s| !s.is_empty()) {
+            command.current_dir(dir);
+        }
         if let Ok(home) = std::env::var("HOME") {
             command.env("HOME", &home);
             let mut path = format!("{home}/.local/bin:{home}/.local/share/mise/shims");
@@ -90,7 +101,7 @@ impl AcpChild {
             .name("anvil-acp".into())
             .spawn(move || pump_stdout(pump, stdout))
             .map_err(io::Error::other)?;
-        acp.handshake(resume)?;
+        acp.handshake(resume, cwd)?;
         Ok(acp)
     }
 
@@ -124,7 +135,10 @@ impl AcpChild {
         }
         if data == "\r" || data == "\n" {
             let text = {
-                let mut draft = self.draft.lock().map_err(|_| io::Error::other("acp busy"))?;
+                let mut draft = self
+                    .draft
+                    .lock()
+                    .map_err(|_| io::Error::other("acp busy"))?;
                 std::mem::take(&mut *draft)
             };
             if !text.is_empty() {
@@ -133,7 +147,10 @@ impl AcpChild {
             }
             return Ok(());
         }
-        let mut draft = self.draft.lock().map_err(|_| io::Error::other("acp busy"))?;
+        let mut draft = self
+            .draft
+            .lock()
+            .map_err(|_| io::Error::other("acp busy"))?;
         if data == "\u{7f}" {
             draft.pop();
         } else {
@@ -146,8 +163,18 @@ impl AcpChild {
     pub fn grid(&self, cols: u16, rows: u16) -> crate::daemon::pane::Grid {
         let cols = cols.max(1);
         let rows = rows.max(1);
-        let draft = self.draft.lock().ok().map(|d| d.clone()).unwrap_or_default();
-        let mut body = self.lines.lock().ok().map(|l| l.clone()).unwrap_or_default();
+        let draft = self
+            .draft
+            .lock()
+            .ok()
+            .map(|d| d.clone())
+            .unwrap_or_default();
+        let mut body = self
+            .lines
+            .lock()
+            .ok()
+            .map(|l| l.clone())
+            .unwrap_or_default();
         if self.state() == WindowState::NeedsYou {
             body.push("needs you — y allow · n deny".into());
         }
@@ -223,7 +250,10 @@ impl AcpChild {
             .ok_or_else(|| io::Error::other("acp has no session"))?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         {
-            let mut state = self.state.lock().map_err(|_| io::Error::other("acp busy"))?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| io::Error::other("acp busy"))?;
             *state = WindowState::Turning;
         }
         *self
@@ -338,7 +368,7 @@ impl AcpChild {
         self.alive.store(false, Ordering::Relaxed);
     }
 
-    fn handshake(&self, resume: Option<&str>) -> io::Result<()> {
+    fn handshake(&self, resume: Option<&str>, cwd: Option<&str>) -> io::Result<()> {
         let init = self.call(
             "initialize",
             json!({
@@ -347,10 +377,15 @@ impl AcpChild {
                 "clientInfo": { "name": "anvil", "version": "0.1.0" },
             }),
         )?;
-        let cwd = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("/"))
-            .display()
-            .to_string();
+        let cwd = cwd
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+                    .display()
+                    .to_string()
+            });
         let caps = init.get("agentCapabilities");
         let can_load = caps
             .and_then(|c| c.get("loadSession"))
@@ -418,7 +453,10 @@ impl AcpChild {
             "id": id,
             "result": result,
         });
-        let mut stdin = self.stdin.lock().map_err(|_| io::Error::other("acp busy"))?;
+        let mut stdin = self
+            .stdin
+            .lock()
+            .map_err(|_| io::Error::other("acp busy"))?;
         writeln!(stdin, "{msg}")?;
         stdin.flush()
     }
@@ -430,7 +468,10 @@ impl AcpChild {
             "method": method,
             "params": params,
         });
-        let mut stdin = self.stdin.lock().map_err(|_| io::Error::other("acp busy"))?;
+        let mut stdin = self
+            .stdin
+            .lock()
+            .map_err(|_| io::Error::other("acp busy"))?;
         writeln!(stdin, "{msg}")?;
         stdin.flush()
     }
@@ -649,8 +690,16 @@ while True:
         assert_eq!(acp.state(), WindowState::Idle);
         let grid = acp.grid(40, 10);
         assert_eq!(grid.cursor_row, 9);
-        assert!(grid.lines.last().unwrap().starts_with("> "), "{:?}", grid.lines.last());
-        assert!(grid.lines.iter().any(|l| l.contains("ok")), "{:?}", grid.lines);
+        assert!(
+            grid.lines.last().unwrap().starts_with("> "),
+            "{:?}",
+            grid.lines.last()
+        );
+        assert!(
+            grid.lines.iter().any(|l| l.contains("ok")),
+            "{:?}",
+            grid.lines
+        );
     }
 
     #[test]
@@ -690,7 +739,8 @@ while True:
     #[test]
     fn spawn_reopens_the_named_session() {
         let (_keep, path) = fake_agent();
-        let acp = AcpChild::spawn_resume(&format!("python3 {path}"), Some("ses_pane_1")).unwrap();
+        let acp =
+            AcpChild::spawn_resume(&format!("python3 {path}"), Some("ses_pane_1"), None).unwrap();
         assert_eq!(acp.session_id().as_deref(), Some("ses_pane_1"));
     }
 
@@ -725,7 +775,7 @@ while True:
         .unwrap();
         file.flush().unwrap();
         let path = file.path().display().to_string();
-        let acp = AcpChild::spawn_resume(&format!("python3 {path}"), Some("gone")).unwrap();
+        let acp = AcpChild::spawn_resume(&format!("python3 {path}"), Some("gone"), None).unwrap();
         assert_eq!(acp.session_id().as_deref(), Some("fresh"));
     }
 }

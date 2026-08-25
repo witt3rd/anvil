@@ -129,7 +129,7 @@ pub struct Pane {
 
 impl Pane {
     /// Spawn a process on the pane's slave PTY. The daemon holds the master.
-    pub fn spawn(program: &str, cols: u16, rows: u16) -> io::Result<Arc<Pane>> {
+    pub fn spawn(program: &str, cols: u16, rows: u16, cwd: Option<&str>) -> io::Result<Arc<Pane>> {
         let cols = cols.max(2);
         let rows = rows.max(2);
         let pty_system = native_pty_system();
@@ -160,6 +160,9 @@ impl Pane {
         }
         if let Ok(shell) = std::env::var("SHELL") {
             cmd.env("SHELL", shell);
+        }
+        if let Some(dir) = cwd.filter(|s| !s.is_empty()) {
+            cmd.cwd(dir);
         }
         let child = pair
             .slave
@@ -254,8 +257,7 @@ impl Pane {
             .ok()
             .map(|p| {
                 let (lines, runs, cols, rows, cursor_col, cursor_row) = screen_lines(p.screen());
-                let mouse =
-                    p.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None;
+                let mouse = p.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None;
                 (lines, runs, cols, rows, cursor_col, cursor_row, mouse)
             })
             .unwrap_or_else(|| (Vec::new(), Vec::new(), 0, 0, 0, 0, false));
@@ -403,15 +405,17 @@ mod tests {
 
     #[test]
     fn spawn_writes_and_reads_the_grid() {
-        let pane = Pane::spawn("sh", 24, 80).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
         pane.write(b"printf 'hi from pane'\n").unwrap();
-        let grid = wait_for(&pane, |g| g.lines.iter().any(|l| l.contains("hi from pane")));
+        let grid = wait_for(&pane, |g| {
+            g.lines.iter().any(|l| l.contains("hi from pane"))
+        });
         assert!(grid.alive, "process should be alive");
     }
 
     #[test]
     fn exit_marks_the_pane_dead() {
-        let pane = Pane::spawn("sh", 24, 80).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
         pane.write(b"exit 0\n").unwrap();
         let grid = wait_for(&pane, |g| !g.alive);
         assert!(!grid.alive, "process ended: {grid:?}");
@@ -419,8 +423,9 @@ mod tests {
 
     #[test]
     fn resize_reaches_the_process() {
-        let pane = Pane::spawn("sh", 24, 80).unwrap();
-        pane.write(b"trap 'echo got-28x100' WINCH; while :; do sleep 1; done\n").unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
+        pane.write(b"trap 'echo got-28x100' WINCH; while :; do sleep 1; done\n")
+            .unwrap();
         pane.resize(100, 28).unwrap();
         let grid = wait_for(&pane, |g| g.lines.iter().any(|l| l.contains("got-28x100")));
         assert_eq!(grid.cols, 100);
@@ -430,7 +435,7 @@ mod tests {
 
     #[test]
     fn mouse_follows_the_childs_decset() {
-        let pane = Pane::spawn("sh", 24, 80).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
         pane.write(b"printf '\\033[?1000h'\n").unwrap();
         let on = wait_for(&pane, |g| g.mouse);
         assert!(on.mouse, "DECSET 1000 should arm mouse: {on:?}");
@@ -442,7 +447,7 @@ mod tests {
 
     #[test]
     fn kitty_flags_follow_the_child() {
-        let pane = Pane::spawn("sh", 24, 80).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
         pane.write(b"printf '\\033[>1u'\n").unwrap();
         let on = wait_for(&pane, |g| g.kitty > 0);
         assert_eq!(on.kitty, 1, "CSI > 1 u should arm kitty keys: {on:?}");
@@ -451,7 +456,7 @@ mod tests {
 
     #[test]
     fn terminate_ends_the_process() {
-        let pane = Pane::spawn("sh", 24, 80).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
         assert!(pane.alive());
         pane.terminate();
         let start = Instant::now();

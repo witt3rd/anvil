@@ -200,6 +200,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         acp: false,
         watch: None,
         name: None,
+        cwd: None,
     });
     client.ok(|id| Request::Write {
         id: id.into(),
@@ -339,6 +340,7 @@ fn detach_keeps_the_session() {
         acp: false,
         watch: None,
         name: None,
+        cwd: None,
     });
     client.ok(|id| Request::Write {
         id: id.into(),
@@ -404,6 +406,7 @@ fn destroy_sighups_the_processes() {
         acp: false,
         watch: None,
         name: None,
+        cwd: None,
     });
     client.ok(|id| Request::Write {
         id: id.into(),

@@ -56,6 +56,7 @@ the args tell them apart.
 | `spawn` | `pane`, `program`, `name` | an agent process; the sidebar lists it |
 | `spawn` | `pane`, `program`, `acp` | the daemon holds stdio and speaks ACP |
 | `spawn` | `pane`, `program`, `acp` | a process runs on stdio; the daemon is its ACP client |
+| `spawn` | `pane`, `program`, `cwd` | the process starts in that directory |
 | `write` | `data` | the data goes to the focused pane's process |
 | `write` | `data`, `pane` | the data goes to that pane's process |
 | `write` | `data`, `prompt` | a turn on the agent door: ACP `session/prompt`, or the TUI's HTTP session |

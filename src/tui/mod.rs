@@ -5,6 +5,7 @@
 
 pub mod agents;
 pub mod clip;
+pub mod cwd;
 pub mod focus;
 pub mod keymap;
 pub mod notes;
@@ -30,8 +31,8 @@ use crate::daemon::pane::Grid;
 use crate::daemon::session::SessionView;
 use crate::proto::{Reply, Request, Value};
 
-use agents::{Agent, Agents, Seat, unique_name};
-use keymap::{Action, AppWhichKey, Scope, build_which_key_state};
+use agents::{unique_name, Agent, Agents, Seat};
+use keymap::{build_which_key_state, Action, AppWhichKey, Scope};
 use notes::Notes;
 
 /// The opencode palette, shipped with anvil and loaded through
@@ -95,7 +96,10 @@ fn canvas(term_w: u16, term_h: u16, open: bool, cols: u16) -> (u16, u16) {
         Side::Hidden => 0,
         other => side_width(other, cols) + GAP,
     };
-    (term_w.saturating_sub(chrome), term_h.saturating_sub(CHROME_ROWS))
+    (
+        term_w.saturating_sub(chrome),
+        term_h.saturating_sub(CHROME_ROWS),
+    )
 }
 
 fn host_name() -> String {
@@ -132,6 +136,9 @@ pub struct Client {
     picking: Option<usize>,
     /// After picking an agent that has both a native TUI and ACP.
     seat_pick: Option<(Agent, usize)>,
+    /// Directory to start the agent in, after seat.
+    cwd_pick: Option<CwdPick>,
+    places: cwd::Places,
     sessions_pick: Option<usize>,
     session_rows: Vec<sessions::Row>,
     host: String,
@@ -159,6 +166,13 @@ struct Toast {
 enum Naming {
     Window(String),
     Session(String),
+}
+
+struct CwdPick {
+    agent: Agent,
+    seat: Seat,
+    draft: String,
+    sel: usize,
 }
 
 impl Client {
@@ -191,6 +205,8 @@ impl Client {
             catalog: Agents::load(&agents::default_root()),
             picking: None,
             seat_pick: None,
+            cwd_pick: None,
+            places: cwd::Places::load(&agents::default_root()),
             sessions_pick: None,
             session_rows: Vec::new(),
             host: host_name(),
@@ -220,7 +236,10 @@ impl Client {
             let reply: Reply = match serde_json::from_str(&reply) {
                 Ok(reply) => reply,
                 Err(err) => {
-                    eprintln!("anvil client: bad reply (first 400 chars): {:?}", &reply[..reply.len().min(400)]);
+                    eprintln!(
+                        "anvil client: bad reply (first 400 chars): {:?}",
+                        &reply[..reply.len().min(400)]
+                    );
                     return Err(io::Error::other(err));
                 }
             };
@@ -233,9 +252,13 @@ impl Client {
     fn call(&mut self, op: Request) -> io::Result<Value> {
         let reply = self.request(op)?;
         if reply.ok {
-            reply.value.ok_or_else(|| io::Error::other("the daemon replied without a value"))
+            reply
+                .value
+                .ok_or_else(|| io::Error::other("the daemon replied without a value"))
         } else {
-            Err(io::Error::other(reply.error.unwrap_or_else(|| "the daemon refused".into())))
+            Err(io::Error::other(
+                reply.error.unwrap_or_else(|| "the daemon refused".into()),
+            ))
         }
     }
 
@@ -250,18 +273,28 @@ impl Client {
     }
 
     fn create(&mut self, name: &str) -> io::Result<()> {
-        self.call(Request::Create { id: String::new(), session: name.into(), window: None })?;
+        self.call(Request::Create {
+            id: String::new(),
+            session: name.into(),
+            window: None,
+        })?;
         Ok(())
     }
 
     fn attach(&mut self, name: &str) -> io::Result<()> {
-        self.call(Request::Attach { id: String::new(), session: name.into() })?;
+        self.call(Request::Attach {
+            id: String::new(),
+            session: name.into(),
+        })?;
         self.attached = Some(name.into());
         Ok(())
     }
 
     fn add_window(&mut self, name: &str) -> io::Result<()> {
-        let session = self.attached.clone().ok_or_else(|| io::Error::other("no session"))?;
+        let session = self
+            .attached
+            .clone()
+            .ok_or_else(|| io::Error::other("no session"))?;
         self.call(Request::Create {
             id: String::new(),
             session,
@@ -271,7 +304,10 @@ impl Client {
     }
 
     fn rename_window(&mut self, name: &str) -> io::Result<()> {
-        let session = self.attached.clone().ok_or_else(|| io::Error::other("no session"))?;
+        let session = self
+            .attached
+            .clone()
+            .ok_or_else(|| io::Error::other("no session"))?;
         let window = self
             .focused_window()
             .ok_or_else(|| io::Error::other("no window"))?;
@@ -286,7 +322,10 @@ impl Client {
     }
 
     fn rename_session(&mut self, name: &str) -> io::Result<()> {
-        let session = self.attached.clone().ok_or_else(|| io::Error::other("no session"))?;
+        let session = self
+            .attached
+            .clone()
+            .ok_or_else(|| io::Error::other("no session"))?;
         self.call(Request::Rename {
             id: String::new(),
             session,
@@ -300,7 +339,10 @@ impl Client {
     }
 
     fn save_note(&mut self, window: &str, note: &str) -> io::Result<()> {
-        let session = self.attached.clone().ok_or_else(|| io::Error::other("no session"))?;
+        let session = self
+            .attached
+            .clone()
+            .ok_or_else(|| io::Error::other("no session"))?;
         self.call(Request::Rename {
             id: String::new(),
             session,
@@ -333,14 +375,22 @@ impl Client {
     }
 
     fn read_view(&mut self) -> io::Result<SessionView> {
-        match self.call(Request::Read { id: String::new(), session: self.attached.clone(), pane: None })? {
+        match self.call(Request::Read {
+            id: String::new(),
+            session: self.attached.clone(),
+            pane: None,
+        })? {
             Value::View(view) => Ok(view),
             _ => Err(io::Error::other("read replied with the wrong shape")),
         }
     }
 
     fn read_pane(&mut self, pane: &str) -> io::Result<Grid> {
-        match self.call(Request::Read { id: String::new(), session: None, pane: Some(pane.into()) })? {
+        match self.call(Request::Read {
+            id: String::new(),
+            session: None,
+            pane: Some(pane.into()),
+        })? {
             Value::Grid(grid) => Ok(grid),
             _ => Err(io::Error::other("read replied with the wrong shape")),
         }
@@ -354,6 +404,7 @@ impl Client {
             acp: false,
             watch: None,
             name: None,
+            cwd: None,
         })?;
         Ok(())
     }
@@ -364,6 +415,7 @@ impl Client {
         program: &str,
         watch: Option<String>,
         name: &str,
+        cwd: Option<String>,
     ) -> io::Result<()> {
         self.call(Request::Spawn {
             id: String::new(),
@@ -372,6 +424,7 @@ impl Client {
             acp: false,
             watch,
             name: Some(name.into()),
+            cwd,
         })?;
         Ok(())
     }
@@ -385,7 +438,13 @@ impl Client {
 
     /// A new window running the agent. Native is their TUI on a PTY.
     /// Anvil is the prompt/response viewer over ACP stdio.
-    fn launch_agent(&mut self, agent: &Agent, seat: Seat) -> io::Result<()> {
+    fn launch_agent(&mut self, agent: &Agent, seat: Seat, cwd: &str) -> io::Result<()> {
+        let cwd = cwd::normalize(cwd);
+        if !cwd::is_dir(&cwd) {
+            self.last_error = Some(format!("no such directory: {cwd}"));
+            return Ok(());
+        }
+        self.places.remember(&cwd, &agents::default_root());
         let name = unique_name(&agent.name, &self.window_names());
         self.add_window(&name)?;
         self.refresh()?;
@@ -403,6 +462,7 @@ impl Client {
                         acp: true,
                         watch: None,
                         name: Some(agent.name.clone()),
+                        cwd: Some(cwd),
                     })
                     .map(|_| ()),
                 None => Err(io::Error::other(format!(
@@ -412,7 +472,7 @@ impl Client {
             },
             Seat::Native => {
                 let (program, watch) = agent.tui_spawn();
-                self.spawn_tui(&pane, &program, watch, &agent.name)
+                self.spawn_tui(&pane, &program, watch, &agent.name, Some(cwd))
             }
         };
         match result {
@@ -422,10 +482,119 @@ impl Client {
         self.refresh()
     }
 
+    fn pane_cwd(&self) -> Option<String> {
+        let view = self.view.as_ref()?;
+        view.windows
+            .iter()
+            .flat_map(|w| w.panes.iter())
+            .find(|p| p.pane == view.focused)
+            .and_then(|p| p.cwd.clone())
+            .or_else(|| self.places.recent.first().cloned())
+            .or_else(|| cwd::home().to_str().map(str::to_string))
+    }
+
+    fn begin_cwd_pick(&mut self, agent: Agent, seat: Seat) {
+        let here = self
+            .pane_cwd()
+            .unwrap_or_else(|| cwd::home().to_string_lossy().into_owned());
+        self.cwd_pick = Some(CwdPick {
+            agent,
+            seat,
+            draft: here,
+            sel: 0,
+        });
+    }
+
+    fn cwd_key(&mut self, key: ratatui::crossterm::event::KeyEvent) -> io::Result<()> {
+        use ratatui::crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Esc => {
+                self.cwd_pick = None;
+                Ok(())
+            }
+            KeyCode::Enter => {
+                let Some(pick) = self.cwd_pick.take() else {
+                    return Ok(());
+                };
+                let rows = self.cwd_rows(&pick);
+                let path = rows
+                    .get(pick.sel)
+                    .map(|r| r.path.clone())
+                    .filter(|_| !rows.is_empty())
+                    .unwrap_or_else(|| cwd::normalize(&pick.draft));
+                self.launch_agent(&pick.agent, pick.seat, &path)
+            }
+            KeyCode::Down | KeyCode::Up => {
+                let n = self
+                    .cwd_pick
+                    .as_ref()
+                    .map(|p| self.cwd_rows(p).len())
+                    .unwrap_or(0);
+                if let Some(pick) = self.cwd_pick.as_mut() {
+                    if n > 0 {
+                        pick.sel = step_pick(pick.sel, n, matches!(key.code, KeyCode::Down));
+                    }
+                }
+                Ok(())
+            }
+            KeyCode::Tab => {
+                let complete = self
+                    .cwd_pick
+                    .as_ref()
+                    .and_then(|p| self.cwd_rows(p).get(p.sel).map(|r| r.path.clone()));
+                if let (Some(path), Some(pick)) = (complete, self.cwd_pick.as_mut()) {
+                    pick.draft = path;
+                }
+                Ok(())
+            }
+            KeyCode::Backspace => {
+                if let Some(pick) = self.cwd_pick.as_mut() {
+                    pick.draft.pop();
+                    pick.sel = 0;
+                }
+                Ok(())
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .contains(ratatui::crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                if let Some(pick) = self.cwd_pick.as_mut() {
+                    pick.draft.push(c);
+                    pick.sel = 0;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn cwd_rows(&self, pick: &CwdPick) -> Vec<cwd::Row> {
+        let here = self.pane_cwd();
+        let mut rows = self.places.rows(here.as_deref());
+        let q = pick.draft.trim();
+        if !q.is_empty() {
+            let needle = q.to_lowercase();
+            rows.retain(|r| r.path.to_lowercase().contains(&needle));
+            let typed = cwd::normalize(q);
+            if cwd::is_dir(&typed) && !rows.iter().any(|r| r.path == typed) {
+                rows.insert(
+                    0,
+                    cwd::Row {
+                        path: typed,
+                        kind: cwd::Kind::Here,
+                    },
+                );
+            }
+        }
+        rows
+    }
+
     /// Native when they have a TUI; otherwise anvil.
     fn launch_preferred(&mut self, agent: &Agent) -> io::Result<()> {
         let seat = agent.seats().into_iter().next().unwrap_or(Seat::Native);
-        self.launch_agent(agent, seat)
+        self.begin_cwd_pick(agent.clone(), seat);
+        Ok(())
     }
 
     /// One seat launches now. Two seats open the native / anvil list.
@@ -459,7 +628,11 @@ impl Client {
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> io::Result<()> {
-        self.call(Request::Resize { id: String::new(), cols, rows })?;
+        self.call(Request::Resize {
+            id: String::new(),
+            cols,
+            rows,
+        })?;
         Ok(())
     }
 
@@ -495,11 +668,7 @@ impl Client {
             Err(err) => return Err(err),
         }
         self.enumerate()?;
-        let name = self
-            .sessions
-            .first()
-            .cloned()
-            .unwrap_or(name);
+        let name = self.sessions.first().cloned().unwrap_or(name);
         self.attach(&name)?;
         self.refresh()
     }
@@ -692,9 +861,19 @@ impl Client {
         if let Ok(dbg) = std::env::var("ANVIL_KEY_DEBUG") {
             let _ = (|| -> std::io::Result<()> {
                 use std::io::Write as _;
-                let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&dbg)?;
-                writeln!(f, "key: code={:?} mods={:?} active={}", key.code, key.modifiers, self.which_key.active)
+                let mut f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&dbg)?;
+                writeln!(
+                    f,
+                    "key: code={:?} mods={:?} active={}",
+                    key.code, key.modifiers, self.which_key.active
+                )
             })();
+        }
+        if self.cwd_pick.is_some() {
+            return self.cwd_key(key);
         }
         if let Some(idx) = self.sessions_pick {
             let n = self.sessions.len();
@@ -747,7 +926,7 @@ impl Client {
                 KeyCode::Enter => {
                     self.seat_pick = None;
                     if let Some(seat) = seats.get(idx).copied() {
-                        return self.launch_agent(&agent, seat);
+                        self.begin_cwd_pick(agent, seat);
                     }
                     return Ok(());
                 }
@@ -764,7 +943,8 @@ impl Client {
                     if i < n {
                         self.seat_pick = None;
                         if let Some(seat) = seats.get(i).copied() {
-                            return self.launch_agent(&agent, seat);
+                            self.begin_cwd_pick(agent, seat);
+                            return Ok(());
                         }
                     }
                     return Ok(());
@@ -966,16 +1146,14 @@ impl Client {
             // `$` is prefix-$ (tmux rename-session). Terminals send
             // Char('$') or Shift-4; which-key's bind string skips `$`.
             if matches!(key.code, KeyCode::Char('$'))
-                || (key.code == KeyCode::Char('4')
-                    && key.modifiers.contains(KeyModifiers::SHIFT))
+                || (key.code == KeyCode::Char('4') && key.modifiers.contains(KeyModifiers::SHIFT))
             {
                 return self.dispatch(Action::RenameSession);
             }
             // `&` is prefix-& (tmux kill-window). Terminals send
             // Char('&') or Shift-7.
             if matches!(key.code, KeyCode::Char('&'))
-                || (key.code == KeyCode::Char('7')
-                    && key.modifiers.contains(KeyModifiers::SHIFT))
+                || (key.code == KeyCode::Char('7') && key.modifiers.contains(KeyModifiers::SHIFT))
             {
                 return self.dispatch(Action::CloseWindow);
             }
@@ -1087,13 +1265,21 @@ impl Client {
             Action::FocusDown => self.focus_dir(FocusDir::Down),
             Action::ClosePane => {
                 if let Some(pane) = self.view.as_ref().map(|v| v.focused.clone()) {
-                    self.call(Request::Close { id: String::new(), window: None, pane: Some(pane) })?;
+                    self.call(Request::Close {
+                        id: String::new(),
+                        window: None,
+                        pane: Some(pane),
+                    })?;
                 }
                 self.refresh()
             }
             Action::CloseWindow => {
                 if let Some(window) = self.focused_window() {
-                    self.call(Request::Close { id: String::new(), window: Some(window), pane: None })?;
+                    self.call(Request::Close {
+                        id: String::new(),
+                        window: Some(window),
+                        pane: None,
+                    })?;
                 }
                 self.refresh()
             }
@@ -1135,7 +1321,11 @@ impl Client {
         let Some(target) = self.neighbor(dir) else {
             return Ok(());
         };
-        self.call(Request::Focus { id: String::new(), window: None, pane: Some(target) })?;
+        self.call(Request::Focus {
+            id: String::new(),
+            window: None,
+            pane: Some(target),
+        })?;
         self.refresh()
     }
 
@@ -1185,7 +1375,10 @@ impl Client {
 
     /// Focus the next or previous window, wrapping around.
     fn switch_window(&mut self, next: bool) -> io::Result<()> {
-        let view = self.view.as_ref().ok_or_else(|| io::Error::other("no session"))?;
+        let view = self
+            .view
+            .as_ref()
+            .ok_or_else(|| io::Error::other("no session"))?;
         if view.windows.len() < 2 {
             return Ok(());
         }
@@ -1201,7 +1394,11 @@ impl Client {
             (idx + view.windows.len() - 1) % view.windows.len()
         };
         let window = view.windows[idx].window.clone();
-        self.call(Request::Focus { id: String::new(), window: Some(window), pane: None })?;
+        self.call(Request::Focus {
+            id: String::new(),
+            window: Some(window),
+            pane: None,
+        })?;
         Ok(())
     }
 
@@ -1215,6 +1412,39 @@ impl Client {
     ) -> io::Result<bool> {
         use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEventKind};
         let area = Rect::new(0, 0, self.tty.0, self.tty.1);
+        if let Some(pick) = &self.cwd_pick {
+            let rows = self.cwd_rows(pick);
+            let popup = pick_box(area, rows.len().max(4), 36, 64);
+            match kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if !pick_contains(popup, col, row) {
+                        self.cwd_pick = None;
+                        return Ok(true);
+                    }
+                    if let Some(i) = pick_row(pick_inner(popup), rows.len(), pick.sel, row) {
+                        if let Some(p) = self.cwd_pick.as_mut() {
+                            p.sel = i;
+                        }
+                    }
+                }
+                MouseEventKind::ScrollDown => {
+                    if let Some(p) = self.cwd_pick.as_mut() {
+                        if !rows.is_empty() {
+                            p.sel = step_pick(p.sel, rows.len(), true);
+                        }
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    if let Some(p) = self.cwd_pick.as_mut() {
+                        if !rows.is_empty() {
+                            p.sel = step_pick(p.sel, rows.len(), false);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(true);
+        }
         if let Some(notes) = self.notes.as_mut() {
             let popup = notes::notes_box(area);
             match kind {
@@ -1383,9 +1613,7 @@ impl Client {
             | MouseEventKind::ScrollDown
             | MouseEventKind::ScrollLeft
             | MouseEventKind::ScrollRight
-            | MouseEventKind::Down(_) => {
-                self.mouse_to_tile(col, row, kind, ev.modifiers)
-            }
+            | MouseEventKind::Down(_) => self.mouse_to_tile(col, row, kind, ev.modifiers),
             _ => Ok(()),
         }
     }
@@ -1405,7 +1633,13 @@ impl Client {
         }
         let area = Rect::new(0, top, sw, bot.saturating_sub(top));
         if let Some(view) = self.view.as_ref() {
-            let lay = side::layout(area, kind == Side::Open, self.sidebar.split, view, &self.recency);
+            let lay = side::layout(
+                area,
+                kind == Side::Open,
+                self.sidebar.split,
+                view,
+                &self.recency,
+            );
             if lay.divider_y == Some(row) && col < sw {
                 self.drag = Some(Drag::Split);
                 return Ok(true);
@@ -1457,8 +1691,7 @@ impl Client {
             })?;
             self.refresh()?;
         }
-        let mux = !mouse_for_pane(self.grids.get(&pane))
-            || modifiers.contains(KeyModifiers::SHIFT);
+        let mux = !mouse_for_pane(self.grids.get(&pane)) || modifiers.contains(KeyModifiers::SHIFT);
         if mux {
             return match kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -1603,7 +1836,11 @@ impl Client {
 
     pub fn bump_tick(&mut self) {
         self.tick = self.tick.wrapping_add(1);
-        if self.toast.as_ref().is_some_and(|t| t.until <= Instant::now()) {
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|t| t.until <= Instant::now())
+        {
             self.toast = None;
         }
     }
@@ -1646,6 +1883,9 @@ impl Client {
         if self.picking.is_some() {
             self.draw_agents_popup(frame, area);
         }
+        if self.cwd_pick.is_some() {
+            self.draw_cwd_popup(frame, area);
+        }
         if self.notes.is_some() {
             self.draw_notes(frame, area);
         }
@@ -1667,7 +1907,9 @@ impl Client {
         let label = format!(" {} ", toast.message);
         let w = (label.chars().count() as u16 + 2).min(area.width.saturating_sub(2));
         let x = area.x + area.width.saturating_sub(w).saturating_sub(2);
-        let y = area.y.saturating_add(area.height.saturating_sub(STATUS_LINES + 2));
+        let y = area
+            .y
+            .saturating_add(area.height.saturating_sub(STATUS_LINES + 2));
         let box_area = Rect::new(x, y, w, 1);
         frame.render_widget(Clear, box_area);
         frame.render_widget(
@@ -1715,7 +1957,11 @@ impl Client {
         }
         if let Some(y) = lay.divider_y {
             let grip = matches!(self.drag, Some(Drag::Split));
-            let style = if grip { Style::default().fg(self.c("accent.primary")) } else { border };
+            let style = if grip {
+                Style::default().fg(self.c("accent.primary"))
+            } else {
+                border
+            };
             let line = "─".repeat(area.width.max(1) as usize);
             frame
                 .buffer_mut()
@@ -1750,7 +1996,11 @@ impl Client {
                 let clause = w.map(side::window_clause).unwrap_or_default();
                 (here, mark, mark_style, name.clone(), clause)
             }
-            side::SideItem::Agent { pane, window: _, name } => {
+            side::SideItem::Agent {
+                pane,
+                window: _,
+                name,
+            } => {
                 let here = focused_pane == pane;
                 let state = view
                     .windows
@@ -1852,7 +2102,12 @@ impl Client {
     /// The separators: a single thin line where a gap separates two
     /// tiles — `│` beside a column, `─` below a row, in the subtle
     /// border. The gap itself is invisible (the frame is `bg.base`).
-    fn draw_separators(&self, frame: &mut ratatui::Frame, inner: Rect, panes: &[crate::daemon::session::PaneView]) {
+    fn draw_separators(
+        &self,
+        frame: &mut ratatui::Frame,
+        inner: Rect,
+        panes: &[crate::daemon::session::PaneView],
+    ) {
         let sep = Style::default().fg(self.c("border.subtle"));
         let bottom = frame.area().height;
         let right = frame.area().width;
@@ -1888,14 +2143,18 @@ impl Client {
         let subtitle = "no sessions — create one (ctrl-b n)";
         let y = area.y + area.height / 2;
         frame.buffer_mut().set_stringn(
-            area.x.saturating_add(area.width / 2).saturating_sub(wordmark.len() as u16 / 2),
+            area.x
+                .saturating_add(area.width / 2)
+                .saturating_sub(wordmark.len() as u16 / 2),
             y,
             wordmark,
             area.width as usize,
             Style::default().fg(self.c("accent.primary")),
         );
         frame.buffer_mut().set_stringn(
-            area.x.saturating_add(area.width / 2).saturating_sub(subtitle.len() as u16 / 2),
+            area.x
+                .saturating_add(area.width / 2)
+                .saturating_sub(subtitle.len() as u16 / 2),
             y + 1,
             subtitle,
             area.width as usize,
@@ -1934,10 +2193,7 @@ impl Client {
                 .bg(self.c("bg.selection"));
             lines = select::highlight(&lines, sel, hi);
         }
-        frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }),
-            rect,
-        );
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rect);
         if !focused {
             self.darken_tile(frame, rect);
         }
@@ -2002,7 +2258,9 @@ impl Client {
                 .bg(self.c("accent.primary")),
         );
         let host = &self.host;
-        let hx = area.right().saturating_sub(PAD + host.chars().count() as u16);
+        let hx = area
+            .right()
+            .saturating_sub(PAD + host.chars().count() as u16);
         if hx + host.chars().count() as u16 <= area.right() {
             frame.buffer_mut().set_stringn(
                 hx,
@@ -2128,15 +2386,14 @@ impl Client {
             ];
         }
         if let Some(notes) = &self.notes {
-            let mut hints = vec![
-                ("enter", "newline"),
-                ("esc", "save"),
-                ("↑↓", "move"),
-            ];
+            let mut hints = vec![("enter", "newline"), ("esc", "save"), ("↑↓", "move")];
             if notes.on_task() {
                 hints.insert(0, ("space", "check"));
             }
             return hints;
+        }
+        if self.cwd_pick.is_some() {
+            return vec![("enter", "launch"), ("tab", "complete"), ("esc", "cancel")];
         }
         if self.naming.is_some() || self.prompting.is_some() {
             return vec![("enter", "ok"), ("esc", "cancel")];
@@ -2181,7 +2438,7 @@ impl Client {
             width: area.width,
             height: 1,
         };
-        let asking = self.naming.is_some() || self.prompting.is_some();
+        let asking = self.naming.is_some() || self.prompting.is_some() || self.cwd_pick.is_some();
         let bar_bg = if asking { "error" } else { "bg.panel" };
         let panel = self.c(bar_bg);
         self.fill_rect(frame, bar, panel);
@@ -2242,10 +2499,7 @@ impl Client {
                 Naming::Session(_) => "session",
                 Naming::Window(_) => "window",
             };
-            spans.push(Span::styled(
-                format!("rename {kind}: {draft}_"),
-                key,
-            ));
+            spans.push(Span::styled(format!("rename {kind}: {draft}_"), key));
             if let Some(err) = &self.last_error {
                 spans.push(Span::styled("  |  ", pipe));
                 spans.push(Span::styled(err.clone(), key));
@@ -2407,6 +2661,79 @@ impl Client {
         }
     }
 
+    fn draw_cwd_popup(&self, frame: &mut ratatui::Frame, area: Rect) {
+        let Some(pick) = &self.cwd_pick else {
+            return;
+        };
+        let rows = self.cwd_rows(pick);
+        let popup = pick_box(area, rows.len().max(4) + 1, 36, 64);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Block::default()
+                .title(format!(" {} directory ", pick.agent.name))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.c("border.focused")))
+                .bg(self.c("bg.panel")),
+            popup,
+        );
+        let inner = pick_inner(popup);
+        let draft = cwd::display(&pick.draft);
+        frame.buffer_mut().set_stringn(
+            inner.x,
+            inner.y,
+            &draft,
+            inner.width as usize,
+            Style::default()
+                .fg(self.c("text.primary"))
+                .add_modifier(Modifier::UNDERLINED),
+        );
+        let list_y = inner.y.saturating_add(2);
+        let list_h = inner.bottom().saturating_sub(list_y);
+        let visible = (list_h / PICK_ROW).max(1) as usize;
+        let scroll = pick.sel.saturating_sub(visible.saturating_sub(1));
+        for (n, row) in rows.iter().enumerate().skip(scroll).take(visible) {
+            let y = list_y + ((n - scroll) as u16) * PICK_ROW;
+            if y >= inner.bottom() {
+                break;
+            }
+            let picked = n == pick.sel;
+            if picked {
+                frame.render_widget(
+                    Block::default().bg(self.c("bg.elevated")),
+                    Rect {
+                        x: inner.x,
+                        y,
+                        width: inner.width,
+                        height: PICK_ROW.min(inner.bottom().saturating_sub(y)),
+                    },
+                );
+            }
+            let title_style = if picked {
+                Style::default()
+                    .fg(self.c("text.primary"))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(self.c("text.muted"))
+            };
+            frame.buffer_mut().set_stringn(
+                inner.x + 2,
+                y,
+                &cwd::display(&row.path),
+                inner.width.saturating_sub(2) as usize,
+                title_style,
+            );
+            if y + 1 < inner.bottom() {
+                frame.buffer_mut().set_stringn(
+                    inner.x + 2,
+                    y + 1,
+                    row.kind.clause(),
+                    inner.width.saturating_sub(2) as usize,
+                    Style::default().fg(self.c("text.dim")),
+                );
+            }
+        }
+    }
+
     fn draw_notes(&self, frame: &mut ratatui::Frame, area: Rect) {
         let Some(notes) = &self.notes else {
             return;
@@ -2448,7 +2775,9 @@ impl Client {
                 );
             }
             let body = Style::default().fg(self.c("text.primary")).bg(bg);
-            frame.buffer_mut().set_stringn(inner.x, y, line, inner.width as usize, body);
+            frame
+                .buffer_mut()
+                .set_stringn(inner.x, y, line, inner.width as usize, body);
             if let Some((at, checked)) = notes::task_box(line) {
                 let mark = if checked { "[x]" } else { "[ ]" };
                 let box_style = Style::default()
@@ -2678,10 +3007,7 @@ fn encode_passthrough(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    let m = 1u8
-        + u8::from(shift)
-        + 2 * u8::from(alt)
-        + 4 * u8::from(ctrl);
+    let m = 1u8 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
     let seq = match key.code {
         KeyCode::Esc => "\x1b".into(),
         KeyCode::Enter => encode_enter(m, kitty, modify),
@@ -2776,11 +3102,7 @@ fn mouse_for_pane(grid: Option<&Grid>) -> bool {
 }
 
 /// xterm SGR mouse (`CSI < btn ; x ; y M/m`), 1-based, pane-local.
-fn sgr_mouse(
-    kind: ratatui::crossterm::event::MouseEventKind,
-    x: u16,
-    y: u16,
-) -> Option<String> {
+fn sgr_mouse(kind: ratatui::crossterm::event::MouseEventKind, x: u16, y: u16) -> Option<String> {
     use ratatui::crossterm::event::{MouseButton, MouseEventKind};
     let (btn, release) = match kind {
         MouseEventKind::Down(MouseButton::Left) => (0, false),
@@ -2852,10 +3174,22 @@ fn indexed_rgb(n: u8) -> [u8; 3] {
     match n {
         0..=15 => {
             let base: [[u8; 3]; 16] = [
-                [0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0],
-                [0, 0, 128], [128, 0, 128], [0, 128, 128], [192, 192, 192],
-                [128, 128, 128], [255, 0, 0], [0, 255, 0], [255, 255, 0],
-                [0, 0, 255], [255, 0, 255], [0, 255, 255], [255, 255, 255],
+                [0, 0, 0],
+                [128, 0, 0],
+                [0, 128, 0],
+                [128, 128, 0],
+                [0, 0, 128],
+                [128, 0, 128],
+                [0, 128, 128],
+                [192, 192, 192],
+                [128, 128, 128],
+                [255, 0, 0],
+                [0, 255, 0],
+                [255, 255, 0],
+                [0, 0, 255],
+                [255, 0, 255],
+                [0, 255, 255],
+                [255, 255, 255],
             ];
             base[n as usize]
         }
@@ -2878,12 +3212,17 @@ impl Request {
     fn with_id(self, id: &str) -> Request {
         match self {
             Request::Enumerate { .. } => Request::Enumerate { id: id.into() },
-            Request::Create { session, window, .. } => Request::Create {
+            Request::Create {
+                session, window, ..
+            } => Request::Create {
                 id: id.into(),
                 session,
                 window,
             },
-            Request::Attach { session, .. } => Request::Attach { id: id.into(), session },
+            Request::Attach { session, .. } => Request::Attach {
+                id: id.into(),
+                session,
+            },
             Request::Rename {
                 session,
                 name,
@@ -2897,7 +3236,10 @@ impl Request {
                 window,
                 note,
             },
-            Request::Destroy { session, .. } => Request::Destroy { id: id.into(), session },
+            Request::Destroy { session, .. } => Request::Destroy {
+                id: id.into(),
+                session,
+            },
             Request::Read { session, pane, .. } => Request::Read {
                 id: id.into(),
                 session,
@@ -2918,13 +3260,18 @@ impl Request {
                 window,
                 pane,
             },
-            Request::Resize { cols, rows, .. } => Request::Resize { id: id.into(), cols, rows },
+            Request::Resize { cols, rows, .. } => Request::Resize {
+                id: id.into(),
+                cols,
+                rows,
+            },
             Request::Spawn {
                 pane,
                 program,
                 acp,
                 watch,
                 name,
+                cwd,
                 ..
             } => Request::Spawn {
                 id: id.into(),
@@ -2933,12 +3280,10 @@ impl Request {
                 acp,
                 watch,
                 name,
+                cwd,
             },
             Request::Write {
-                data,
-                pane,
-                prompt,
-                ..
+                data, pane, prompt, ..
             } => Request::Write {
                 id: id.into(),
                 data,
@@ -2959,11 +3304,7 @@ pub fn run(sock: &Path) -> io::Result<()> {
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange);
     let out = run_loop(&mut client, &mut terminal);
-    let _ = execute!(
-        std::io::stdout(),
-        DisableMouseCapture,
-        DisableFocusChange
-    );
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
     ratatui::restore();
     out
 }
@@ -3132,6 +3473,7 @@ mod tests {
                         name: Some("oc".into()),
                         activity: None,
                         session: None,
+                        cwd: None,
                         state: WindowState::Idle,
                     }],
                 },
@@ -3148,6 +3490,7 @@ mod tests {
                         name: None,
                         activity: None,
                         session: None,
+                        cwd: None,
                         state: WindowState::Idle,
                     }],
                 },
@@ -3207,13 +3550,22 @@ mod tests {
             hit((120, 24), true, 21, 0.5, 1, 6, &view, &HashMap::new()),
             Some(Hit::Window("grok".into()))
         );
-        assert_eq!(hit((120, 24), false, 21, 0.5, 1, 23, &view, &HashMap::new()), None);
-        assert_eq!(hit((120, 24), false, 21, 0.5, 1, 0, &view, &HashMap::new()), None);
+        assert_eq!(
+            hit((120, 24), false, 21, 0.5, 1, 23, &view, &HashMap::new()),
+            None
+        );
+        assert_eq!(
+            hit((120, 24), false, 21, 0.5, 1, 0, &view, &HashMap::new()),
+            None
+        );
     }
 
     #[test]
     fn a_name_collision_keeps_the_prompt() {
-        assert!(error_owns_footer(None, Some("a session by that name already exists")));
+        assert!(error_owns_footer(
+            None,
+            Some("a session by that name already exists")
+        ));
         assert!(!error_owns_footer(
             Some(&Naming::Session("spire".into())),
             Some("a session by that name already exists"),
@@ -3234,14 +3586,20 @@ mod tests {
     fn esc_is_passthrough_not_detach() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(encode_passthrough(&key, (0, false)).as_deref(), Some("\x1b"));
+        assert_eq!(
+            encode_passthrough(&key, (0, false)).as_deref(),
+            Some("\x1b")
+        );
     }
 
     #[test]
     fn ctrl_c_is_etx_not_the_letter() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(encode_passthrough(&key, (0, false)).as_deref(), Some("\x03"));
+        assert_eq!(
+            encode_passthrough(&key, (0, false)).as_deref(),
+            Some("\x03")
+        );
         let plain = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
         assert_eq!(encode_passthrough(&plain, (0, false)).as_deref(), Some("c"));
     }
@@ -3260,7 +3618,10 @@ mod tests {
             Some("\x1b[27;2;13~")
         );
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(encode_passthrough(&enter, (1, false)).as_deref(), Some("\r"));
+        assert_eq!(
+            encode_passthrough(&enter, (1, false)).as_deref(),
+            Some("\r")
+        );
     }
 
     #[test]

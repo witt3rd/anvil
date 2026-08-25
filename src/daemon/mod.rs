@@ -174,11 +174,7 @@ fn serve_client(stream: UnixStream, sessions: Arc<Sessions>) -> io::Result<()> {
     }
 }
 
-fn dispatch(
-    request: Request,
-    sessions: &Sessions,
-    attached: &mut Option<String>,
-) -> Reply {
+fn dispatch(request: Request, sessions: &Sessions, attached: &mut Option<String>) -> Reply {
     let id = request.id().to_string();
     match handle(request, sessions, attached) {
         Ok(value) => Reply::ok(&id, value),
@@ -186,7 +182,11 @@ fn dispatch(
     }
 }
 
-fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) -> io::Result<Value> {
+fn handle(
+    request: Request,
+    sessions: &Sessions,
+    attached: &mut Option<String>,
+) -> io::Result<Value> {
     match request {
         Request::Enumerate { .. } => Ok(Value::Sessions {
             sessions: sessions.list(),
@@ -251,7 +251,9 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
         Request::Read { session, pane, .. } => match (session, pane) {
             (Some(name), None) => {
                 let session = sessions.get(&name)?;
-                let mut s = session.lock().map_err(|_| io::Error::other("session busy"))?;
+                let mut s = session
+                    .lock()
+                    .map_err(|_| io::Error::other("session busy"))?;
                 Ok(Value::View(s.view()))
             }
             (None, Some(pane)) => attached_session(sessions, attached).and_then(|s| {
@@ -295,11 +297,19 @@ fn handle(request: Request, sessions: &Sessions, attached: &mut Option<String>) 
             acp,
             watch,
             name,
+            cwd,
             ..
         } => attached_session(sessions, attached).and_then(|s| {
             s.lock()
                 .map_err(|_| io::Error::other("session busy"))?
-                .spawn(&pane, &program, acp, watch.as_deref(), name.as_deref())
+                .spawn(
+                    &pane,
+                    &program,
+                    acp,
+                    watch.as_deref(),
+                    name.as_deref(),
+                    cwd.as_deref(),
+                )
                 .map(|_| Value::Empty {})
         }),
         Request::Write {

@@ -143,10 +143,11 @@ anvil agent from oc --as my-oc
 anvil agent seed
 ```
 
-Prefix `a`
-launches the default native TUI when they have one, else anvil.
-Prefix `A` picks; two seats ask native or anvil. Turning on anvil
-is an in-flight `session/prompt`.
+Prefix `a` asks which directory, then launches the default native
+TUI when they have one, else anvil. The default is this pane's
+cwd. Roots (`~/src/witt3rd`, `~/src/li`) appear as they accumulate
+from launches. Prefix `A` picks the agent first; two seats ask
+native or anvil. Turning on anvil is an in-flight `session/prompt`.
 
 # Not yet published
 

@@ -58,6 +58,9 @@ pub struct PaneView {
     /// The process's inner conversation id on this pane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// Live cwd of the process, else the directory it was started in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     #[serde(default)]
     pub state: WindowState,
 }
@@ -72,7 +75,9 @@ enum Dir {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Tree {
-    Leaf { id: String },
+    Leaf {
+        id: String,
+    },
     Split {
         dir: Dir,
         a: Box<Tree>,
@@ -105,6 +110,9 @@ struct PaneAgent {
     /// The process's own conversation id on this pane.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     session: String,
+    /// Directory the process was started in. Agents key sessions on it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    cwd: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -140,6 +148,8 @@ pub struct Session {
     programs: HashMap<String, String>,
     /// pane id → the process's inner session id.
     inner: HashMap<String, String>,
+    /// pane id → directory the process was started in.
+    cwds: HashMap<String, String>,
     /// panes whose name came from a shell that launched a catalog agent.
     adopted: HashSet<String>,
     catalog: Agents,
@@ -225,6 +235,7 @@ impl Sessions {
             names: HashMap::new(),
             programs: HashMap::new(),
             inner: HashMap::new(),
+            cwds: HashMap::new(),
             adopted: HashSet::new(),
             catalog: Agents::load(&self.root),
         }));
@@ -276,6 +287,7 @@ impl Sessions {
             names: HashMap::new(),
             programs: HashMap::new(),
             inner: HashMap::new(),
+            cwds: HashMap::new(),
             adopted: HashSet::new(),
             catalog: Agents::load(&self.root),
         };
@@ -372,6 +384,12 @@ impl Session {
                         name: self.names.get(&id).cloned(),
                         activity: self.pane_activity(&id),
                         session: self.inner.get(&id).cloned().filter(|s| !s.is_empty()),
+                        cwd: self
+                            .panes
+                            .get(&id)
+                            .and_then(|p| p.pid())
+                            .and_then(super::adopt::cwd)
+                            .or_else(|| self.cwds.get(&id).cloned()),
                         state: self.pane_mark(&id),
                     }
                 })
@@ -409,6 +427,12 @@ impl Session {
                             persist = true;
                         }
                     }
+                    if let Some(dir) = super::adopt::cwd(pid).filter(|s| !s.is_empty()) {
+                        if self.cwds.get(&id) != Some(&dir) {
+                            self.cwds.insert(id.clone(), dir);
+                            persist = true;
+                        }
+                    }
                     if let Some(url) = hit.watch {
                         if !self.watch.contains_key(&id) {
                             self.start_http(&id, &url, Some(&hit.name));
@@ -418,6 +442,7 @@ impl Session {
                 None if self.adopted.contains(&id) => {
                     self.names.remove(&id);
                     self.inner.remove(&id);
+                    self.cwds.remove(&id);
                     self.adopted.remove(&id);
                     persist = true;
                     if let Some(w) = self.watch.remove(&id) {
@@ -432,7 +457,7 @@ impl Session {
         }
     }
 
-/// A new window in the session, with one pane. The name is the
+    /// A new window in the session, with one pane. The name is the
     /// window. The new window becomes current: focus moves to its pane.
     pub fn add_window(&mut self, name: &str) -> io::Result<String> {
         let name = name.trim();
@@ -522,15 +547,18 @@ impl Session {
     }
 
     fn pane_activity(&self, id: &str) -> Option<String> {
-        self.watch
-            .get(id)
-            .and_then(|w| w.activity())
-            .or_else(|| {
-                let name = self.names.get(id)?;
-                let files = self.catalog.by_name(name)?.door().inhibit()?.files.clone()?;
-                let pid = self.panes.get(id)?.pid()?;
-                super::inhibit::activity(pid, &files)
-            })
+        self.watch.get(id).and_then(|w| w.activity()).or_else(|| {
+            let name = self.names.get(id)?;
+            let files = self
+                .catalog
+                .by_name(name)?
+                .door()
+                .inhibit()?
+                .files
+                .clone()?;
+            let pid = self.panes.get(id)?.pid()?;
+            super::inhibit::activity(pid, &files)
+        })
     }
 
     fn pane_turning(&self, pane_id: &str, pid: u32) -> bool {
@@ -705,6 +733,7 @@ impl Session {
         acp: bool,
         watch: Option<&str>,
         name: Option<&str>,
+        cwd: Option<&str>,
     ) -> io::Result<()> {
         if let Some(w) = self.watch.remove(pane_id) {
             w.stop();
@@ -721,10 +750,17 @@ impl Session {
         } else {
             self.inner.remove(pane_id);
         }
-        self.programs.insert(pane_id.to_string(), program.to_string());
+        if let Some(dir) = cwd.filter(|s| !s.is_empty()) {
+            self.cwds.insert(pane_id.to_string(), dir.to_string());
+        } else if name.is_none() {
+            self.cwds.remove(pane_id);
+        }
+        self.programs
+            .insert(pane_id.to_string(), program.to_string());
+        let cwd = self.cwds.get(pane_id).cloned();
         if acp {
             let resume = self.inner.get(pane_id).cloned();
-            let child = AcpChild::spawn_resume(program, resume.as_deref())?;
+            let child = AcpChild::spawn_resume(program, resume.as_deref(), cwd.as_deref())?;
             if let Some(sid) = child.session_id() {
                 self.inner.insert(pane_id.to_string(), sid);
             }
@@ -735,7 +771,7 @@ impl Session {
         let (_, _, cols, rows) = self
             .pane_geometry(pane_id)
             .ok_or_else(|| io::Error::other("no such pane"))?;
-        let pane = Pane::spawn(program, cols, rows)?;
+        let pane = Pane::spawn(program, cols, rows, cwd.as_deref())?;
         self.panes.insert(pane_id.to_string(), pane);
         if let Some(url) = watch {
             self.start_http(pane_id, url, name);
@@ -753,6 +789,7 @@ impl Session {
         self.names.remove(pane_id);
         self.programs.remove(pane_id);
         self.inner.remove(pane_id);
+        self.cwds.remove(pane_id);
         self.adopted.remove(pane_id);
     }
 
@@ -772,6 +809,7 @@ impl Session {
                 acp: self.acp.contains_key(id),
                 program: self.programs.get(id).cloned().unwrap_or_default(),
                 session: self.inner.get(id).cloned().unwrap_or_default(),
+                cwd: self.cwds.get(id).cloned().unwrap_or_default(),
             })
             .collect()
     }
@@ -803,7 +841,13 @@ impl Session {
             return w.session_id().filter(|s| !s.is_empty());
         }
         let name = self.names.get(id)?;
-        let files = self.catalog.by_name(name)?.door().inhibit()?.files.clone()?;
+        let files = self
+            .catalog
+            .by_name(name)?
+            .door()
+            .inhibit()?
+            .files
+            .clone()?;
         let pid = self.panes.get(id)?.pid()?;
         super::inhibit::session_id(pid, &files).filter(|s| !s.is_empty())
     }
@@ -823,11 +867,15 @@ impl Session {
             if !rec.session.is_empty() {
                 self.inner.insert(rec.pane.clone(), rec.session.clone());
             }
+            if !rec.cwd.is_empty() {
+                self.cwds.insert(rec.pane.clone(), rec.cwd.clone());
+            }
             let sid = (!rec.session.is_empty()).then_some(rec.session.as_str());
+            let cwd = (!rec.cwd.is_empty()).then_some(rec.cwd.as_str());
             let result = if let Some(agent) = catalog.by_name(&rec.name) {
                 if rec.acp {
                     match agent.acp_cmd() {
-                        Some(cmd) => self.spawn(&rec.pane, cmd, true, None, Some(&rec.name)),
+                        Some(cmd) => self.spawn(&rec.pane, cmd, true, None, Some(&rec.name), cwd),
                         None => continue,
                     }
                 } else {
@@ -838,12 +886,13 @@ impl Session {
                         false,
                         watch.as_deref(),
                         Some(&rec.name),
+                        cwd,
                     )
                 }
             } else if rec.program.is_empty() {
                 continue;
             } else {
-                self.spawn(&rec.pane, &rec.program, rec.acp, None, Some(&rec.name))
+                self.spawn(&rec.pane, &rec.program, rec.acp, None, Some(&rec.name), cwd)
             };
             if let Err(err) = result {
                 eprintln!(
@@ -891,18 +940,18 @@ impl Session {
     /// the child is.
     pub fn read_pane(&self, pane_id: &str) -> Grid {
         if let Some(acp) = self.acp.get(pane_id) {
-            let (_, _, cols, rows) = self
-                .pane_geometry(pane_id)
-                .unwrap_or((0, 0, DEFAULT_COLS, DEFAULT_ROWS));
+            let (_, _, cols, rows) =
+                self.pane_geometry(pane_id)
+                    .unwrap_or((0, 0, DEFAULT_COLS, DEFAULT_ROWS));
             return acp.grid(cols, rows);
         }
         let grid = self.panes.get(pane_id).cloned().map(|pane| pane.grid());
         if let Some(grid) = grid {
             return grid;
         }
-        let (_, _, cols, rows) = self
-            .pane_geometry(pane_id)
-            .unwrap_or((0, 0, DEFAULT_COLS, DEFAULT_ROWS));
+        let (_, _, cols, rows) =
+            self.pane_geometry(pane_id)
+                .unwrap_or((0, 0, DEFAULT_COLS, DEFAULT_ROWS));
         Grid::blank(cols, rows)
     }
 
@@ -926,7 +975,15 @@ impl Session {
     fn all_rects(&self) -> HashMap<String, (u16, u16, u16, u16)> {
         let mut rects = HashMap::new();
         for window in &self.windows {
-            layout(&window.tree, self.tty_cols, self.tty_rows, 0, 0, self.gap, &mut rects);
+            layout(
+                &window.tree,
+                self.tty_cols,
+                self.tty_rows,
+                0,
+                0,
+                self.gap,
+                &mut rects,
+            );
         }
         rects
     }
@@ -1022,12 +1079,7 @@ fn layout(
     }
 }
 
-fn rects_of(
-    tree: &Tree,
-    cols: u16,
-    rows: u16,
-    gap: u16,
-) -> HashMap<String, (u16, u16, u16, u16)> {
+fn rects_of(tree: &Tree, cols: u16, rows: u16, gap: u16) -> HashMap<String, (u16, u16, u16, u16)> {
     let mut rects = HashMap::new();
     layout(tree, cols, rows, 0, 0, gap, &mut rects);
     rects
@@ -1112,7 +1164,10 @@ impl Session {
             if !pane.alive() {
                 return WindowState::Dead;
             }
-            if pane.pid().is_some_and(|pid| self.pane_turning(pane_id, pid)) {
+            if pane
+                .pid()
+                .is_some_and(|pid| self.pane_turning(pane_id, pid))
+            {
                 return WindowState::Turning;
             }
             WindowState::Idle
@@ -1147,7 +1202,10 @@ impl Session {
                 any_process = true;
                 if pane.alive() {
                     any_live = true;
-                    if pane.pid().is_some_and(|pid| self.pane_turning(&p.pane, pid)) {
+                    if pane
+                        .pid()
+                        .is_some_and(|pid| self.pane_turning(&p.pane, pid))
+                    {
                         turning = true;
                     }
                 }
@@ -1254,10 +1312,12 @@ mod tests {
         let work = sessions.get("work").unwrap();
         work.lock()
             .unwrap()
-            .spawn("1", "sh", false, None, Some("golem"))
+            .spawn("1", "sh", false, None, Some("golem"), None)
             .unwrap();
         assert_eq!(
-            work.lock().unwrap().view().windows[0].panes[0].name.as_deref(),
+            work.lock().unwrap().view().windows[0].panes[0]
+                .name
+                .as_deref(),
             Some("golem")
         );
         drop(work);
@@ -1280,7 +1340,14 @@ mod tests {
         let work = sessions.get("work").unwrap();
         work.lock()
             .unwrap()
-            .spawn("1", &format!("python3 {path}"), true, None, Some("rung"))
+            .spawn(
+                "1",
+                &format!("python3 {path}"),
+                true,
+                None,
+                Some("rung"),
+                None,
+            )
             .unwrap();
         let recs = work.lock().unwrap().agent_records();
         assert_eq!(recs.len(), 1);
@@ -1297,7 +1364,7 @@ mod tests {
         let work = sessions.get("work").unwrap();
         work.lock()
             .unwrap()
-            .spawn("1", "sh", false, None, Some("stub"))
+            .spawn("1", "sh", false, None, Some("stub"), None)
             .unwrap();
         drop(work);
 
@@ -1378,7 +1445,10 @@ mod tests {
 
         let view = work.lock().unwrap().view();
         // Gap 1: exactly one cell between the two tiles.
-        assert_eq!(view.windows[0].panes[0].cols + view.windows[0].panes[1].cols, 99);
+        assert_eq!(
+            view.windows[0].panes[0].cols + view.windows[0].panes[1].cols,
+            99
+        );
         assert_eq!(view.windows[0].panes[0].rows, 50);
     }
 
@@ -1406,8 +1476,14 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
-        work.lock().unwrap().write("printf 'hello session'\n", None, false).unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, None, None)
+            .unwrap();
+        work.lock()
+            .unwrap()
+            .write("printf 'hello session'\n", None, false)
+            .unwrap();
         let mut grid = work.lock().unwrap().read_pane("1");
         for _ in 0..100 {
             if grid.lines.iter().any(|l| l.contains("hello session")) {
@@ -1427,10 +1503,16 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, None, None)
+            .unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
 
-        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, None, None)
+            .unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
     }
 
@@ -1441,7 +1523,7 @@ mod tests {
         let work = sessions.get("work").unwrap();
         work.lock()
             .unwrap()
-            .spawn("1", "sh", false, None, Some("oc"))
+            .spawn("1", "sh", false, None, Some("oc"), None)
             .unwrap();
         let view = work.lock().unwrap().view();
         assert_eq!(view.windows[0].panes[0].name.as_deref(), Some("oc"));
@@ -1452,14 +1534,17 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, None, None)
+            .unwrap();
         assert!(work.lock().unwrap().read_pane("1").alive);
         assert!(!work.lock().unwrap().read_pane("1").acp);
 
         let (_keep, path) = crate::daemon::acp::tests::fake_agent();
         work.lock()
             .unwrap()
-            .spawn("1", &format!("python3 {path}"), true, None, None)
+            .spawn("1", &format!("python3 {path}"), true, None, None, None)
             .unwrap();
         let grid = work.lock().unwrap().read_pane("1");
         assert!(grid.acp, "{grid:?}");
@@ -1471,7 +1556,10 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, None, None)
+            .unwrap();
         work.lock().unwrap().write("exit 0\n", None, false).unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
@@ -1479,7 +1567,11 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let err = work.lock().unwrap().write("echo x\n", None, false).unwrap_err();
+        let err = work
+            .lock()
+            .unwrap()
+            .write("echo x\n", None, false)
+            .unwrap_err();
         assert!(err.to_string().contains("ended"), "{err}");
     }
 
@@ -1538,7 +1630,11 @@ mod tests {
         let view = work.lock().unwrap().view();
         assert!(view.windows.iter().any(|w| w.window == "plugin"));
         assert!(!view.windows.iter().any(|w| w.window == "1"));
-        let err = work.lock().unwrap().rename_window("plugin", "sh").unwrap_err();
+        let err = work
+            .lock()
+            .unwrap()
+            .rename_window("plugin", "sh")
+            .unwrap_err();
         assert!(err.to_string().contains("already exists"), "{err}");
     }
 
@@ -1548,8 +1644,14 @@ mod tests {
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
         work.lock().unwrap().split("sh", false).unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
-        work.lock().unwrap().spawn("2", "sh", false, None, None).unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, None, None)
+            .unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("2", "sh", false, None, None, None)
+            .unwrap();
         work.lock().unwrap().focus_pane("1").unwrap();
         work.lock().unwrap().write("exit 0\n", None, false).unwrap();
         for _ in 0..100 {
@@ -1569,7 +1671,10 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, None, None)
+            .unwrap();
         work.lock().unwrap().write("exit 0\n", None, false).unwrap();
         for _ in 0..100 {
             if !work.lock().unwrap().read_pane("1").alive {
@@ -1627,10 +1732,16 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, None, None)
+            .unwrap();
         work.lock().unwrap().split("sh", false).unwrap();
         let half = work.lock().unwrap().read_pane("1");
-        assert!(half.cols < 80, "split should shrink the original PTY: {half:?}");
+        assert!(
+            half.cols < 80,
+            "split should shrink the original PTY: {half:?}"
+        );
         work.lock().unwrap().close_pane("2").unwrap();
         let full = work.lock().unwrap().read_pane("1");
         assert_eq!(full.cols, 80, "{full:?}");
@@ -1658,7 +1769,10 @@ mod tests {
         let (_dir, sessions) = sessions();
         sessions.create("work").unwrap();
         let work = sessions.get("work").unwrap();
-        work.lock().unwrap().spawn("1", "sh", false, None, None).unwrap();
+        work.lock()
+            .unwrap()
+            .spawn("1", "sh", false, None, None, None)
+            .unwrap();
         work.lock().unwrap().add_window("plugin").unwrap();
         // Current window is plugin (focused pane 2); window work has pane 1.
         work.lock().unwrap().focus("sh").unwrap();

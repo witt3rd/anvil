@@ -245,7 +245,11 @@ pub fn layout(
 /// Open: blank / label / blank (windows) or label / blank (agents).
 /// Rail: skip the same rows so marks do not jump when the list closes.
 fn list_start(top: u16, bottom: u16, open: bool, windows: bool) -> (u16, Option<u16>) {
-    let head = if windows { WIN_HEAD_ROWS } else { AGENT_HEAD_ROWS };
+    let head = if windows {
+        WIN_HEAD_ROWS
+    } else {
+        AGENT_HEAD_ROWS
+    };
     if !open {
         let y = (top + head).min(bottom.saturating_sub(1).max(top));
         return (y, None);
@@ -354,8 +358,8 @@ pub fn window_has_agent(window: &WindowView) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use crate::daemon::session::PaneView;
+    use std::time::Duration;
 
     fn view() -> SessionView {
         SessionView {
@@ -375,6 +379,7 @@ mod tests {
                             name: Some("oc".into()),
                             activity: None,
                             session: None,
+                            cwd: None,
                             state: WindowState::Idle,
                         },
                         PaneView {
@@ -386,6 +391,7 @@ mod tests {
                             name: None,
                             activity: None,
                             session: None,
+                            cwd: None,
                             state: WindowState::Idle,
                         },
                     ],
@@ -403,6 +409,7 @@ mod tests {
                         name: None,
                         activity: None,
                         session: None,
+                        cwd: None,
                         state: WindowState::Idle,
                     }],
                 },
@@ -478,6 +485,7 @@ mod tests {
                     name: None,
                     activity: None,
                     session: None,
+                    cwd: None,
                     state: WindowState::Idle,
                 }],
             }],
@@ -517,6 +525,7 @@ mod tests {
             name: Some(name.into()),
             activity: None,
             session: None,
+            cwd: None,
             state: WindowState::Idle,
         }
     }

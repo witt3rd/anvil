@@ -142,7 +142,12 @@ impl Snap {
         for (name, busy, agents) in shots {
             all_busy += *busy;
             all_agents += *agents;
-            credit(self.sessions.entry(name.clone()).or_default(), *busy, *agents, dt);
+            credit(
+                self.sessions.entry(name.clone()).or_default(),
+                *busy,
+                *agents,
+                dt,
+            );
         }
         let pushed = credit(&mut self.all, all_busy, all_agents, dt);
         if let Some(frac) = pushed {
@@ -151,7 +156,8 @@ impl Snap {
                 self.ring.remove(0);
             }
         }
-        self.sessions.retain(|name, _| keep.iter().any(|k| k == name));
+        self.sessions
+            .retain(|name, _| keep.iter().any(|k| k == name));
         self.sampled_at = now_ms();
     }
 }
@@ -185,10 +191,12 @@ fn credit(c: &mut Counters, busy: u32, agents: u32, dt: u64) -> Option<f32> {
         c.bucket_span = 0;
         closed = Some(frac);
     }
-    let (w, s) = c.buckets.iter().fold(
-        (c.bucket_work, c.bucket_span),
-        |acc, b| (acc.0 + b.0, acc.1 + b.1),
-    );
+    let (w, s) = c
+        .buckets
+        .iter()
+        .fold((c.bucket_work, c.bucket_span), |acc, b| {
+            (acc.0 + b.0, acc.1 + b.1)
+        });
     c.work_ms_24h = w;
     c.span_ms_24h = s;
     closed
@@ -242,6 +250,7 @@ mod tests {
             name: name.map(str::to_string),
             activity: None,
             session: None,
+            cwd: None,
             state,
         }
     }

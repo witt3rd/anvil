@@ -129,6 +129,10 @@ and, when a port is visible in the process tree, the HTTP watch
 — the same as prefix `a`.
 
 Prefix `a` opens a new window on the default agent (`agents.json`).
+It asks which directory first: this pane's cwd, learned roots
+(`~/src/witt3rd`, `~/src/li` as they accumulate), and recent
+launches. Type a path, tab completes, enter launches. Agents key
+their inner sessions on cwd; resurrect uses the same directory.
 The catalog names the program (`oc`, `oc-work`, `grok`). An
 OpenCode wrapper stays argv0; `--hostname` / `--port` are appended
 so the daemon can watch `/session/status`. Prefix `A` picks from
@@ -257,7 +261,7 @@ Prefix, then:
 | `w` | Toggle the windows list |
 | `$` | Rename the session |
 | `1..9` | SwitchSession(n) |
-| `a` | New agent (default) |
+| `a` | New agent: pick directory, then spawn |
 | `A` | Pick an agent |
 | `p` | Prompt the agent (same context as the TUI) |
 | `m` | The current window's note (a markdown blob) |

@@ -15,9 +15,7 @@ fn is_false(v: &bool) -> bool {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     /// The names of the sessions the daemon owns.
-    Enumerate {
-        id: String,
-    },
+    Enumerate { id: String },
     /// A new session with one window, or a new window in a session.
     Create {
         id: String,
@@ -26,10 +24,7 @@ pub enum Request {
         window: Option<String>,
     },
     /// Put a client on a session.
-    Attach {
-        id: String,
-        session: String,
-    },
+    Attach { id: String, session: String },
     /// The session under its new name, or a window in that session.
     /// `note` is the markdown blob stored with that window.
     Rename {
@@ -42,10 +37,7 @@ pub enum Request {
         note: Option<String>,
     },
     /// The session is gone; its windows and panes with it.
-    Destroy {
-        id: String,
-        session: String,
-    },
+    Destroy { id: String, session: String },
     /// The session's windows, their panes, each pane's geometry, and
     /// the focused pane; or a pane's grid.
     Read {
@@ -82,11 +74,7 @@ pub enum Request {
     },
     /// The panes relaid out to the new tty; the processes told
     /// (`SIGWINCH`).
-    Resize {
-        id: String,
-        cols: u16,
-        rows: u16,
-    },
+    Resize { id: String, cols: u16, rows: u16 },
     /// A process runs on the pane. PTY by default; `acp` holds stdio.
     Spawn {
         id: String,
@@ -102,6 +90,9 @@ pub enum Request {
         /// Absent on a shell.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Directory to start the process in. Agents key sessions on it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     /// The data goes to the focused pane's process, or a named pane.
     /// `prompt` is a turn on an agent door (HTTP or ACP), not keys.
@@ -181,7 +172,8 @@ pub enum Value {
     Grid(Grid),
     /// Everything else.
     Empty {},
-}#[cfg(test)]
+}
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -195,7 +187,10 @@ mod tests {
                 "c",
             ),
             (r#"{"op":"attach","id":"d","session":"work"}"#, "d"),
-            (r#"{"op":"rename","id":"e","session":"work","name":"deep"}"#, "e"),
+            (
+                r#"{"op":"rename","id":"e","session":"work","name":"deep"}"#,
+                "e",
+            ),
             (r#"{"op":"destroy","id":"f","session":"work"}"#, "f"),
             (r#"{"op":"read","id":"g","session":"work"}"#, "g"),
             (r#"{"op":"read","id":"h","pane":"1"}"#, "h"),
