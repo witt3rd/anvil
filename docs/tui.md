@@ -136,8 +136,10 @@ It asks which directory first: this pane's cwd, learned roots
 launches. Type a path: folders in that directory whose names
 match come first (prefix, then substring), then other folders
 whose names contain what you typed. A trailing slash (`~/src/`)
-lists only that folder. Tab completes, enter launches. Agents key
-their inner sessions on cwd; resurrect uses the same directory.
+lists only that folder. Tab completes, enter launches. The window
+is named after that folder (`~/src/witt3rd/dotagent` → `dotagent`).
+Agents key their inner sessions on cwd; resurrect uses the same
+directory.
 The catalog names the program (`oc`, `oc-work`, `grok`). An
 OpenCode wrapper stays argv0; `--hostname` / `--port` are appended
 so the daemon can watch `/session/status`. Prefix `A` picks from

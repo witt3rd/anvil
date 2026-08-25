@@ -148,7 +148,8 @@ TUI when they have one, else anvil. The default is this pane's
 cwd. Roots (`~/src/witt3rd`, `~/src/li`) appear as they accumulate
 from launches. Typing a path lists matching folders in that
 directory first, then other folders whose names contain the
-typed fragment. A trailing slash lists only that folder. Prefix `A` picks the agent first; two seats ask
+typed fragment. A trailing slash lists only that folder. The
+window is named after that folder. Prefix `A` picks the agent first; two seats ask
 native or anvil. Turning on anvil is an in-flight `session/prompt`.
 
 # Not yet published

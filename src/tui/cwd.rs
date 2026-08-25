@@ -171,6 +171,18 @@ pub fn is_dir(p: &str) -> bool {
     expand(p).is_dir()
 }
 
+/// Last folder of a directory: `~/src/witt3rd/dotagent` → `dotagent`.
+/// Empty when the path is `/` or otherwise has no name a window can use.
+pub fn folder_name(dir: &str) -> Option<String> {
+    let p = PathBuf::from(normalize(dir));
+    let name = p.file_name()?.to_string_lossy();
+    let name = name.trim();
+    if name.is_empty() || name.contains('/') || name.contains('\0') {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 pub fn display(p: &str) -> String {
     let h = home();
     let hs = h.to_string_lossy();
@@ -428,6 +440,15 @@ mod tests {
         let h = home();
         assert_eq!(expand("~"), h);
         assert_eq!(expand("~/src"), h.join("src"));
+    }
+
+    #[test]
+    fn folder_name_is_the_last_component() {
+        assert_eq!(
+            folder_name("/home/dt/src/witt3rd/dotagent").as_deref(),
+            Some("dotagent")
+        );
+        assert_eq!(folder_name("/").as_deref(), None);
     }
 
     fn names(rows: &[Row]) -> Vec<String> {

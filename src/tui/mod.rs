@@ -445,7 +445,8 @@ impl Client {
             return Ok(());
         }
         self.places.remember(&cwd, &agents::default_root());
-        let name = unique_name(&agent.name, &self.window_names());
+        let base = cwd::folder_name(&cwd).unwrap_or_else(|| agent.name.clone());
+        let name = unique_name(&base, &self.window_names());
         self.add_window(&name)?;
         self.refresh()?;
         let pane = self.view.as_ref().map(|v| v.focused.clone());
