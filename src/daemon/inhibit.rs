@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::catalog::SessionFiles;
 use super::adopt;
+use crate::catalog::SessionFiles;
 
 pub fn session_id(pid: u32, files: &SessionFiles) -> Option<String> {
     live(pid, files).map(|h| h.session_id)
@@ -41,7 +41,6 @@ fn tree_matches(root: u32, needles: &[String]) -> bool {
 struct Hit {
     session_id: String,
     cwd: String,
-    pid: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,18 +60,19 @@ fn live(root: u32, files: &SessionFiles) -> Option<Hit> {
             return Some(Hit {
                 session_id: a.session_id.clone(),
                 cwd: a.cwd.clone(),
-                pid: a.pid,
             });
         }
     }
     let down: Vec<u32> = std::iter::once(root)
         .chain(adopt::descendants(root))
         .collect();
-    active.into_iter().find(|a| down.contains(&a.pid)).map(|a| Hit {
-        session_id: a.session_id,
-        cwd: a.cwd,
-        pid: a.pid,
-    })
+    active
+        .into_iter()
+        .find(|a| down.contains(&a.pid))
+        .map(|a| Hit {
+            session_id: a.session_id,
+            cwd: a.cwd,
+        })
 }
 
 /// Walk `/proc` parents from `child` up to `ancestor`.
@@ -105,7 +105,11 @@ fn read_title(hit: &Hit, files: &SessionFiles) -> Option<String> {
     .ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     for key in &files.title_keys {
-        if let Some(s) = v.get(key).and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
+        if let Some(s) = v
+            .get(key)
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+        {
             return Some(s.to_string());
         }
     }
@@ -237,7 +241,10 @@ mod tests {
 
     #[test]
     fn ancestor_walk_stops_at_init() {
-        assert!(ancestor_of(std::process::id() as u32, std::process::id() as u32));
+        assert!(ancestor_of(
+            std::process::id() as u32,
+            std::process::id() as u32
+        ));
         assert!(!ancestor_of(1, 999_999));
     }
 
