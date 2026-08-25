@@ -82,8 +82,11 @@ The daemon is a command of `anvil`. The operator can start it with
 daemon per box. All state lives there.
 
 `anvil --restart` (from a tree: `cargo run -- --restart`) stops the
-running daemon and starts this binary, then attaches. Sessions stay
-on disk. Processes the old daemon held end.
+running daemon and starts this binary, then attaches. When the
+systemd --user unit owns the socket, that is `systemctl --user
+restart anvil` — killing the pid from the side races the unit's
+`Restart=on-failure`. Sessions stay on disk. Processes the old
+daemon held end.
 
 ## References
 

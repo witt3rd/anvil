@@ -138,6 +138,24 @@ fn wait_until_ours(sock: &Path) -> bool {
     false
 }
 
+fn sock_is_default(sock: &Path) -> bool {
+    let def = default_sock();
+    if sock == def.as_path() {
+        return true;
+    }
+    match (fs::canonicalize(sock), fs::canonicalize(&def)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn systemd_owns(sock: &Path) -> bool {
+    if !sock_is_default(sock) {
+        return false;
+    }
+    systemd_user(&["is-enabled", "anvil"]) || systemd_user(&["is-active", "anvil"])
+}
+
 fn systemd_user(args: &[&str]) -> bool {
     Command::new("systemctl")
         .arg("--user")
@@ -169,8 +187,15 @@ fn serve_client(stream: UnixStream, sessions: Arc<Sessions>) -> io::Result<()> {
         };
         let mut out = serde_json::to_string(&reply)?;
         out.push('\n');
-        writer.write_all(out.as_bytes())?;
-        writer.flush()?;
+        if let Err(err) = writer
+            .write_all(out.as_bytes())
+            .and_then(|_| writer.flush())
+        {
+            if err.kind() == io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(err);
+        }
     }
 }
 
@@ -347,7 +372,14 @@ fn pid_of(sock: &Path) -> Option<i32> {
 
 /// Stop the daemon at `sock`. Sessions stay on disk. Processes the
 /// daemon held end. The next `ensure_running` starts this binary.
+///
+/// When systemd owns this socket, stop the unit first. Killing the
+/// pid from the side is a failure; `Restart=on-failure` brings the
+/// old process back under the client.
 pub fn stop(sock: &Path) -> io::Result<()> {
+    if systemd_owns(sock) {
+        let _ = systemd_user(&["stop", "anvil"]);
+    }
     if let Some(pid) = pid_of(sock) {
         unsafe {
             libc::kill(pid, libc::SIGTERM);
@@ -372,6 +404,13 @@ pub fn stop(sock: &Path) -> io::Result<()> {
 
 /// Stop the daemon, then start this binary and wait until it speaks.
 pub fn restart(sock: &Path, root: &Path) -> io::Result<()> {
+    if systemd_owns(sock) {
+        let _ = systemd_user(&["restart", "anvil"]);
+        if wait_until_ours(sock) {
+            return Ok(());
+        }
+        let _ = systemd_user(&["stop", "anvil"]);
+    }
     stop(sock)?;
     ensure_running(sock, root)
 }
@@ -394,12 +433,11 @@ pub fn ensure_running(sock: &Path, root: &Path) -> io::Result<()> {
     if probe(sock).is_some() {
         stop(sock)?;
     }
-    let _ = systemd_user(&["stop", "anvil"]);
-    if systemd_user(&["is-enabled", "anvil"]) && systemd_user(&["start", "anvil"]) {
-        if wait_until_ours(sock) {
+    if systemd_owns(sock) {
+        let _ = systemd_user(&["stop", "anvil"]);
+        if systemd_user(&["start", "anvil"]) && wait_until_ours(sock) {
             return Ok(());
         }
-        stop(sock)?;
         let _ = systemd_user(&["stop", "anvil"]);
     }
     spawn_this(sock, root)?;
