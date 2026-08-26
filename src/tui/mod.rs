@@ -872,8 +872,18 @@ impl Client {
     /// follow are actions. All other keys go to the focused pane's
     /// process. `esc` detaches.
     pub fn key(&mut self, key: ratatui::crossterm::event::KeyEvent) -> io::Result<()> {
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-        if key.kind != ratatui::crossterm::event::KeyEventKind::Press {
+        use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+        if key.kind == KeyEventKind::Release {
+            return Ok(());
+        }
+        if key.kind == KeyEventKind::Repeat {
+            if let Some(seq) = encode_passthrough(&key, self.key_proto()) {
+                self.selection = None;
+                self.forward(&seq);
+            }
+            return Ok(());
+        }
+        if key.kind != KeyEventKind::Press {
             return Ok(());
         }
         if let Ok(dbg) = std::env::var("ANVIL_KEY_DEBUG") {
@@ -1149,6 +1159,15 @@ impl Client {
                 }
                 _ => return Ok(()),
             }
+        }
+        if is_ctrl_c(&key) {
+            if self.which_key.active {
+                self.which_key.set_scope(Scope::Global);
+                self.which_key.dismiss();
+            }
+            self.selection = None;
+            self.forward("\x03");
+            return Ok(());
         }
         if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.which_key.set_scope(Scope::Prefix);
@@ -3021,6 +3040,15 @@ fn tile_at(
     None
 }
 
+fn is_ctrl_c(key: &ratatui::crossterm::event::KeyEvent) -> bool {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    match key.code {
+        KeyCode::Char('\u{3}') => true,
+        KeyCode::Char('c' | 'C') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
+        _ => false,
+    }
+}
+
 /// Keys that belong to the pane. Ctrl-C is `^C` (`\x03`), not the
 /// letter `c`. Ctrl-b is the prefix and is consumed before this.
 /// `kitty` / `modify` are what the focused process asked for, so
@@ -3440,8 +3468,16 @@ fn run_loop(
             let _ = client.refresh();
             continue;
         }
-        match event::read()? {
-            event::Event::Key(key) => {
+        match event::read() {
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+                let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+                if let Err(err) = client.key(key) {
+                    client.last_error = Some(err.to_string());
+                }
+            }
+            Err(err) => return Err(err),
+            Ok(event::Event::Key(key)) => {
                 if let Err(err) = client.key(key) {
                     client.last_error = Some(err.to_string());
                 }
@@ -3449,17 +3485,17 @@ fn run_loop(
                     return Ok(());
                 }
             }
-            event::Event::Resize(cols, rows) => {
+            Ok(event::Event::Resize(cols, rows)) => {
                 if let Err(err) = client.resize_tty(cols, rows) {
                     client.last_error = Some(err.to_string());
                 }
             }
-            event::Event::Mouse(m) => {
+            Ok(event::Event::Mouse(m)) => {
                 client.mouse(m)?;
             }
-            event::Event::FocusGained => client.term_focused = true,
-            event::Event::FocusLost => client.term_focused = false,
-            _ => {}
+            Ok(event::Event::FocusGained) => client.term_focused = true,
+            Ok(event::Event::FocusLost) => client.term_focused = false,
+            Ok(_) => {}
         }
     }
 }
@@ -3643,11 +3679,13 @@ mod tests {
     fn ctrl_c_is_etx_not_the_letter() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(is_ctrl_c(&key));
         assert_eq!(
             encode_passthrough(&key, (0, false)).as_deref(),
             Some("\x03")
         );
         let plain = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert!(!is_ctrl_c(&plain));
         assert_eq!(encode_passthrough(&plain, (0, false)).as_deref(), Some("c"));
     }
 

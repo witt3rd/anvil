@@ -796,7 +796,7 @@ impl Session {
         let (_, _, cols, rows) = self
             .pane_geometry(pane_id)
             .ok_or_else(|| io::Error::other("no such pane"))?;
-        let pane = Pane::spawn(program, cols, rows, cwd.as_deref())?;
+        let pane = Pane::spawn(program, cols, rows, cwd.as_deref(), name.is_none())?;
         self.panes.insert(pane_id.to_string(), pane);
         if let Some(url) = watch {
             self.start_http(pane_id, url, name);

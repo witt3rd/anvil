@@ -129,7 +129,13 @@ pub struct Pane {
 
 impl Pane {
     /// Spawn a process on the pane's slave PTY. The daemon holds the master.
-    pub fn spawn(program: &str, cols: u16, rows: u16, cwd: Option<&str>) -> io::Result<Arc<Pane>> {
+    pub fn spawn(
+        program: &str,
+        cols: u16,
+        rows: u16,
+        cwd: Option<&str>,
+        isig: bool,
+    ) -> io::Result<Arc<Pane>> {
         let cols = cols.max(2);
         let rows = rows.max(2);
         let pty_system = native_pty_system();
@@ -163,6 +169,11 @@ impl Pane {
         }
         if let Some(dir) = cwd.filter(|s| !s.is_empty()) {
             cmd.cwd(dir);
+        }
+        if !isig {
+            if let Some(fd) = pair.master.as_raw_fd() {
+                disable_isig(fd);
+            }
         }
         let child = pair
             .slave
@@ -319,6 +330,20 @@ impl Pane {
     }
 }
 
+/// Agent TUIs want Ctrl-C as a key. ISIG on the PTY turns `^C` into
+/// SIGINT and the process dies — then the pane closes. Shells keep
+/// the default so Ctrl-C still interrupts a foreground job.
+fn disable_isig(fd: i32) {
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut t) != 0 {
+            return;
+        }
+        t.c_lflag &= !libc::ISIG;
+        let _ = libc::tcsetattr(fd, libc::TCSANOW, &t);
+    }
+}
+
 impl Drop for Pane {
     fn drop(&mut self) {
         self.terminate();
@@ -405,7 +430,7 @@ mod tests {
 
     #[test]
     fn spawn_writes_and_reads_the_grid() {
-        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None, true).unwrap();
         pane.write(b"printf 'hi from pane'\n").unwrap();
         let grid = wait_for(&pane, |g| {
             g.lines.iter().any(|l| l.contains("hi from pane"))
@@ -415,7 +440,7 @@ mod tests {
 
     #[test]
     fn exit_marks_the_pane_dead() {
-        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None, true).unwrap();
         pane.write(b"exit 0\n").unwrap();
         let grid = wait_for(&pane, |g| !g.alive);
         assert!(!grid.alive, "process ended: {grid:?}");
@@ -423,7 +448,7 @@ mod tests {
 
     #[test]
     fn resize_reaches_the_process() {
-        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None, true).unwrap();
         pane.write(b"trap 'echo got-28x100' WINCH; while :; do sleep 1; done\n")
             .unwrap();
         pane.resize(100, 28).unwrap();
@@ -435,7 +460,7 @@ mod tests {
 
     #[test]
     fn mouse_follows_the_childs_decset() {
-        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None, true).unwrap();
         pane.write(b"printf '\\033[?1000h'\n").unwrap();
         let on = wait_for(&pane, |g| g.mouse);
         assert!(on.mouse, "DECSET 1000 should arm mouse: {on:?}");
@@ -447,7 +472,7 @@ mod tests {
 
     #[test]
     fn kitty_flags_follow_the_child() {
-        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None, true).unwrap();
         pane.write(b"printf '\\033[>1u'\n").unwrap();
         let on = wait_for(&pane, |g| g.kitty > 0);
         assert_eq!(on.kitty, 1, "CSI > 1 u should arm kitty keys: {on:?}");
@@ -456,7 +481,7 @@ mod tests {
 
     #[test]
     fn terminate_ends_the_process() {
-        let pane = Pane::spawn("sh", 24, 80, None).unwrap();
+        let pane = Pane::spawn("sh", 24, 80, None, true).unwrap();
         assert!(pane.alive());
         pane.terminate();
         let start = Instant::now();

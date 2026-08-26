@@ -100,8 +100,9 @@ A `─` between them is a drag handle: pull it to give
 one list more of the column. The current row wears the
 accent bar and `text.primary`. Other rows are muted.
 
-Keys typed in the tiles go to the focused pane. The sidebar
-is clicked, or walked with prefix `]` / `[`.
+Keys typed in the tiles go to the focused pane. Ctrl-C is
+`^C` to that process, not a close. Prefix `x` closes the
+pane. The sidebar is clicked, or walked with prefix `]` / `[`.
 
 | gesture | what it does |
 |---|---|
