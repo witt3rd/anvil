@@ -380,9 +380,9 @@ stays on disk.
 The **header** is every session: a single-pixel hairline
 between the session chip and the host. The hue is
 `accent.secondary` (the cool blue), so it does not fight
-the orange chip or needs-you red. Empty cells are dim
-dots. The fill starts as those dots and coalesces into
-`─`, brightening toward the tip.
+the orange chip or needs-you red. The gradient is laid
+across the whole track; how much of it is `─` is the
+live proportion. The rest is dim dots.
 
 **Bands** are fleet size, not saturation. The ramp's
 length is how saturated; how many agents is a later

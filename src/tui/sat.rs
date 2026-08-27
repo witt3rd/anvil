@@ -1,6 +1,6 @@
-//! Draw saturation: a hairline of unused capacity and a gradient
-//! of now. Empty is dots; the fill starts as dots and coalesces
-//! into a single-pixel line that brightens at the tip.
+//! Draw saturation: unused capacity is dots. The gradient is
+//! laid out across the whole track; fill is how much of it
+//! shows from the left.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -60,7 +60,7 @@ pub fn draw_header(
     let filled = fill_len(area.width, now);
     for i in 0..area.width {
         let (ch, color) = if i < filled {
-            cell(i, filled, dim_rgb, bright_rgb)
+            cell(i, area.width, dim_rgb, bright_rgb)
         } else {
             ("·", hole)
         };
@@ -86,16 +86,15 @@ pub fn draw_header(
     }
 }
 
-/// Along the fill: dim dots, then a hairline that brightens at the tip.
-fn cell(i: u16, filled: u16, dim: [u8; 3], bright: [u8; 3]) -> (&'static str, Color) {
-    let t = if filled <= 1 {
+/// Color at column `i` of a track `span` wide. The ramp is linear
+/// across the whole span, not the filled slice.
+fn cell(i: u16, span: u16, dim: [u8; 3], bright: [u8; 3]) -> (&'static str, Color) {
+    let t = if span <= 1 {
         1.0
     } else {
-        i as f32 / (filled - 1) as f32
+        i as f32 / (span - 1) as f32
     };
-    let t = t * t;
-    let ch = if t < 0.30 { "·" } else { "─" };
-    (ch, mix(dim, bright, 0.28 + 0.72 * t))
+    ("─", mix(dim, bright, t))
 }
 
 fn rgb_of(color: Color) -> [u8; 3] {
@@ -124,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_bar_is_dots_then_a_hairline() {
+    fn a_full_bar_is_the_whole_gradient() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 12, 1));
         let counters = Counters::snapshot(1, 1);
         draw_header(
@@ -136,9 +135,28 @@ mod tests {
             Color::Rgb(0x14, 0x14, 0x14),
         );
         let row: String = (0..12).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(row.contains('·'), "{row}");
-        assert!(row.contains('─'), "{row}");
-        assert!(!row.starts_with('['), "{row}");
+        assert_eq!(row, "────────────");
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(0x14, 0x14, 0x14));
+        assert_eq!(buf[(11, 0)].fg, Color::Rgb(0x5c, 0x9c, 0xf5));
+    }
+
+    #[test]
+    fn half_fill_is_the_first_half_of_the_ramp() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        let counters = Counters::snapshot(1, 2);
+        draw_header(
+            &mut buf,
+            Rect::new(0, 0, 10, 1),
+            &counters,
+            Color::Rgb(0, 0, 0),
+            Color::Rgb(100, 100, 100),
+            Color::Rgb(0, 0, 0),
+        );
+        let row: String = (0..10).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(row, "─────·····");
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(0, 0, 0));
+        assert_eq!(buf[(4, 0)].fg, Color::Rgb(44, 44, 44));
+        assert_ne!(buf[(4, 0)].fg, Color::Rgb(100, 100, 100));
     }
 
     #[test]
