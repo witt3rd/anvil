@@ -118,8 +118,9 @@ last pane of a window takes the window with it.
 
 A click on a tile focuses that pane. A drag that is not a
 click selects cells; release copies the text to the clipboard
-and a short toast says so. Wheel, drag, and click go to the
-pane's process as SGR mouse only when it has asked (DECSET
+and a short toast says so. The wheel always goes to the pane
+(SGR if it asked for mouse, else cursor keys). Clicks and
+drags go to the process only when it has asked (DECSET
 1000/1002/1003). Shift-drag selects even then. Prefix `]` /
 `[` walk windows. Prefix `v` splits the focused pane to the
 right; prefix `-` splits it down. Focus moves into the new

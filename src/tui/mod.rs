@@ -1690,8 +1690,8 @@ impl Client {
     }
 
     /// Focus the tile under the cursor. A pane that asked for mouse
-    /// gets SGR. Otherwise (or with Shift) the client selects: drag
-    /// copies to the clipboard.
+    /// gets SGR. The wheel always goes to the pane. Otherwise (or
+    /// with Shift) a drag selects cells for the clipboard.
     fn mouse_to_tile(
         &mut self,
         col: u16,
@@ -1724,8 +1724,15 @@ impl Client {
             })?;
             self.refresh()?;
         }
+        let wheel = matches!(
+            kind,
+            MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight
+        );
         let mux = !mouse_for_pane(self.grids.get(&pane)) || modifiers.contains(KeyModifiers::SHIFT);
-        if mux {
+        if mux && !wheel {
             return match kind {
                 MouseEventKind::Down(MouseButton::Left) => {
                     self.selection = Some(select::Selection::begin(pane, x, y));
@@ -1737,6 +1744,16 @@ impl Client {
             };
         }
         self.selection = None;
+        if wheel && !mouse_for_pane(self.grids.get(&pane)) {
+            let seq = match kind {
+                MouseEventKind::ScrollUp => "\x1b[A",
+                MouseEventKind::ScrollDown => "\x1b[B",
+                MouseEventKind::ScrollLeft => "\x1b[D",
+                MouseEventKind::ScrollRight => "\x1b[C",
+                _ => return Ok(()),
+            };
+            return self.write(seq);
+        }
         let Some(seq) = sgr_mouse(kind, tile.x, tile.y) else {
             return Ok(());
         };
@@ -3716,7 +3733,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_reaches_the_pane_only_when_it_asked() {
+    fn clicks_reach_the_pane_only_when_it_asked() {
         let off = Grid {
             cols: 8,
             rows: 2,
