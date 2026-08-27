@@ -35,7 +35,8 @@ pub struct AcpChild {
     waiters: Mutex<HashMap<u64, mpsc::Sender<Result<Value, String>>>>,
     pending_prompt: Mutex<Option<u64>>,
     pending_perm: Mutex<Option<PendingPerm>>,
-    lines: Mutex<Vec<String>>,
+    lines: Mutex<Vec<(String, Kind)>>,
+    stream: Mutex<Option<Kind>>,
     stderr: Mutex<String>,
 }
 
@@ -100,6 +101,7 @@ impl AcpChild {
             pending_prompt: Mutex::new(None),
             pending_perm: Mutex::new(None),
             lines: Mutex::new(Vec::new()),
+            stream: Mutex::new(None),
             stderr: Mutex::new(String::new()),
         });
         let pump = acp.clone();
@@ -153,7 +155,7 @@ impl AcpChild {
                 std::mem::take(&mut *draft)
             };
             if !text.is_empty() {
-                self.push_line(&format!("> {text}"));
+                self.push_chunk(&format!("> {text}"), Kind::You);
                 self.prompt(&text)?;
             }
             return Ok(());
@@ -187,21 +189,16 @@ impl AcpChild {
             .map(|l| l.clone())
             .unwrap_or_default();
         if self.state() == WindowState::NeedsYou {
-            body.push("needs you — y allow · n deny".into());
+            body.push(("needs you — y allow · n deny".into(), Kind::Hint));
         }
         let width = cols.max(1) as usize;
         let mut wrapped: Vec<(String, Kind)> = Vec::new();
         if body.is_empty() {
             wrapped.push(("type a prompt, then enter".into(), Kind::Hint));
         }
-        for line in &body {
-            let kind = if line.starts_with("> ") {
-                Kind::You
-            } else {
-                Kind::Agent
-            };
+        for (line, kind) in &body {
             for row in wrap(line, width) {
-                wrapped.push((row, kind));
+                wrapped.push((row, *kind));
             }
         }
         let prompt = format!("> {draft}");
@@ -230,7 +227,7 @@ impl AcpChild {
                     bg: None,
                     bg_rgb: None,
                     bold: matches!(kind, Kind::Composer | Kind::You),
-                    italic: matches!(kind, Kind::You | Kind::Hint),
+                    italic: matches!(kind, Kind::You | Kind::Hint | Kind::Thought),
                     underline: matches!(kind, Kind::Composer),
                     inverse: false,
                 }]
@@ -282,49 +279,42 @@ impl AcpChild {
     }
 
     fn push_line(&self, line: &str) {
-        self.push_text(line, true);
+        self.push_chunk(line, Kind::Hint);
     }
 
-    /// Append text to the transcript. `newline` starts a fresh row;
-    /// a stream chunk continues the last row.
-    fn push_text(&self, text: &str, newline: bool) {
+    /// Append a stream chunk. Whitespace is kept (ACP sends spaces and
+    /// newlines in the chunk). A new kind starts a new paragraph.
+    fn push_chunk(&self, text: &str, kind: Kind) {
         if text.is_empty() {
             return;
         }
         let Ok(mut lines) = self.lines.lock() else {
             return;
         };
-        if newline || lines.is_empty() {
-            lines.push(text.to_string());
-        } else if let Some(last) = lines.last_mut() {
-            last.push_str(text);
-        }
-        const WIDTH: usize = 80;
-        while let Some(last) = lines.last() {
-            if last.chars().count() <= WIDTH {
-                break;
-            }
-            let s = lines.pop().unwrap();
-            let mut acc = String::new();
-            let mut n = 0;
-            let mut rest = String::new();
-            let mut overflow = false;
-            for c in s.chars() {
-                if !overflow && n >= WIDTH {
-                    overflow = true;
+        let mut stream = match self.stream.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let mut parts = text.split('\n');
+        if let Some(first) = parts.next() {
+            let continue_line = *stream == Some(kind)
+                && lines
+                    .last()
+                    .is_some_and(|(s, k)| *k == kind && !s.is_empty());
+            if continue_line {
+                if let Some((last, _)) = lines.last_mut() {
+                    last.push_str(first);
                 }
-                if overflow {
-                    rest.push(c);
-                } else {
-                    acc.push(c);
-                    n += 1;
-                }
-            }
-            lines.push(acc);
-            if !rest.is_empty() {
-                lines.push(rest);
+            } else if !first.is_empty() || lines.is_empty() {
+                lines.push((first.to_string(), kind));
+            } else {
+                lines.push((String::new(), kind));
             }
         }
+        for part in parts {
+            lines.push((part.to_string(), kind));
+        }
+        *stream = Some(kind);
         if lines.len() > 200 {
             let drain = lines.len() - 200;
             lines.drain(..drain);
@@ -355,8 +345,25 @@ impl AcpChild {
         if let Ok(mut state) = self.state.lock() {
             *state = WindowState::Turning;
         }
-        self.push_line(if allow { "allowed" } else { "denied" });
+        self.push_chunk(if allow { "allowed" } else { "denied" }, Kind::Hint);
         Ok(())
+    }
+
+    fn apply_update(&self, msg: &Value) {
+        let Some(update) = msg.get("params").and_then(|p| p.get("update")) else {
+            return;
+        };
+        let Some(disc) = update.get("sessionUpdate").and_then(|s| s.as_str()) else {
+            return;
+        };
+        let kind = match disc {
+            "agent_thought_chunk" | "agent_thought" => Kind::Thought,
+            "agent_message_chunk" | "agent_message" => Kind::Agent,
+            _ => return,
+        };
+        for text in content_texts(update) {
+            self.push_chunk(&text, kind);
+        }
     }
 
     pub fn terminate(&self) {
@@ -507,10 +514,11 @@ impl AcpChild {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     You,
     Agent,
+    Thought,
     Composer,
     Hint,
 }
@@ -525,13 +533,25 @@ fn wrap(s: &str, cols: usize) -> Vec<String> {
     let mut rows = Vec::new();
     let mut acc = String::new();
     let mut n = 0;
-    for c in s.chars() {
-        if n >= cols {
+    for word in s.split_inclusive(' ') {
+        let w = word.chars().count();
+        if n > 0 && n + w > cols {
             rows.push(std::mem::take(&mut acc));
             n = 0;
         }
-        acc.push(c);
-        n += 1;
+        if w > cols {
+            for c in word.chars() {
+                if n >= cols {
+                    rows.push(std::mem::take(&mut acc));
+                    n = 0;
+                }
+                acc.push(c);
+                n += 1;
+            }
+        } else {
+            acc.push_str(word);
+            n += w;
+        }
     }
     if !acc.is_empty() {
         rows.push(acc);
@@ -560,15 +580,7 @@ fn pump_stdout(acp: Arc<AcpChild>, stdout: impl std::io::Read) {
                 }
                 acp.push_line("needs you");
             } else if method == "session/update" {
-                if let Some(text) = update_text(&msg) {
-                    let newline = acp
-                        .lines
-                        .lock()
-                        .ok()
-                        .and_then(|l| l.last().cloned())
-                        .is_some_and(|s| s.starts_with("> "));
-                    acp.push_text(&text, newline);
-                }
+                acp.apply_update(&msg);
             }
             continue;
         }
@@ -647,17 +659,18 @@ fn perm_options(msg: &Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-fn update_text(msg: &Value) -> Option<String> {
-    let update = msg.get("params")?.get("update")?;
-    let content = update.get("content")?;
-    if let Some(text) = content.get("text").and_then(|t| t.as_str()) {
-        let t = text.trim();
-        if t.is_empty() {
-            return None;
-        }
-        return Some(t.to_string());
+fn content_texts(update: &Value) -> Vec<String> {
+    let Some(content) = update.get("content") else {
+        return Vec::new();
+    };
+    if let Some(arr) = content.as_array() {
+        return arr.iter().filter_map(block_text).collect();
     }
-    None
+    block_text(content).into_iter().collect()
+}
+
+fn block_text(v: &Value) -> Option<String> {
+    v.get("text")?.as_str().map(str::to_string)
 }
 
 fn json_id(v: &Value) -> Option<u64> {
@@ -717,6 +730,11 @@ while True:
                     {"optionId":"reject-once","name":"Reject","kind":"reject_once"}
                 ]
             }})
+        elif text == "stream":
+            send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"The "}}}})
+            send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"user just said.\n"}}}})
+            send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}}})
+            send({"jsonrpc":"2.0","id":i,"result":{"stopReason":"end_turn"}})
         else:
             send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ok"}}}})
             send({"jsonrpc":"2.0","id":i,"result":{"stopReason":"end_turn"}})
@@ -753,6 +771,27 @@ while True:
             "{:?}",
             grid.lines
         );
+    }
+
+    #[test]
+    fn stream_chunks_keep_spaces_and_breaks() {
+        let (_keep, path) = fake_agent();
+        let acp = AcpChild::spawn(&format!("python3 {path}")).unwrap();
+        acp.prompt("stream").unwrap();
+        for _ in 0..50 {
+            if acp.state() == WindowState::Idle {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let grid = acp.grid(40, 12);
+        let body: String = grid.lines.join("\n");
+        assert!(body.contains("The user just said"), "{body:?}");
+        assert!(!body.contains("Theuser"), "{body:?}");
+        let hello = grid.lines.iter().position(|l| l.trim() == "hello");
+        let thought = grid.lines.iter().position(|l| l.contains("The user"));
+        assert!(hello.is_some() && thought.is_some(), "{body:?}");
+        assert!(hello.unwrap() > thought.unwrap(), "{body:?}");
     }
 
     #[test]
