@@ -147,7 +147,10 @@ OpenCode wrapper stays argv0; `--hostname` / `--port` are appended
 so the daemon can watch `/session/status`. Prefix `A` picks from
 the catalog — a vertical list. An agent with a native TUI and an
 ACP command then asks which one: their TUI on a PTY, or anvil's
-prompt/response viewer. `acp_only` skips that list. Prefix `c`
+prompt/response viewer. The anvil seat is stdio ACP (`oc acp`):
+type, enter is `session/prompt`. A handshake that fails stays
+on that pane with the error; it does not become a shell.
+`acp_only` skips that list. Prefix `c`
 opens a shell. Prefix `,` renames the current window. Prefix `m`
 opens the current window's note: a markdown blob the daemon
 stores with that window. Esc saves. A line that is `- [ ]` or

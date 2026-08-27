@@ -808,21 +808,17 @@ impl Client {
     /// the panes that have none.
     pub fn refresh(&mut self) -> io::Result<()> {
         let view = self.read_view()?;
-        let mut ids = Vec::new();
         for window in &view.windows {
             for pane in &window.panes {
-                ids.push(pane.pane.clone());
+                let grid = self.read_pane(&pane.pane)?;
+                // A fresh split has no process: start a shell.
+                // A named agent that died is not a shell — leave it.
+                if !grid.alive && !grid.acp && pane.name.is_none() {
+                    let cwd = window_cwd_for(&view, &pane.pane);
+                    let _ = self.spawn(&pane.pane, cwd);
+                }
+                self.grids.insert(pane.pane.clone(), grid);
             }
-        }
-        for id in ids {
-            let grid = self.read_pane(&id)?;
-            // No process yet (a fresh split): start a shell.
-            // A process that already ended is reaped by the daemon.
-            if !grid.alive && !grid.acp {
-                let cwd = window_cwd_for(&view, &id);
-                let _ = self.spawn(&id, cwd);
-            }
-            self.grids.insert(id, grid);
         }
         self.note_agents(&view);
         self.view = Some(view);

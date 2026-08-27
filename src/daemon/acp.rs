@@ -36,6 +36,7 @@ pub struct AcpChild {
     pending_prompt: Mutex<Option<u64>>,
     pending_perm: Mutex<Option<PendingPerm>>,
     lines: Mutex<Vec<String>>,
+    stderr: Mutex<String>,
 }
 
 struct PendingPerm {
@@ -62,7 +63,7 @@ impl AcpChild {
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         if let Some(dir) = cwd.filter(|s| !s.is_empty()) {
             command.current_dir(dir);
         }
@@ -83,6 +84,10 @@ impl AcpChild {
             .stdin
             .take()
             .ok_or_else(|| io::Error::other("acp child has no stdin"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("acp child has no stderr"))?;
         let acp = Arc::new(AcpChild {
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
@@ -95,11 +100,17 @@ impl AcpChild {
             pending_prompt: Mutex::new(None),
             pending_perm: Mutex::new(None),
             lines: Mutex::new(Vec::new()),
+            stderr: Mutex::new(String::new()),
         });
         let pump = acp.clone();
         thread::Builder::new()
             .name("anvil-acp".into())
             .spawn(move || pump_stdout(pump, stdout))
+            .map_err(io::Error::other)?;
+        let err_pump = acp.clone();
+        thread::Builder::new()
+            .name("anvil-acp-err".into())
+            .spawn(move || pump_stderr(err_pump, stderr))
             .map_err(io::Error::other)?;
         acp.handshake(resume, cwd)?;
         Ok(acp)
@@ -443,7 +454,26 @@ impl AcpChild {
             .insert(id, tx);
         self.send(id, method, params)?;
         rx.recv_timeout(Duration::from_secs(20))
-            .map_err(|_| io::Error::other(format!("acp {method} timed out")))?
+            .map_err(|_| {
+                let tail = self
+                    .stderr
+                    .lock()
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_default();
+                if !self.alive() {
+                    if tail.is_empty() {
+                        io::Error::other(format!("acp {method}: child exited"))
+                    } else {
+                        io::Error::other(format!("acp {method}: child exited: {tail}"))
+                    }
+                } else if tail.is_empty() {
+                    io::Error::other(format!("acp {method} timed out"))
+                } else {
+                    io::Error::other(format!("acp {method} timed out: {tail}"))
+                }
+            })?
             .map_err(|e| io::Error::other(format!("acp {method}: {e}")))
     }
 
@@ -571,6 +601,29 @@ fn pump_stdout(acp: Arc<AcpChild>, stdout: impl std::io::Read) {
     acp.alive.store(false, Ordering::Relaxed);
     if let Ok(mut state) = acp.state.lock() {
         *state = WindowState::Dead;
+    }
+    if let Ok(mut waiters) = acp.waiters.lock() {
+        for (_, tx) in waiters.drain() {
+            let _ = tx.send(Err("child closed stdout".into()));
+        }
+    }
+}
+
+fn pump_stderr(acp: Arc<AcpChild>, stderr: impl std::io::Read) {
+    let reader = BufReader::new(stderr);
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        if let Ok(mut buf) = acp.stderr.lock() {
+            if !buf.is_empty() {
+                buf.push('\n');
+            }
+            buf.push_str(&line);
+            const CAP: usize = 2000;
+            if buf.len() > CAP {
+                let drain = buf.len() - CAP;
+                buf.drain(..drain);
+            }
+        }
     }
 }
 
@@ -734,6 +787,24 @@ while True:
             thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(acp.state(), WindowState::Turning);
+    }
+
+    #[test]
+    fn dead_child_fails_handshake_without_waiting() {
+        let start = std::time::Instant::now();
+        let err = match AcpChild::spawn("sh -c 'echo boom >&2; exit 1'") {
+            Ok(_) => panic!("dead child should not handshake"),
+            Err(err) => err,
+        };
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "waited too long: {err}"
+        );
+        let s = err.to_string();
+        assert!(
+            s.contains("initialize") || s.contains("exited") || s.contains("closed"),
+            "{s}"
+        );
     }
 
     #[test]
