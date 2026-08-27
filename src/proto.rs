@@ -46,6 +46,9 @@ pub enum Request {
         session: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<String>,
+        /// Rows of PTY history above the live screen. Absent is the bottom.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scroll: Option<u16>,
     },
     /// A window is now two panes, tiled. `rows` stacks them
     /// (split down); the default is side by side (split right).

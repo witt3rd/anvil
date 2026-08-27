@@ -273,7 +273,12 @@ fn handle(
             }
             Ok(Value::Empty {})
         }
-        Request::Read { session, pane, .. } => match (session, pane) {
+        Request::Read {
+            session,
+            pane,
+            scroll,
+            ..
+        } => match (session, pane) {
             (Some(name), None) => {
                 let session = sessions.get(&name)?;
                 let mut s = session
@@ -283,7 +288,7 @@ fn handle(
             }
             (None, Some(pane)) => attached_session(sessions, attached).and_then(|s| {
                 let session = s.lock().map_err(|_| io::Error::other("session busy"))?;
-                Ok(Value::Grid(session.read_pane(&pane)))
+                Ok(Value::Grid(session.read_pane_at(&pane, scroll)))
             }),
             _ => Err(io::Error::other("read takes a session or a pane")),
         },

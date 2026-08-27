@@ -36,6 +36,13 @@ pub struct Grid {
     /// xterm modifyOtherKeys (`CSI > 4 ; 1/2 m`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub modify: bool,
+    /// The process is on the alternate screen (`less`, vim). Wheel
+    /// there is keys; on the primary screen it is this view's history.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub alternate: bool,
+    /// Rows back from the live screen. Zero is the bottom.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub scroll: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -261,17 +268,28 @@ impl Pane {
 
     /// Read the pane's grid: its cols, rows, and cells.
     pub fn grid(&self) -> Grid {
+        self.grid_at(0)
+    }
+
+    /// `scroll` is rows of history above the live screen.
+    pub fn grid_at(&self, scroll: usize) -> Grid {
         let _ = self.reap_if_dead();
-        let (lines, runs, cols, rows, cursor_col, cursor_row, mouse) = self
+        let (lines, runs, cols, rows, cursor_col, cursor_row, mouse, alternate, scroll) = self
             .parser
             .lock()
             .ok()
-            .map(|p| {
-                let (lines, runs, cols, rows, cursor_col, cursor_row) = screen_lines(p.screen());
-                let mouse = p.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None;
-                (lines, runs, cols, rows, cursor_col, cursor_row, mouse)
+            .map(|mut p| {
+                p.set_scrollback(scroll);
+                let screen = p.screen();
+                let (lines, runs, cols, rows, cursor_col, cursor_row) = screen_lines(screen);
+                let mouse = screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None;
+                let alternate = screen.alternate_screen();
+                let scroll = screen.scrollback() as u16;
+                (
+                    lines, runs, cols, rows, cursor_col, cursor_row, mouse, alternate, scroll,
+                )
             })
-            .unwrap_or_else(|| (Vec::new(), Vec::new(), 0, 0, 0, 0, false));
+            .unwrap_or_else(|| (Vec::new(), Vec::new(), 0, 0, 0, 0, false, false, 0));
         let (kitty, modify) = self
             .keys
             .lock()
@@ -290,6 +308,8 @@ impl Pane {
             mouse,
             kitty,
             modify,
+            alternate,
+            scroll,
         }
     }
 
@@ -426,6 +446,20 @@ mod tests {
             .expect("hello run");
         assert_eq!(hello.fg_rgb, Some([137, 180, 250]), "{hello:?}");
         assert_eq!(hello.bg_rgb, Some([30, 30, 46]), "{hello:?}");
+    }
+
+    #[test]
+    fn scrollback_shows_older_rows() {
+        let mut parser = vt100::Parser::new(4, 20, 50);
+        for i in 0..10 {
+            parser.process(format!("row{i}\r\n").as_bytes());
+        }
+        parser.set_scrollback(0);
+        let (live, ..) = screen_lines(parser.screen());
+        parser.set_scrollback(3);
+        let (back, ..) = screen_lines(parser.screen());
+        assert_eq!(parser.screen().scrollback(), 3);
+        assert_ne!(live[0], back[0], "live={live:?} back={back:?}");
     }
 
     #[test]

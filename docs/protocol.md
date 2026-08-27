@@ -61,6 +61,7 @@ the args tell them apart.
 | `write` | `data`, `pane` | the data goes to that pane's process |
 | `write` | `data`, `prompt` | a turn on the agent door: ACP `session/prompt`, or the TUI's HTTP session |
 | `read` | `pane` | the pane's view: its cols, rows, cells, and whether the process asked for mouse |
+| `read` | `pane`, `scroll` | that view, `scroll` rows up in PTY history |
 
 ## Identifiers
 

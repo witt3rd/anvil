@@ -964,13 +964,22 @@ impl Session {
     /// Read a pane's grid. An ACP pane has no grid; it is alive while
     /// the child is.
     pub fn read_pane(&self, pane_id: &str) -> Grid {
+        self.read_pane_at(pane_id, None)
+    }
+
+    /// `scroll` is rows of PTY history above the live screen.
+    pub fn read_pane_at(&self, pane_id: &str, scroll: Option<u16>) -> Grid {
         if let Some(acp) = self.acp.get(pane_id) {
             let (_, _, cols, rows) =
                 self.pane_geometry(pane_id)
                     .unwrap_or((0, 0, DEFAULT_COLS, DEFAULT_ROWS));
             return acp.grid(cols, rows);
         }
-        let grid = self.panes.get(pane_id).cloned().map(|pane| pane.grid());
+        let grid = self
+            .panes
+            .get(pane_id)
+            .cloned()
+            .map(|pane| pane.grid_at(scroll.unwrap_or(0) as usize));
         if let Some(grid) = grid {
             return grid;
         }
@@ -1167,6 +1176,8 @@ impl Grid {
             mouse: false,
             kitty: 0,
             modify: false,
+            alternate: false,
+            scroll: 0,
         }
     }
 }

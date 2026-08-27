@@ -150,6 +150,8 @@ pub struct Client {
     recency: HashMap<String, side::Recency>,
     seen_state: HashMap<String, WindowState>,
     term_focused: bool,
+    /// Rows of PTY history this pane is showing. Missing is live.
+    view_scroll: HashMap<String, u16>,
 }
 
 enum Drag {
@@ -244,6 +246,7 @@ impl Client {
             recency: HashMap::new(),
             seen_state: HashMap::new(),
             term_focused: true,
+            view_scroll: HashMap::new(),
         };
         client.attach_first()?;
         Ok(client)
@@ -411,6 +414,7 @@ impl Client {
             id: String::new(),
             session: self.attached.clone(),
             pane: None,
+            scroll: None,
         })? {
             Value::View(view) => Ok(view),
             _ => Err(io::Error::other("read replied with the wrong shape")),
@@ -418,12 +422,21 @@ impl Client {
     }
 
     fn read_pane(&mut self, pane: &str) -> io::Result<Grid> {
+        let scroll = self.view_scroll.get(pane).copied();
         match self.call(Request::Read {
             id: String::new(),
             session: None,
             pane: Some(pane.into()),
+            scroll,
         })? {
-            Value::Grid(grid) => Ok(grid),
+            Value::Grid(grid) => {
+                if grid.scroll == 0 {
+                    self.view_scroll.remove(pane);
+                } else {
+                    self.view_scroll.insert(pane.to_string(), grid.scroll);
+                }
+                Ok(grid)
+            }
             _ => Err(io::Error::other("read replied with the wrong shape")),
         }
     }
@@ -738,6 +751,7 @@ impl Client {
             id: String::new(),
             session: Some(name.into()),
             pane: None,
+            scroll: None,
         })? {
             Value::View(view) => Ok(view),
             _ => Err(io::Error::other("read replied with the wrong shape")),
@@ -1162,6 +1176,9 @@ impl Client {
                 self.which_key.dismiss();
             }
             self.selection = None;
+            if let Some(pane) = self.view.as_ref().map(|v| v.focused.clone()) {
+                self.view_scroll.remove(&pane);
+            }
             self.forward("\x03");
             return Ok(());
         }
@@ -1197,6 +1214,9 @@ impl Client {
         }
         if let Some(seq) = encode_passthrough(&key, self.key_proto()) {
             self.selection = None;
+            if let Some(pane) = self.view.as_ref().map(|v| v.focused.clone()) {
+                self.view_scroll.remove(&pane);
+            }
             self.forward(&seq);
         }
         Ok(())
@@ -1745,14 +1765,32 @@ impl Client {
         }
         self.selection = None;
         if wheel && !mouse_for_pane(self.grids.get(&pane)) {
-            let seq = match kind {
-                MouseEventKind::ScrollUp => "\x1b[A",
-                MouseEventKind::ScrollDown => "\x1b[B",
-                MouseEventKind::ScrollLeft => "\x1b[D",
-                MouseEventKind::ScrollRight => "\x1b[C",
+            if self.grids.get(&pane).is_some_and(|g| g.alternate) {
+                let seq = match kind {
+                    MouseEventKind::ScrollUp => "\x1b[A",
+                    MouseEventKind::ScrollDown => "\x1b[B",
+                    MouseEventKind::ScrollLeft => "\x1b[D",
+                    MouseEventKind::ScrollRight => "\x1b[C",
+                    _ => return Ok(()),
+                };
+                return self.write(seq);
+            }
+            const STEP: u16 = 3;
+            let cur = self.view_scroll.get(&pane).copied().unwrap_or(0);
+            let next = match kind {
+                MouseEventKind::ScrollUp => cur.saturating_add(STEP),
+                MouseEventKind::ScrollDown => cur.saturating_sub(STEP),
                 _ => return Ok(()),
             };
-            return self.write(seq);
+            if next == 0 {
+                self.view_scroll.remove(&pane);
+            } else {
+                self.view_scroll.insert(pane.clone(), next);
+            }
+            if let Ok(grid) = self.read_pane(&pane) {
+                self.grids.insert(pane, grid);
+            }
+            return Ok(());
         }
         let Some(seq) = sgr_mouse(kind, tile.x, tile.y) else {
             return Ok(());
@@ -3308,10 +3346,16 @@ impl Request {
                 id: id.into(),
                 session,
             },
-            Request::Read { session, pane, .. } => Request::Read {
+            Request::Read {
+                session,
+                pane,
+                scroll,
+                ..
+            } => Request::Read {
                 id: id.into(),
                 session,
                 pane,
+                scroll,
             },
             Request::Split { window, rows, .. } => Request::Split {
                 id: id.into(),
@@ -3746,6 +3790,8 @@ mod tests {
             mouse: false,
             kitty: 0,
             modify: false,
+            alternate: false,
+            scroll: 0,
         };
         let mut on = off.clone();
         on.mouse = true;

@@ -155,6 +155,8 @@ mod tests {
             mouse: false,
             kitty: 0,
             modify: false,
+            alternate: false,
+            scroll: 0,
         }
     }
 

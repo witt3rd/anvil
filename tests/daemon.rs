@@ -100,7 +100,10 @@ impl Client {
     }
 }
 
-fn wait_for(mut grid: anvil::daemon::pane::Grid, done: impl Fn(&anvil::daemon::pane::Grid) -> bool) {
+fn wait_for(
+    mut grid: anvil::daemon::pane::Grid,
+    done: impl Fn(&anvil::daemon::pane::Grid) -> bool,
+) {
     for _ in 0..100 {
         if done(&grid) {
             return;
@@ -116,7 +119,8 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
     let mut client = Client::connect(&daemon.sock);
 
     // enumerate — nothing yet
-    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
+    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() })
+    else {
         panic!("expected session names")
     };
     assert!(sessions.is_empty());
@@ -133,7 +137,8 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         session: "work".into(),
         window: None,
     });
-    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
+    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() })
+    else {
         panic!("expected session names")
     };
     assert_eq!(sessions, vec!["work".to_string()]);
@@ -147,6 +152,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         id: id.into(),
         session: Some("work".into()),
         pane: None,
+        scroll: None,
     }) else {
         panic!("expected a session view")
     };
@@ -164,6 +170,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         id: id.into(),
         session: Some("work".into()),
         pane: None,
+        scroll: None,
     }) else {
         panic!("expected a session view")
     };
@@ -186,10 +193,14 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         id: id.into(),
         session: Some("work".into()),
         pane: None,
+        scroll: None,
     }) else {
         panic!("expected a session view")
     };
-    assert_eq!(view.windows[0].panes[0].cols + view.windows[0].panes[1].cols, 99);
+    assert_eq!(
+        view.windows[0].panes[0].cols + view.windows[0].panes[1].cols,
+        99
+    );
     assert_eq!(view.windows[0].panes[0].rows, 40);
 
     // spawn a process in pane 1, write to that pane, read its grid
@@ -212,6 +223,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         id: id.into(),
         session: None,
         pane: Some("1".into()),
+        scroll: None,
     }) else {
         panic!("expected a grid")
     };
@@ -220,10 +232,14 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         id: id.into(),
         session: None,
         pane: Some("1".into()),
+        scroll: None,
     }) else {
         panic!("expected a grid")
     };
-    assert!(grid.lines.iter().any(|l| l.contains("hello wire")), "{grid:?}");
+    assert!(
+        grid.lines.iter().any(|l| l.contains("hello wire")),
+        "{grid:?}"
+    );
     assert!(grid.alive);
 
     // rename the session; attach follows the new name
@@ -234,7 +250,8 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         window: None,
         note: None,
     });
-    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
+    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() })
+    else {
         panic!("expected session names")
     };
     assert_eq!(sessions, vec!["deep".to_string()]);
@@ -248,17 +265,21 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         id: id.into(),
         session: None,
         pane: Some("1".into()),
+        scroll: None,
     }) else {
         panic!("expected a grid")
     };
-    wait_for(grid, |g| g.lines.iter().any(|l| l.contains("still attached")));
+    wait_for(grid, |g| {
+        g.lines.iter().any(|l| l.contains("still attached"))
+    });
 
     // destroy: the session is gone
     client.ok(|id| Request::Destroy {
         id: id.into(),
         session: "deep".into(),
     });
-    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() }) else {
+    let Value::Sessions { sessions, .. } = client.ok(|id| Request::Enumerate { id: id.into() })
+    else {
         panic!("expected session names")
     };
     assert!(sessions.is_empty());
@@ -302,6 +323,7 @@ fn a_window_note_round_trips_on_the_wire() {
         id: id.into(),
         session: Some("work".into()),
         pane: None,
+        scroll: None,
     }) else {
         panic!("expected a view")
     };
@@ -356,6 +378,7 @@ fn detach_keeps_the_session() {
         id: id.into(),
         session: Some("work".into()),
         pane: None,
+        scroll: None,
     }) else {
         panic!("expected a session view")
     };
@@ -368,14 +391,18 @@ fn detach_keeps_the_session() {
         id: id.into(),
         session: None,
         pane: Some("1".into()),
+        scroll: None,
     }) else {
         panic!("expected a grid")
     };
-    wait_for(grid, |g| g.lines.iter().any(|l| l.contains("long live the session")));
+    wait_for(grid, |g| {
+        g.lines.iter().any(|l| l.contains("long live the session"))
+    });
     let Value::Grid(grid) = again.ok(|id| Request::Read {
         id: id.into(),
         session: None,
         pane: Some("1".into()),
+        scroll: None,
     }) else {
         panic!("expected a grid")
     };
@@ -463,6 +490,7 @@ fn ops_without_an_attached_session_are_errors() {
             id: id.into(),
             session: None,
             pane: Some("1".into()),
+            scroll: None,
         })
         .contains("not attached"));
     assert!(client
@@ -470,6 +498,7 @@ fn ops_without_an_attached_session_are_errors() {
             id: id.into(),
             session: Some("work".into()),
             pane: Some("1".into()),
+            scroll: None,
         })
         .contains("takes a session or a pane"));
 }
