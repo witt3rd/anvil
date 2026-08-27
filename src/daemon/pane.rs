@@ -125,6 +125,185 @@ impl Run {
     }
 }
 
+const GRID_PACK_VERSION: u8 = 1;
+
+impl Grid {
+    /// Packed cells for the mux socket. JSON is the control plane;
+    /// this is the frame.
+    pub fn pack(&self) -> Vec<u8> {
+        let mut o = Vec::with_capacity(64 + self.runs.len() * 16);
+        o.push(GRID_PACK_VERSION);
+        o.extend(self.cols.to_le_bytes());
+        o.extend(self.rows.to_le_bytes());
+        o.extend(self.cursor_col.to_le_bytes());
+        o.extend(self.cursor_row.to_le_bytes());
+        let mut flags = 0u8;
+        if self.alive {
+            flags |= 1;
+        }
+        if self.acp {
+            flags |= 2;
+        }
+        if self.mouse {
+            flags |= 4;
+        }
+        if self.modify {
+            flags |= 8;
+        }
+        if self.alternate {
+            flags |= 16;
+        }
+        o.push(flags);
+        o.extend(self.kitty.to_le_bytes());
+        o.extend(self.scroll.to_le_bytes());
+        let nrows = self.runs.len().min(u16::MAX as usize) as u16;
+        o.extend(nrows.to_le_bytes());
+        for row in self.runs.iter().take(nrows as usize) {
+            let n = row.len().min(u16::MAX as usize) as u16;
+            o.extend(n.to_le_bytes());
+            for run in row.iter().take(n as usize) {
+                let mut f = 0u8;
+                if run.bold {
+                    f |= 1;
+                }
+                if run.italic {
+                    f |= 2;
+                }
+                if run.underline {
+                    f |= 4;
+                }
+                if run.inverse {
+                    f |= 8;
+                }
+                if run.fg.is_some() {
+                    f |= 16;
+                }
+                if run.fg_rgb.is_some() {
+                    f |= 32;
+                }
+                if run.bg.is_some() {
+                    f |= 64;
+                }
+                if run.bg_rgb.is_some() {
+                    f |= 128;
+                }
+                o.push(f);
+                if let Some(v) = run.fg {
+                    o.push(v);
+                }
+                if let Some([r, g, b]) = run.fg_rgb {
+                    o.extend([r, g, b]);
+                }
+                if let Some(v) = run.bg {
+                    o.push(v);
+                }
+                if let Some([r, g, b]) = run.bg_rgb {
+                    o.extend([r, g, b]);
+                }
+                let bytes = run.text.as_bytes();
+                let len = bytes.len().min(u16::MAX as usize) as u16;
+                o.extend(len.to_le_bytes());
+                o.extend(&bytes[..len as usize]);
+            }
+        }
+        o
+    }
+
+    pub fn unpack(buf: &[u8]) -> io::Result<Grid> {
+        let mut i = 0usize;
+        let take = |i: &mut usize, n: usize| -> io::Result<&[u8]> {
+            let end = i
+                .checked_add(n)
+                .filter(|end| *end <= buf.len())
+                .ok_or_else(|| io::Error::other("truncated grid"))?;
+            let slice = &buf[*i..end];
+            *i = end;
+            Ok(slice)
+        };
+        let u8_ = |i: &mut usize| -> io::Result<u8> { Ok(take(i, 1)?[0]) };
+        let u16_ = |i: &mut usize| -> io::Result<u16> {
+            let b = take(i, 2)?;
+            Ok(u16::from_le_bytes([b[0], b[1]]))
+        };
+        if u8_(&mut i)? != GRID_PACK_VERSION {
+            return Err(io::Error::other("unknown grid pack"));
+        }
+        let cols = u16_(&mut i)?;
+        let rows = u16_(&mut i)?;
+        let cursor_col = u16_(&mut i)?;
+        let cursor_row = u16_(&mut i)?;
+        let flags = u8_(&mut i)?;
+        let kitty = u16_(&mut i)?;
+        let scroll = u16_(&mut i)?;
+        let nrows = u16_(&mut i)? as usize;
+        let mut runs = Vec::with_capacity(nrows);
+        let mut lines = Vec::with_capacity(nrows);
+        for _ in 0..nrows {
+            let n = u16_(&mut i)? as usize;
+            let mut row = Vec::with_capacity(n);
+            let mut line = String::new();
+            for _ in 0..n {
+                let f = u8_(&mut i)?;
+                let fg = if f & 16 != 0 {
+                    Some(u8_(&mut i)?)
+                } else {
+                    None
+                };
+                let fg_rgb = if f & 32 != 0 {
+                    let b = take(&mut i, 3)?;
+                    Some([b[0], b[1], b[2]])
+                } else {
+                    None
+                };
+                let bg = if f & 64 != 0 {
+                    Some(u8_(&mut i)?)
+                } else {
+                    None
+                };
+                let bg_rgb = if f & 128 != 0 {
+                    let b = take(&mut i, 3)?;
+                    Some([b[0], b[1], b[2]])
+                } else {
+                    None
+                };
+                let len = u16_(&mut i)? as usize;
+                let text = std::str::from_utf8(take(&mut i, len)?)
+                    .map_err(|err| io::Error::other(err))?
+                    .to_string();
+                line.push_str(&text);
+                row.push(Run {
+                    text,
+                    fg,
+                    fg_rgb,
+                    bg,
+                    bg_rgb,
+                    bold: f & 1 != 0,
+                    italic: f & 2 != 0,
+                    underline: f & 4 != 0,
+                    inverse: f & 8 != 0,
+                });
+            }
+            lines.push(line);
+            runs.push(row);
+        }
+        Ok(Grid {
+            cols,
+            rows,
+            cursor_col,
+            cursor_row,
+            lines,
+            runs,
+            alive: flags & 1 != 0,
+            acp: flags & 2 != 0,
+            mouse: flags & 4 != 0,
+            kitty,
+            modify: flags & 8 != 0,
+            alternate: flags & 16 != 0,
+            scroll,
+        })
+    }
+}
+
 pub struct Pane {
     writer: Mutex<Box<dyn Write + Send>>,
     parser: Mutex<vt100::Parser>,
@@ -538,5 +717,57 @@ mod tests {
             grid = pane.grid();
         }
         grid
+    }
+
+    #[test]
+    fn packed_grid_round_trips_rgb_runs() {
+        let grid = Grid {
+            cols: 8,
+            rows: 1,
+            cursor_col: 5,
+            cursor_row: 0,
+            lines: vec!["hello   ".into()],
+            runs: vec![vec![
+                Run {
+                    text: "hello".into(),
+                    fg: None,
+                    fg_rgb: Some([137, 180, 250]),
+                    bg: None,
+                    bg_rgb: Some([30, 30, 46]),
+                    bold: true,
+                    italic: false,
+                    underline: false,
+                    inverse: false,
+                },
+                Run {
+                    text: "   ".into(),
+                    fg: Some(7),
+                    fg_rgb: None,
+                    bg: None,
+                    bg_rgb: None,
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    inverse: false,
+                },
+            ]],
+            alive: true,
+            acp: false,
+            mouse: true,
+            kitty: 1,
+            modify: false,
+            alternate: true,
+            scroll: 3,
+        };
+        let packed = grid.pack();
+        let json = serde_json::to_vec(&grid).unwrap();
+        assert!(
+            packed.len() < json.len() / 2,
+            "pack {} json {}",
+            packed.len(),
+            json.len()
+        );
+        let back = Grid::unpack(&packed).unwrap();
+        assert_eq!(grid, back);
     }
 }

@@ -15,7 +15,7 @@ pub mod sessions;
 pub mod side;
 
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -252,32 +252,32 @@ impl Client {
         Ok(client)
     }
 
-    fn request(&mut self, request: Request) -> io::Result<Reply> {
+    fn send_op(&mut self, request: Request) -> io::Result<String> {
         self.next_id += 1;
         let id = self.next_id.to_string();
         let request = request.with_id(&id);
         let mut line = serde_json::to_string(&request).map_err(io::Error::other)?;
         line.push('\n');
         self.stream.write_all(line.as_bytes())?;
+        Ok(id)
+    }
+
+    /// Send a write and do not wait. Replies are drained by the next
+    /// blocking op. Keys and the wheel cannot afford a round trip.
+    fn poke_write(&mut self, data: &str) -> io::Result<()> {
+        self.send_op(Request::Write {
+            id: String::new(),
+            data: data.into(),
+            pane: None,
+            prompt: false,
+        })?;
+        Ok(())
+    }
+
+    fn request(&mut self, request: Request) -> io::Result<Reply> {
+        let id = self.send_op(request)?;
         loop {
-            let mut reply = String::new();
-            let n = self.reader.read_line(&mut reply)?;
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "the daemon closed the socket",
-                ));
-            }
-            let reply: Reply = match serde_json::from_str(&reply) {
-                Ok(reply) => reply,
-                Err(err) => {
-                    eprintln!(
-                        "anvil client: bad reply (first 400 chars): {:?}",
-                        &reply[..reply.len().min(400)]
-                    );
-                    return Err(io::Error::other(err));
-                }
-            };
+            let reply = Reply::read_from(&mut self.reader)?;
             if reply.id == id {
                 return Ok(reply);
             }
@@ -666,16 +666,6 @@ impl Client {
         Ok(())
     }
 
-    fn write(&mut self, data: &str) -> io::Result<()> {
-        self.call(Request::Write {
-            id: String::new(),
-            data: data.into(),
-            pane: None,
-            prompt: false,
-        })?;
-        Ok(())
-    }
-
     /// Attach to the first session, creating one when the daemon owns
     /// none. The session tty fits the canvas; every pane gets a
     /// process.
@@ -818,25 +808,30 @@ impl Client {
         self.sidebar.save(&agents::default_root());
     }
 
-    /// Read the view and every visible pane's grid; spawn a process on
-    /// the panes that have none.
+    /// Read the view and the current window's grids. Other windows
+    /// keep their last copy until focused — a spinner is a live pane.
     pub fn refresh(&mut self) -> io::Result<()> {
         let view = self.read_view()?;
-        for window in &view.windows {
-            for pane in &window.panes {
-                let grid = self.read_pane(&pane.pane)?;
-                // A fresh split has no process: start a shell.
-                // A named agent that died is not a shell — leave it.
-                if !grid.alive && !grid.acp && pane.name.is_none() {
-                    let cwd = window_cwd_for(&view, &pane.pane);
-                    let _ = self.spawn(&pane.pane, cwd);
-                }
-                self.grids.insert(pane.pane.clone(), grid);
+        let current = view
+            .windows
+            .iter()
+            .find(|w| w.panes.iter().any(|p| p.pane == view.focused));
+        let panes = current.map(|w| w.panes.as_slice()).unwrap_or(&[]);
+        for pane in panes {
+            let grid = self.read_pane(&pane.pane)?;
+            // A fresh split has no process: start a shell.
+            // A named agent that died is not a shell — leave it.
+            if !grid.alive && !grid.acp && pane.name.is_none() {
+                let cwd = window_cwd_for(&view, &pane.pane);
+                let _ = self.spawn(&pane.pane, cwd);
             }
+            self.grids.insert(pane.pane.clone(), grid);
         }
         self.note_agents(&view);
         self.view = Some(view);
-        self.sat = crate::daemon::sat::Snap::load(&agents::default_root());
+        if self.tick % 32 == 0 {
+            self.sat = crate::daemon::sat::Snap::load(&agents::default_root());
+        }
         Ok(())
     }
 
@@ -1236,7 +1231,7 @@ impl Client {
     /// has ended is a normal state: the daemon closes it, the client
     /// reads the new view, and the key is dropped.
     fn forward(&mut self, data: &str) {
-        if self.write(data).is_err() {
+        if self.poke_write(data).is_err() {
             let _ = self.refresh();
         }
     }
@@ -1773,7 +1768,7 @@ impl Client {
                     MouseEventKind::ScrollRight => "\x1b[C",
                     _ => return Ok(()),
                 };
-                return self.write(seq);
+                return self.poke_write(seq);
             }
             const STEP: u16 = 3;
             let cur = self.view_scroll.get(&pane).copied().unwrap_or(0);
@@ -1795,7 +1790,7 @@ impl Client {
         let Some(seq) = sgr_mouse(kind, tile.x, tile.y) else {
             return Ok(());
         };
-        self.write(&seq)
+        self.poke_write(&seq)
     }
 
     fn select_drag(&mut self, col: u16, row: u16) -> io::Result<()> {
@@ -3520,40 +3515,42 @@ fn run_loop(
     client.refresh()?;
     loop {
         client.bump_tick();
+        if event::poll(Duration::from_millis(16))? {
+            loop {
+                match event::read() {
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+                        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+                        if let Err(err) = client.key(key) {
+                            client.last_error = Some(err.to_string());
+                        }
+                    }
+                    Err(err) => return Err(err),
+                    Ok(event::Event::Key(key)) => {
+                        if let Err(err) = client.key(key) {
+                            client.last_error = Some(err.to_string());
+                        }
+                        if client.detached {
+                            return Ok(());
+                        }
+                    }
+                    Ok(event::Event::Resize(cols, rows)) => {
+                        if let Err(err) = client.resize_tty(cols, rows) {
+                            client.last_error = Some(err.to_string());
+                        }
+                    }
+                    Ok(event::Event::Mouse(m)) => client.mouse(m)?,
+                    Ok(event::Event::FocusGained) => client.term_focused = true,
+                    Ok(event::Event::FocusLost) => client.term_focused = false,
+                    Ok(_) => {}
+                }
+                if !event::poll(Duration::ZERO)? {
+                    break;
+                }
+            }
+        }
+        let _ = client.refresh();
         terminal.draw(|frame| client.draw(frame))?;
-        if !event::poll(Duration::from_millis(50))? {
-            let _ = client.refresh();
-            continue;
-        }
-        match event::read() {
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-                let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-                if let Err(err) = client.key(key) {
-                    client.last_error = Some(err.to_string());
-                }
-            }
-            Err(err) => return Err(err),
-            Ok(event::Event::Key(key)) => {
-                if let Err(err) = client.key(key) {
-                    client.last_error = Some(err.to_string());
-                }
-                if client.detached {
-                    return Ok(());
-                }
-            }
-            Ok(event::Event::Resize(cols, rows)) => {
-                if let Err(err) = client.resize_tty(cols, rows) {
-                    client.last_error = Some(err.to_string());
-                }
-            }
-            Ok(event::Event::Mouse(m)) => {
-                client.mouse(m)?;
-            }
-            Ok(event::Event::FocusGained) => client.term_focused = true,
-            Ok(event::Event::FocusLost) => client.term_focused = false,
-            Ok(_) => {}
-        }
     }
 }
 

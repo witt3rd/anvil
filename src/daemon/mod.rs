@@ -1,6 +1,7 @@
 //! The daemon: stays up, owns sessions, serves clients over a unix
-//! socket. One JSON object per line in, one per line out. EOF is a
-//! detach — the sessions, windows, and panes stay.
+//! socket. Ops are JSON, one object per line. A pane's grid is packed
+//! cells after its reply. EOF is a detach — the sessions, windows,
+//! and panes stay.
 
 pub mod acp;
 pub mod adopt;
@@ -185,12 +186,7 @@ fn serve_client(stream: UnixStream, sessions: Arc<Sessions>) -> io::Result<()> {
             Ok(request) => dispatch(request, &sessions, &mut attached),
             Err(err) => Reply::err("", format!("cannot read the request: {err}")),
         };
-        let mut out = serde_json::to_string(&reply)?;
-        out.push('\n');
-        if let Err(err) = writer
-            .write_all(out.as_bytes())
-            .and_then(|_| writer.flush())
-        {
+        if let Err(err) = reply.write_to(&mut writer) {
             if err.kind() == io::ErrorKind::BrokenPipe {
                 return Ok(());
             }

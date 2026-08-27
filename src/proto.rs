@@ -1,11 +1,17 @@
-//! The wire contract between the client and the daemon: one JSON
-//! object per line over the unix socket. Ops are the documented verbs
-//! only (`docs/protocol.md`). A new op needs a new kernel word first.
+//! The wire contract between the client and the daemon. Ops are JSON
+//! objects, one per line (`docs/protocol.md`). A pane's grid follows
+//! its reply as packed cells, not JSON. A new op needs a new kernel
+//! word first.
+
+use std::io::{self, BufRead, Write};
 
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::pane::Grid;
 use crate::daemon::session::SessionView;
+
+/// A packed pane view this large is not a terminal; it is a fault.
+const MAX_GRID_BYTES: u32 = 4 * 1024 * 1024;
 
 fn is_false(v: &bool) -> bool {
     !*v
@@ -136,6 +142,9 @@ pub struct Reply {
     pub value: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Byte count of a packed grid that follows this JSON line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<u32>,
 }
 
 impl Reply {
@@ -145,6 +154,7 @@ impl Reply {
             ok: true,
             value: Some(value),
             error: None,
+            grid: None,
         }
     }
 
@@ -154,7 +164,56 @@ impl Reply {
             ok: false,
             value: None,
             error: Some(error.into()),
+            grid: None,
         }
+    }
+
+    /// Write this reply. A pane grid is packed bytes after the JSON
+    /// line, not a JSON value.
+    pub fn write_to<W: Write>(mut self, writer: &mut W) -> io::Result<()> {
+        let payload = match self.value.take() {
+            Some(Value::Grid(grid)) => {
+                let bytes = grid.pack();
+                self.grid = Some(bytes.len() as u32);
+                Some(bytes)
+            }
+            other => {
+                self.value = other;
+                None
+            }
+        };
+        let mut line = serde_json::to_string(&self).map_err(io::Error::other)?;
+        line.push('\n');
+        writer.write_all(line.as_bytes())?;
+        if let Some(bytes) = payload {
+            writer.write_all(&bytes)?;
+        }
+        writer.flush()
+    }
+
+    /// Read one reply. If `grid` is set, the next that many bytes are
+    /// a packed pane view.
+    pub fn read_from<R: BufRead>(reader: &mut R) -> io::Result<Reply> {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the daemon closed the socket",
+            ));
+        }
+        let mut reply: Reply = serde_json::from_str(&line).map_err(io::Error::other)?;
+        if let Some(len) = reply.grid {
+            if len > MAX_GRID_BYTES {
+                return Err(io::Error::other("grid larger than a pane"));
+            }
+            let mut buf = vec![0u8; len as usize];
+            reader.read_exact(&mut buf)?;
+            let grid = Grid::unpack(&buf)?;
+            reply.value = Some(Value::Grid(grid));
+            reply.grid = None;
+        }
+        Ok(reply)
     }
 }
 
@@ -226,6 +285,51 @@ mod tests {
         assert_eq!(wire, r#"{"id":"a","ok":false,"error":"no such session"}"#);
         let back: Reply = serde_json::from_str(&wire).unwrap();
         assert_eq!(err, back);
+    }
+
+    #[test]
+    fn a_pane_grid_is_packed_bytes_not_json() {
+        let grid = Grid {
+            cols: 4,
+            rows: 1,
+            cursor_col: 0,
+            cursor_row: 0,
+            lines: vec!["ab  ".into()],
+            runs: vec![vec![crate::daemon::pane::Run {
+                text: "ab  ".into(),
+                fg: None,
+                fg_rgb: None,
+                bg: None,
+                bg_rgb: None,
+                bold: false,
+                italic: false,
+                underline: false,
+                inverse: false,
+            }]],
+            alive: true,
+            acp: false,
+            mouse: false,
+            kitty: 0,
+            modify: false,
+            alternate: false,
+            scroll: 0,
+        };
+        let mut buf = Vec::new();
+        Reply::ok("h", Value::Grid(grid.clone()))
+            .write_to(&mut buf)
+            .unwrap();
+        let json_end = buf.iter().position(|&b| b == b'\n').unwrap();
+        let header = std::str::from_utf8(&buf[..=json_end]).unwrap();
+        assert!(
+            !header.contains("ab"),
+            "cells must not be in the JSON line: {header}"
+        );
+        assert!(header.contains("\"grid\":"), "{header}");
+        let back = Reply::read_from(&mut buf.as_slice()).unwrap();
+        match back.value {
+            Some(Value::Grid(g)) => assert_eq!(g, grid),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The wire contract, end to end: a real `anvil daemon` process over
 //! a real unix socket, speaking the ops of `docs/protocol.md`.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -80,9 +80,7 @@ impl Client {
         line.push('\n');
         self.stream.write_all(line.as_bytes()).unwrap();
         self.stream.flush().unwrap();
-        let mut reply = String::new();
-        self.reader.read_line(&mut reply).unwrap();
-        let reply: Reply = serde_json::from_str(&reply).unwrap();
+        let reply = Reply::read_from(&mut self.reader).unwrap();
         assert_eq!(reply.id, id, "reply echoes the id: {reply:?}");
         reply
     }

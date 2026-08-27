@@ -1,8 +1,11 @@
 # Protocol
 
-The wire contract between the client and the daemon: one JSON object
-per line over the unix socket. Requests go client to daemon; replies
-come back the same way.
+The wire contract between the client and the daemon. Requests are
+one JSON object per line over the unix socket. Replies come back
+the same way, except a pane's view: JSON names a byte count, then
+that many packed cells follow. JSON is the control plane (spawn,
+focus, write) so a line is an op you can read. The cells are not
+JSON — that copy was the cost versus tmux, which paints in-process.
 
 ## Envelope
 
@@ -19,8 +22,15 @@ A reply is one object:
 {"id": "…", "ok": false, "error": "…"}
 ```
 
-`id` is the client's correlation id; the daemon echoes it. `error` is
-an ordinary English sentence.
+A pane's view is not a JSON value. The reply is:
+
+```
+{"id": "…", "ok": true, "grid": N}
+```
+
+then N bytes of packed cells (version, size, cursor, flags, then
+style runs). `id` is the client's correlation id; the daemon echoes
+it. `error` is an ordinary English sentence.
 
 ## Ops
 
@@ -60,7 +70,7 @@ the args tell them apart.
 | `write` | `data` | the data goes to the focused pane's process |
 | `write` | `data`, `pane` | the data goes to that pane's process |
 | `write` | `data`, `prompt` | a turn on the agent door: ACP `session/prompt`, or the TUI's HTTP session |
-| `read` | `pane` | the pane's view: its cols, rows, cells, and whether the process asked for mouse |
+| `read` | `pane` | the pane's view as packed cells: cols, rows, runs, and whether the process asked for mouse |
 | `read` | `pane`, `scroll` | that view, `scroll` rows up in PTY history |
 
 ## Identifiers
