@@ -133,9 +133,9 @@ viewer                 host                  child
 `session/cancel` on the host cancels the child's in-flight prompt.
 
 The host forwards. A PTY child renders itself. An ACP child is
-painted by the client: a prompt/response loop in the pane
-(transcript above, composer on the last row). That viewer is for
-any ACP process, not one program.
+painted into the pane: a prompt/response loop (transcript above,
+composer on the last row). That viewer is for any ACP process,
+not one program.
 
 ## Permission
 

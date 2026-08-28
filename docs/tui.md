@@ -1,19 +1,20 @@
 # TUI
 
-How the **client** draws. Kernel words stay in `docs/kernel.md`.
+How chrome is drawn. Kernel words stay in `docs/kernel.md`.
 
-Chrome is the sidebar and the tiles. ACP is how a process talks;
-the daemon is its parent. Their TUI is the place you type when
-that window is focused.
+Chrome is the sidebar and the tiles. The daemon paints them on
+the tty the client donated. ACP is how a process talks; the
+daemon is its parent. Their TUI is the place you type when that
+window is focused.
 
 ## Immediate mode
 
-Each frame: read state, write cells. One frame function.
+Each paint: read state, write cells. One paint function.
 
-A pane's view is retained in the daemon. The client donates its
-tty (stdout). The daemon paints that tty: chrome, then the tiles.
-PTY bytes wake a paint — there is no client-side frame clock.
-The client sends keys and the wheel as `input`.
+A pane's view is retained in the daemon. The client donates
+stdout. The daemon paints that tty: chrome, then the tiles. A
+PTY byte (or an ACP chunk) wakes a paint. A key, a mouse, or a
+resize wakes one too. The client sends those as `input`.
 
 A paint is:
 
@@ -21,10 +22,11 @@ A paint is:
 2. Draw the sidebar and the tiles onto the donated tty.
 3. Draw overlays.
 
-Prefix keys belong to the multiplexer. Keys that are not prefix go
-to the focused pane's process. Shift+Enter is a newline when the
-process asked for kitty keys or modifyOtherKeys — OpenCode's
-prompt; a plain Enter still submits.
+Prefix keys belong to the multiplexer. The daemon is the
+keyboard: keys that are not prefix go to the focused pane's
+process. Shift+Enter is a newline when the process asked for
+kitty keys or modifyOtherKeys — OpenCode's prompt; a plain
+Enter still submits.
 
 The library is whatever does immediate-mode cells (today, ratatui).
 
@@ -49,7 +51,7 @@ that pane and brings its window forward.
 
 The list is recency: a turning (or needs-you) agent sits at
 the top; then the one that stopped last; the oldest idle at
-the bottom. When a turn ends, the client bells unless this
+the bottom. When a turn ends, the tty bells unless this
 terminal is the focused application and that pane is the
 one selected. The mark carries state.
 
@@ -70,7 +72,7 @@ ACP keeps the rail alive (`docs/acp.md`). The host already holds each child's
 stdio. `session/update` is turning. `session/prompt` returning is
 idle. `session/request_permission` and elicitation are needs-you.
 The host pushes `session_info_update` when the mark must change.
-The client does not poll. A PTY child has a thinner signal: alive
+Chrome does not poll. A PTY child has a thinner signal: alive
 or dead, and whatever the process writes to the title.
 
 The **rail** is three cells: `┃` on the current row, then the
@@ -224,7 +226,7 @@ A daemon restart cannot keep the old process (the daemon is its
 parent). It does spawn each **named** agent pane again from the
 catalog — a new HTTP port for OpenCode, the same ACP command for
 anvil's viewer. A pane that was only a shell stays empty until
-the client puts a shell on it. The operator should not reattach
+prefix `c` puts a shell on it. The operator should not reattach
 to a roster of agent windows sitting at a prompt.
 
 ## The courier
@@ -241,9 +243,9 @@ the focused agent, or the first named agent on the window.
 
 ## Which-key
 
-The client uses [ratatui-which-key] for keyboard input. Every
-keypress goes through `handle_key`, which resolves bindings in the
-current scope and returns a typed `Action`.
+Prefix input uses [ratatui-which-key]. Every keypress goes through
+`handle_key`, which resolves bindings in the current scope and
+returns a typed `Action`. The daemon does this on the donated tty.
 
 [ratatui-which-key]: https://docs.rs/ratatui-which-key
 
@@ -301,8 +303,8 @@ Key      →  handle_key() resolves binding
 Escape   →  dismiss, return to Global
 ```
 
-The which-key popup is the one retained widget in the client — a
-transient overlay, written to the buffer each frame.
+The which-key popup is the one retained widget in chrome — a
+transient overlay, written to the buffer each paint.
 
 ## The gap
 
@@ -320,10 +322,10 @@ A `gap` of 0 is tiles that abut one another.
 
 ## Theme
 
-The ratatui client ships the `opencode` palette in
+The paint path ships the `opencode` palette in
 `themes/opencode.toml` and embeds it at compile time, loading it
 through [opaline](https://github.com/hyperb1iss/opaline)'s public
-loader. The client names tokens, never hex values. opaline itself
+loader. Chrome names tokens, never hex values. opaline itself
 is untouched.
 
 | token | use |
@@ -392,5 +394,5 @@ length is how saturated; how many agents is a later
 shell, not a fatter bar. Achievements and a board can
 hang off the band later; they are not chrome yet.
 
-The daemon writes `<root>/saturation.json`. The client
+The daemon writes `<root>/saturation.json`. The paint path
 reads it. No new proto op.

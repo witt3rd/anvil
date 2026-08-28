@@ -21,7 +21,7 @@ client  ──attaches──▶  session
 | **window** | One screen. Panes tiled to fill it. Does not run. |
 | **pane** | Rectangle. Views a process. Holds the input, the output, and the view. |
 | **process** | The running program. What the daemon keeps alive. |
-| **client** | On a tty. Views a session. Sends keys. |
+| **client** | On a tty. Donates that tty. Sends keys. |
 
 Detach drops the client. Sessions, windows, and panes stay. Processes
 keep running.
@@ -40,7 +40,8 @@ These five make a multiplexer.
    On a PTY, that is the master; the process is on the slave and
    thinks it has a screen.
 3. A view in the daemon, per pane. On a PTY, parse the bytes into a
-   grid. On reattach, paint the client from that view.
+   grid. While a client is attached, paint that tty from the view.
+   On reattach, paint again from the same view.
 4. Split the screen. Resize the tty, resize the panes, tell the
    processes (`SIGWINCH`).
 5. One keyboard. A prefix is a multiplexer command. Anything else

@@ -4,8 +4,8 @@ The daemon owns sessions and serves clients over a unix socket. It
 is the parent of every process.
 
 All state lives in the daemon: the sessions, their windows and
-panes, each process, each pane's view. The client views a session
-and sends keys.
+panes, each process, each pane's view. The client donates its tty
+and sends keys. The daemon paints that tty.
 
 ```
 daemon
@@ -26,9 +26,13 @@ daemon
    last conversation on the box, not this pane's.
 2. **The daemon is the parent.** It holds the process's input and
    output. On a PTY, that is the master; the process runs on the
-   slave. On reattach, the client repaints from the daemon's view.
+   slave. A live client donates its tty. Bytes on a PTY wake a
+   paint of that tty from the pane's view. On reattach, the same
+   view is painted again.
 3. **JSON protocol over unix socket.** Clients send one JSON object
-   followed by `\n`. The daemon replies the same way. SSH is the
+   followed by `\n`. The daemon replies the same way. Ops are
+   spawn, focus, write, attach. `tty` hands over stdout
+   (SCM_RIGHTS). `input` is a key, mouse, or resize. SSH is the
    inter-machine bus; local attach is a unix socket.
 4. **Detach keeps the processes.** Detaching the client (`prefix+q`)
    leaves the daemon up. Only the viewer disappears.
@@ -55,7 +59,10 @@ The daemon answers these requests from a client over the socket.
 - Resize the panes — tell the processes (`SIGWINCH`)
 - Spawn a process in a pane — the daemon holds the process
 - Write to a process — the focused pane, or a pane the client names
-- Read a pane's view — the client repaints from it
+- Take the client's tty and paint it
+- Take keys from the client; prefix stays here
+- Read a pane's view — packed cells on the wire for a copy that is
+  not the live screen
 
 A client may drop at any time; the sessions, windows, and panes stay.
 
@@ -92,7 +99,7 @@ daemon held end.
 
 - `docs/kernel.md` — the six kernel words and their ontology
 - `protocol.md` — the wire contract, op by op
-- `tui.md` — how the client draws
+- `tui.md` — chrome: rail, roster, tiles
 - `quarantine/src/serve/mod.rs` — the Rust source for the daemon binary
 - `quarantine/src/serve/proto.rs` — the json request/response envelope
 - `quarantine/src/frame/mod.rs` — session, workspace, and layout state

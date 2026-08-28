@@ -2,10 +2,13 @@
 
 The wire contract between the client and the daemon. Requests are
 one JSON object per line over the unix socket. Replies come back
-the same way, except a pane's view: JSON names a byte count, then
-that many packed cells follow. JSON is the control plane (spawn,
-focus, write) so a line is an op you can read. The cells are not
-JSON — that copy was the cost versus tmux, which paints in-process.
+the same way. JSON is the control plane (spawn, focus, write,
+attach) so a line is an op you can read.
+
+A live client then donates its tty (`tty` plus SCM_RIGHTS) and
+sends keys (`input`). The daemon paints that tty. The pane's
+grid stays in the daemon. `read pane` still returns packed cells
+for a copy that is not the live screen.
 
 ## Envelope
 
@@ -22,15 +25,24 @@ A reply is one object:
 {"id": "…", "ok": false, "error": "…"}
 ```
 
-A pane's view is not a JSON value. The reply is:
+`id` is the client's correlation id; the daemon echoes it. `error`
+is an ordinary English sentence.
+
+`tty` is one JSON line, then the stdout file descriptor on the
+same socket (SCM_RIGHTS). After that the daemon writes the screen.
+
+`input` carries a key, a mouse, or a resize. The daemon is the
+keyboard.
+
+A `read` of a pane that copies the view replies:
 
 ```
 {"id": "…", "ok": true, "grid": N}
 ```
 
 then N bytes of packed cells (version, size, cursor, flags, then
-style runs). `id` is the client's correlation id; the daemon echoes
-it. `error` is an ordinary English sentence.
+style runs). If the client sent `gen` and the pane is unchanged,
+the reply is `same` and no cells follow.
 
 ## Ops
 
@@ -99,5 +111,5 @@ before writing it.
 
 - `docs/kernel.md` — the six kernel words and their ontology
 - `daemon.md` — the daemon owns sessions and serves clients
-- `client.md` — the client views a session and sends keys
+- `client.md` — the client donates its tty and sends keys
 - `quarantine/src/serve/proto.rs` — the reference implementation
