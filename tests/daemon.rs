@@ -151,6 +151,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         session: Some("work".into()),
         pane: None,
         scroll: None,
+        gen: None,
     }) else {
         panic!("expected a session view")
     };
@@ -169,6 +170,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         session: Some("work".into()),
         pane: None,
         scroll: None,
+        gen: None,
     }) else {
         panic!("expected a session view")
     };
@@ -192,6 +194,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         session: Some("work".into()),
         pane: None,
         scroll: None,
+        gen: None,
     }) else {
         panic!("expected a session view")
     };
@@ -222,6 +225,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         session: None,
         pane: Some("1".into()),
         scroll: None,
+        gen: None,
     }) else {
         panic!("expected a grid")
     };
@@ -231,6 +235,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         session: None,
         pane: Some("1".into()),
         scroll: None,
+        gen: None,
     }) else {
         panic!("expected a grid")
     };
@@ -264,6 +269,7 @@ fn the_wire_flow_create_attach_split_spawn_write_rename_destroy() {
         session: None,
         pane: Some("1".into()),
         scroll: None,
+        gen: None,
     }) else {
         panic!("expected a grid")
     };
@@ -322,6 +328,7 @@ fn a_window_note_round_trips_on_the_wire() {
         session: Some("work".into()),
         pane: None,
         scroll: None,
+        gen: None,
     }) else {
         panic!("expected a view")
     };
@@ -377,6 +384,7 @@ fn detach_keeps_the_session() {
         session: Some("work".into()),
         pane: None,
         scroll: None,
+        gen: None,
     }) else {
         panic!("expected a session view")
     };
@@ -390,6 +398,7 @@ fn detach_keeps_the_session() {
         session: None,
         pane: Some("1".into()),
         scroll: None,
+        gen: None,
     }) else {
         panic!("expected a grid")
     };
@@ -401,6 +410,7 @@ fn detach_keeps_the_session() {
         session: None,
         pane: Some("1".into()),
         scroll: None,
+        gen: None,
     }) else {
         panic!("expected a grid")
     };
@@ -489,6 +499,7 @@ fn ops_without_an_attached_session_are_errors() {
             session: None,
             pane: Some("1".into()),
             scroll: None,
+            gen: None,
         })
         .contains("not attached"));
     assert!(client
@@ -497,6 +508,7 @@ fn ops_without_an_attached_session_are_errors() {
             session: Some("work".into()),
             pane: Some("1".into()),
             scroll: None,
+            gen: None,
         })
         .contains("takes a session or a pane"));
 }

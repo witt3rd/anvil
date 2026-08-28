@@ -72,6 +72,7 @@ the args tell them apart.
 | `write` | `data`, `prompt` | a turn on the agent door: ACP `session/prompt`, or the TUI's HTTP session |
 | `read` | `pane` | the pane's view as packed cells: cols, rows, runs, and whether the process asked for mouse |
 | `read` | `pane`, `scroll` | that view, `scroll` rows up in PTY history |
+| `read` | `pane`, `gen` | if the pane has not changed since `gen`, the reply is `same` and no cells follow |
 
 ## Identifiers
 

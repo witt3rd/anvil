@@ -4,7 +4,7 @@
 //! the master and parses its bytes into the grid.
 
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -43,6 +43,10 @@ pub struct Grid {
     /// Rows back from the live screen. Zero is the bottom.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub scroll: u16,
+    /// Bumps when the pane's view changes. The client sends it back
+    /// so an unchanged pane sends no cells.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gen: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +75,10 @@ fn is_false(v: &bool) -> bool {
 }
 
 fn is_zero(v: &u16) -> bool {
+    *v == 0
+}
+
+fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
@@ -300,6 +308,7 @@ impl Grid {
             modify: flags & 8 != 0,
             alternate: flags & 16 != 0,
             scroll,
+            gen: 0,
         })
     }
 }
@@ -311,6 +320,7 @@ pub struct Pane {
     child: Mutex<Box<dyn Child + Send + Sync>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     alive: AtomicBool,
+    gen: AtomicU64,
 }
 
 impl Pane {
@@ -381,6 +391,7 @@ impl Pane {
             child: Mutex::new(child),
             master: Mutex::new(pair.master),
             alive: AtomicBool::new(true),
+            gen: AtomicU64::new(1),
         });
         let pump = pane.clone();
         thread::Builder::new()
@@ -397,11 +408,13 @@ impl Pane {
                             if let Ok(mut keys) = pump.keys.lock() {
                                 keys.feed(&buf[..n]);
                             }
+                            pump.gen.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(_) => break,
                     }
                 }
                 pump.alive.store(false, Ordering::Relaxed);
+                pump.gen.fetch_add(1, Ordering::Relaxed);
             })
             .map_err(|err| io::Error::other(err.to_string()))?;
         Ok(pane)
@@ -442,7 +455,12 @@ impl Pane {
         if let Ok(mut parser) = self.parser.lock() {
             parser.set_size(rows, cols);
         }
+        self.gen.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    pub fn gen(&self) -> u64 {
+        self.gen.load(Ordering::Relaxed)
     }
 
     /// Read the pane's grid: its cols, rows, and cells.
@@ -489,6 +507,7 @@ impl Pane {
             modify,
             alternate,
             scroll,
+            gen: self.gen(),
         }
     }
 
@@ -522,7 +541,9 @@ impl Pane {
     fn reap_if_dead(&self) -> bool {
         if let Ok(mut child) = self.child.lock() {
             if let Ok(Some(_)) = child.try_wait() {
-                self.alive.store(false, Ordering::Relaxed);
+                if self.alive.swap(false, Ordering::Relaxed) {
+                    self.gen.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
         !self.alive()
@@ -758,6 +779,7 @@ mod tests {
             modify: false,
             alternate: true,
             scroll: 3,
+            gen: 0,
         };
         let packed = grid.pack();
         let json = serde_json::to_vec(&grid).unwrap();

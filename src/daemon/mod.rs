@@ -197,6 +197,23 @@ fn serve_client(stream: UnixStream, sessions: Arc<Sessions>) -> io::Result<()> {
 
 fn dispatch(request: Request, sessions: &Sessions, attached: &mut Option<String>) -> Reply {
     let id = request.id().to_string();
+    if let Request::Read {
+        pane: Some(pane),
+        session: None,
+        scroll,
+        gen,
+        ..
+    } = &request
+    {
+        return match attached_session(sessions, attached).and_then(|s| {
+            let session = s.lock().map_err(|_| io::Error::other("session busy"))?;
+            Ok(session.read_pane_at_if(pane, *scroll, *gen))
+        }) {
+            Ok(None) => Reply::same(&id, gen.unwrap_or(0)),
+            Ok(Some(grid)) => Reply::ok(&id, Value::Grid(grid)),
+            Err(err) => Reply::err(&id, err.to_string()),
+        };
+    }
     match handle(request, sessions, attached) {
         Ok(value) => Reply::ok(&id, value),
         Err(err) => Reply::err(&id, err.to_string()),

@@ -157,6 +157,7 @@ mod tests {
             modify: false,
             alternate: false,
             scroll: 0,
+            gen: 0,
         }
     }
 

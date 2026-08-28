@@ -969,24 +969,38 @@ impl Session {
 
     /// `scroll` is rows of PTY history above the live screen.
     pub fn read_pane_at(&self, pane_id: &str, scroll: Option<u16>) -> Grid {
+        self.read_pane_at_if(pane_id, scroll, None)
+            .unwrap_or_else(|| Grid::blank(DEFAULT_COLS, DEFAULT_ROWS))
+    }
+
+    /// `None` means the client's `gen` still matches — send no cells.
+    pub fn read_pane_at_if(
+        &self,
+        pane_id: &str,
+        scroll: Option<u16>,
+        gen: Option<u64>,
+    ) -> Option<Grid> {
         if let Some(acp) = self.acp.get(pane_id) {
+            let g = acp.view_gen();
+            if gen == Some(g) && g != 0 {
+                return None;
+            }
             let (_, _, cols, rows) =
                 self.pane_geometry(pane_id)
                     .unwrap_or((0, 0, DEFAULT_COLS, DEFAULT_ROWS));
-            return acp.grid(cols, rows);
+            return Some(acp.grid(cols, rows));
         }
-        let grid = self
-            .panes
-            .get(pane_id)
-            .cloned()
-            .map(|pane| pane.grid_at(scroll.unwrap_or(0) as usize));
-        if let Some(grid) = grid {
-            return grid;
+        if let Some(pane) = self.panes.get(pane_id) {
+            let g = pane.gen();
+            if gen == Some(g) && g != 0 {
+                return None;
+            }
+            return Some(pane.grid_at(scroll.unwrap_or(0) as usize));
         }
         let (_, _, cols, rows) =
             self.pane_geometry(pane_id)
                 .unwrap_or((0, 0, DEFAULT_COLS, DEFAULT_ROWS));
-        Grid::blank(cols, rows)
+        Some(Grid::blank(cols, rows))
     }
 
     /// End the processes the panes hold: `SIGHUP`, per the kernel.
@@ -1178,6 +1192,7 @@ impl Grid {
             modify: false,
             alternate: false,
             scroll: 0,
+            gen: 0,
         }
     }
 }

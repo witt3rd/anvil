@@ -55,6 +55,10 @@ pub enum Request {
         /// Rows of PTY history above the live screen. Absent is the bottom.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scroll: Option<u16>,
+        /// Last packed view the client holds. The daemon replies `same`
+        /// and sends no cells when the pane has not changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gen: Option<u64>,
     },
     /// A window is now two panes, tiled. `rows` stacks them
     /// (split down); the default is side by side (split right).
@@ -145,6 +149,12 @@ pub struct Reply {
     /// Byte count of a packed grid that follows this JSON line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid: Option<u32>,
+    /// The pane has not changed since the client's `gen`. No cells follow.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub same: bool,
+    /// The pane's view generation. The client sends it back on the next read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gen: Option<u64>,
 }
 
 impl Reply {
@@ -155,6 +165,8 @@ impl Reply {
             value: Some(value),
             error: None,
             grid: None,
+            same: false,
+            gen: None,
         }
     }
 
@@ -165,6 +177,20 @@ impl Reply {
             value: None,
             error: Some(error.into()),
             grid: None,
+            same: false,
+            gen: None,
+        }
+    }
+
+    pub fn same(id: &str, gen: u64) -> Reply {
+        Reply {
+            id: id.into(),
+            ok: true,
+            value: None,
+            error: None,
+            grid: None,
+            same: true,
+            gen: Some(gen),
         }
     }
 
@@ -175,6 +201,9 @@ impl Reply {
             Some(Value::Grid(grid)) => {
                 let bytes = grid.pack();
                 self.grid = Some(bytes.len() as u32);
+                if self.gen.is_none() {
+                    self.gen = Some(grid.gen);
+                }
                 Some(bytes)
             }
             other => {
@@ -209,7 +238,10 @@ impl Reply {
             }
             let mut buf = vec![0u8; len as usize];
             reader.read_exact(&mut buf)?;
-            let grid = Grid::unpack(&buf)?;
+            let mut grid = Grid::unpack(&buf)?;
+            if let Some(g) = reply.gen {
+                grid.gen = g;
+            }
             reply.value = Some(Value::Grid(grid));
             reply.grid = None;
         }
@@ -313,6 +345,7 @@ mod tests {
             modify: false,
             alternate: false,
             scroll: 0,
+            gen: 0,
         };
         let mut buf = Vec::new();
         Reply::ok("h", Value::Grid(grid.clone()))
@@ -330,6 +363,19 @@ mod tests {
             Some(Value::Grid(g)) => assert_eq!(g, grid),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn an_unchanged_pane_is_same_not_cells() {
+        let mut buf = Vec::new();
+        Reply::same("h", 7).write_to(&mut buf).unwrap();
+        let header = std::str::from_utf8(&buf).unwrap();
+        assert!(header.contains("\"same\":true"), "{header}");
+        assert!(!header.contains("\"grid\""), "{header}");
+        let back = Reply::read_from(&mut buf.as_slice()).unwrap();
+        assert!(back.same);
+        assert_eq!(back.gen, Some(7));
+        assert!(back.value.is_none());
     }
 
     #[test]

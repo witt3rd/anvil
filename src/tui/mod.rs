@@ -114,6 +114,7 @@ fn host_name() -> String {
 /// One client connection: views a session, sends keys, keeps the
 /// panes' grids it last read.
 pub struct Client {
+    sock: std::path::PathBuf,
     stream: UnixStream,
     reader: BufReader<UnixStream>,
     next_id: u64,
@@ -213,6 +214,7 @@ impl Client {
             .expect("the embedded opencode theme is valid");
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let mut client = Client {
+            sock: sock.to_path_buf(),
             stream,
             reader,
             next_id: 0,
@@ -259,7 +261,50 @@ impl Client {
         let mut line = serde_json::to_string(&request).map_err(io::Error::other)?;
         line.push('\n');
         self.stream.write_all(line.as_bytes())?;
+        self.stream.flush()?;
         Ok(id)
+    }
+
+    fn recover(&mut self) -> io::Result<()> {
+        let sock = self.sock.clone();
+        let attached = self.attached.clone();
+        let tty = self.tty;
+        let mut last = io::Error::other("the daemon is not listening");
+        for _ in 0..50 {
+            match Self::connect_once(&sock) {
+                Ok(mut client) => {
+                    let result = if let Some(name) = attached.clone() {
+                        client.attach(&name)
+                    } else {
+                        client.attach_first()
+                    };
+                    if let Err(err) = result {
+                        last = err;
+                        std::thread::sleep(Duration::from_millis(40));
+                        continue;
+                    }
+                    let _ = client.resize(tty.0.max(2), tty.1.max(2));
+                    let _ = client.refresh();
+                    *self = client;
+                    return Ok(());
+                }
+                Err(err) if transient_sock(&err) => {
+                    last = err;
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last)
+    }
+
+    fn note_sock_err(&mut self, err: io::Error) -> io::Result<()> {
+        if transient_sock(&err) {
+            self.recover()
+        } else {
+            self.last_error = Some(err.to_string());
+            Ok(())
+        }
     }
 
     /// Send a write and do not wait. Replies are drained by the next
@@ -415,6 +460,7 @@ impl Client {
             session: self.attached.clone(),
             pane: None,
             scroll: None,
+            gen: None,
         })? {
             Value::View(view) => Ok(view),
             _ => Err(io::Error::other("read replied with the wrong shape")),
@@ -423,13 +469,27 @@ impl Client {
 
     fn read_pane(&mut self, pane: &str) -> io::Result<Grid> {
         let scroll = self.view_scroll.get(pane).copied();
-        match self.call(Request::Read {
+        let gen = self.grids.get(pane).and_then(|g| {
+            if scroll.unwrap_or(0) == g.scroll {
+                Some(g.gen).filter(|n| *n != 0)
+            } else {
+                None
+            }
+        });
+        let reply = self.request(Request::Read {
             id: String::new(),
             session: None,
             pane: Some(pane.into()),
             scroll,
-        })? {
-            Value::Grid(grid) => {
+            gen,
+        })?;
+        if reply.same {
+            if let Some(grid) = self.grids.get(pane) {
+                return Ok(grid.clone());
+            }
+        }
+        match reply.value {
+            Some(Value::Grid(grid)) => {
                 if grid.scroll == 0 {
                     self.view_scroll.remove(pane);
                 } else {
@@ -742,6 +802,7 @@ impl Client {
             session: Some(name.into()),
             pane: None,
             scroll: None,
+            gen: None,
         })? {
             Value::View(view) => Ok(view),
             _ => Err(io::Error::other("read replied with the wrong shape")),
@@ -1231,8 +1292,8 @@ impl Client {
     /// has ended is a normal state: the daemon closes it, the client
     /// reads the new view, and the key is dropped.
     fn forward(&mut self, data: &str) {
-        if self.poke_write(data).is_err() {
-            let _ = self.refresh();
+        if let Err(err) = self.poke_write(data) {
+            let _ = self.note_sock_err(err);
         }
     }
 
@@ -3345,12 +3406,14 @@ impl Request {
                 session,
                 pane,
                 scroll,
+                gen,
                 ..
             } => Request::Read {
                 id: id.into(),
                 session,
                 pane,
                 scroll,
+                gen,
             },
             Request::Split { window, rows, .. } => Request::Split {
                 id: id.into(),
@@ -3522,13 +3585,13 @@ fn run_loop(
                         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
                         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
                         if let Err(err) = client.key(key) {
-                            client.last_error = Some(err.to_string());
+                            client.note_sock_err(err)?;
                         }
                     }
                     Err(err) => return Err(err),
                     Ok(event::Event::Key(key)) => {
                         if let Err(err) = client.key(key) {
-                            client.last_error = Some(err.to_string());
+                            client.note_sock_err(err)?;
                         }
                         if client.detached {
                             return Ok(());
@@ -3536,10 +3599,14 @@ fn run_loop(
                     }
                     Ok(event::Event::Resize(cols, rows)) => {
                         if let Err(err) = client.resize_tty(cols, rows) {
-                            client.last_error = Some(err.to_string());
+                            client.note_sock_err(err)?;
                         }
                     }
-                    Ok(event::Event::Mouse(m)) => client.mouse(m)?,
+                    Ok(event::Event::Mouse(m)) => {
+                        if let Err(err) = client.mouse(m) {
+                            client.note_sock_err(err)?;
+                        }
+                    }
                     Ok(event::Event::FocusGained) => client.term_focused = true,
                     Ok(event::Event::FocusLost) => client.term_focused = false,
                     Ok(_) => {}
@@ -3549,7 +3616,9 @@ fn run_loop(
                 }
             }
         }
-        let _ = client.refresh();
+        if let Err(err) = client.refresh() {
+            client.note_sock_err(err)?;
+        }
         terminal.draw(|frame| client.draw(frame))?;
     }
 }
@@ -3789,6 +3858,7 @@ mod tests {
             modify: false,
             alternate: false,
             scroll: 0,
+            gen: 0,
         };
         let mut on = off.clone();
         on.mouse = true;

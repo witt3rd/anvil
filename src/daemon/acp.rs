@@ -38,6 +38,7 @@ pub struct AcpChild {
     lines: Mutex<Vec<(String, Kind)>>,
     stream: Mutex<Option<Kind>>,
     stderr: Mutex<String>,
+    view_gen: AtomicU64,
 }
 
 struct PendingPerm {
@@ -103,6 +104,7 @@ impl AcpChild {
             lines: Mutex::new(Vec::new()),
             stream: Mutex::new(None),
             stderr: Mutex::new(String::new()),
+            view_gen: AtomicU64::new(1),
         });
         let pump = acp.clone();
         thread::Builder::new()
@@ -131,6 +133,14 @@ impl AcpChild {
 
     pub fn alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
+    }
+
+    pub fn view_gen(&self) -> u64 {
+        self.view_gen.load(Ordering::Relaxed)
+    }
+
+    fn bump_view(&self) {
+        self.view_gen.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Keys into a prompt. Enter sends `session/prompt`. When the
@@ -169,6 +179,8 @@ impl AcpChild {
         } else {
             draft.push_str(data);
         }
+        drop(draft);
+        self.bump_view();
         Ok(())
     }
 
@@ -248,6 +260,7 @@ impl AcpChild {
             modify: false,
             alternate: false,
             scroll: 0,
+            gen: self.view_gen(),
         }
     }
 
@@ -321,6 +334,9 @@ impl AcpChild {
             let drain = lines.len() - 200;
             lines.drain(..drain);
         }
+        drop(stream);
+        drop(lines);
+        self.bump_view();
     }
 
     fn answer_perm(&self, allow: bool) -> io::Result<()> {
@@ -376,6 +392,7 @@ impl AcpChild {
         if let Ok(mut state) = self.state.lock() {
             *state = WindowState::Dead;
         }
+        self.bump_view();
     }
 
     pub fn hangup(&self) {
@@ -600,6 +617,7 @@ fn pump_stdout(acp: Arc<AcpChild>, stdout: impl std::io::Read) {
                         if let Ok(mut state) = acp.state.lock() {
                             if *state == WindowState::Turning {
                                 *state = WindowState::Idle;
+                                acp.bump_view();
                             }
                         }
                     }
@@ -616,6 +634,7 @@ fn pump_stdout(acp: Arc<AcpChild>, stdout: impl std::io::Read) {
     if let Ok(mut state) = acp.state.lock() {
         *state = WindowState::Dead;
     }
+    acp.bump_view();
     if let Ok(mut waiters) = acp.waiters.lock() {
         for (_, tx) in waiters.drain() {
             let _ = tx.send(Err("child closed stdout".into()));
