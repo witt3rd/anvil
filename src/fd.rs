@@ -21,7 +21,7 @@ unsafe fn send_fd_msg(sock: RawFd, fd: RawFd, dummy: &mut u8) -> io::Result<()> 
         iov_len: 1,
     };
     let mut buf = [0u8; 256];
-    let mut msg = libc::msghdr {
+    let msg = libc::msghdr {
         msg_name: std::ptr::null_mut(),
         msg_namelen: 0,
         msg_iov: &mut iov,
