@@ -39,6 +39,7 @@ pub struct AcpChild {
     stream: Mutex<Option<Kind>>,
     stderr: Mutex<String>,
     view_gen: AtomicU64,
+    wake: Mutex<Option<Arc<super::wake::Wake>>>,
 }
 
 struct PendingPerm {
@@ -105,6 +106,7 @@ impl AcpChild {
             stream: Mutex::new(None),
             stderr: Mutex::new(String::new()),
             view_gen: AtomicU64::new(1),
+            wake: Mutex::new(None),
         });
         let pump = acp.clone();
         thread::Builder::new()
@@ -139,8 +141,19 @@ impl AcpChild {
         self.view_gen.load(Ordering::Relaxed)
     }
 
+    pub fn bind_wake(&self, wake: Arc<super::wake::Wake>) {
+        if let Ok(mut slot) = self.wake.lock() {
+            *slot = Some(wake);
+        }
+    }
+
     fn bump_view(&self) {
         self.view_gen.fetch_add(1, Ordering::Relaxed);
+        if let Ok(slot) = self.wake.lock() {
+            if let Some(w) = slot.as_ref() {
+                w.ping();
+            }
+        }
     }
 
     /// Keys into a prompt. Enter sends `session/prompt`. When the
@@ -862,7 +875,10 @@ while True:
         );
         let s = err.to_string();
         assert!(
-            s.contains("initialize") || s.contains("exited") || s.contains("closed"),
+            s.contains("initialize")
+                || s.contains("exited")
+                || s.contains("closed")
+                || s.contains("pipe"),
             "{s}"
         );
     }

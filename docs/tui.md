@@ -10,17 +10,16 @@ that window is focused.
 
 Each frame: read state, write cells. One frame function.
 
-A pane's view is retained in the daemon. The client copies the
-current window's panes each frame (~16ms) so a spinner stays
-alive. That copy is packed cells, not JSON. Keys and the wheel
-are written without waiting for a reply.
+A pane's view is retained in the daemon. The client donates its
+tty (stdout). The daemon paints that tty: chrome, then the tiles.
+PTY bytes wake a paint — there is no client-side frame clock.
+The client sends keys and the wheel as `input`.
 
-A frame is:
+A paint is:
 
-1. Drain input.
-2. Copy the current window's panes.
-3. Draw the sidebar and the tiles.
-4. Draw overlays.
+1. A key, a mouse, a resize, or a pane that wrote.
+2. Draw the sidebar and the tiles onto the donated tty.
+3. Draw overlays.
 
 Prefix keys belong to the multiplexer. Keys that are not prefix go
 to the focused pane's process. Shift+Enter is a newline when the

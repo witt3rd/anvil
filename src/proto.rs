@@ -117,6 +117,12 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "is_false")]
         prompt: bool,
     },
+    /// The client donates its stdout. The next SCM_RIGHTS message is
+    /// the tty the daemon paints.
+    Tty { id: String },
+    /// A key, mouse, or resize from the client's tty. The daemon is
+    /// the keyboard: prefix stays here; anything else is a write.
+    Input { id: String, event: Input },
 }
 
 impl Request {
@@ -133,9 +139,38 @@ impl Request {
             | Self::Close { id, .. }
             | Self::Resize { id, .. }
             | Self::Spawn { id, .. }
-            | Self::Write { id, .. } => id,
+            | Self::Write { id, .. }
+            | Self::Tty { id }
+            | Self::Input { id, .. } => id,
         }
     }
+}
+
+/// A key, mouse, or resize from the client's tty.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Input {
+    Key {
+        code: String,
+        #[serde(default)]
+        ch: Option<char>,
+        #[serde(default)]
+        mods: u8,
+    },
+    Mouse {
+        button: String,
+        col: u16,
+        row: u16,
+        #[serde(default)]
+        mods: u8,
+    },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+    Focus {
+        gained: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

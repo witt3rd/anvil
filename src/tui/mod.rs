@@ -111,12 +111,22 @@ fn host_name() -> String {
         .unwrap_or_else(|| "localhost".into())
 }
 
+enum Bridge {
+    Socket {
+        sock: std::path::PathBuf,
+        stream: UnixStream,
+        reader: BufReader<UnixStream>,
+    },
+    Local {
+        sessions: std::sync::Arc<crate::daemon::session::Sessions>,
+        attached: Option<String>,
+    },
+}
+
 /// One client connection: views a session, sends keys, keeps the
 /// panes' grids it last read.
 pub struct Client {
-    sock: std::path::PathBuf,
-    stream: UnixStream,
-    reader: BufReader<UnixStream>,
+    bridge: Bridge,
     next_id: u64,
     theme: Theme,
     shell: String,
@@ -125,7 +135,7 @@ pub struct Client {
     attached: Option<String>,
     view: Option<SessionView>,
     grids: HashMap<String, Grid>,
-    detached: bool,
+    pub(crate) detached: bool,
     sidebar: side::Prefs,
     drag: Option<Drag>,
     tty: (u16, u16),
@@ -214,9 +224,11 @@ impl Client {
             .expect("the embedded opencode theme is valid");
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let mut client = Client {
-            sock: sock.to_path_buf(),
-            stream,
-            reader,
+            bridge: Bridge::Socket {
+                sock: sock.to_path_buf(),
+                stream,
+                reader,
+            },
             next_id: 0,
             theme,
             shell,
@@ -254,19 +266,79 @@ impl Client {
         Ok(client)
     }
 
+    pub(crate) fn local(
+        sessions: std::sync::Arc<crate::daemon::session::Sessions>,
+        attached: Option<String>,
+    ) -> Client {
+        let theme = opaline::loader::load_from_str(THEME_TOML, None)
+            .expect("the embedded opencode theme is valid");
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let names = sessions.list();
+        Client {
+            bridge: Bridge::Local {
+                sessions,
+                attached: attached.clone(),
+            },
+            next_id: 0,
+            theme,
+            shell,
+            which_key: build_which_key_state(),
+            sessions: names,
+            attached,
+            view: None,
+            grids: HashMap::new(),
+            detached: false,
+            sidebar: side::Prefs::load(&agents::default_root()),
+            drag: None,
+            tty: (80, 24),
+            naming: None,
+            tick: 0,
+            last_error: None,
+            catalog: Agents::load(&agents::default_root()),
+            picking: None,
+            seat_pick: None,
+            cwd_pick: None,
+            places: cwd::Places::load(&agents::default_root()),
+            sessions_pick: None,
+            session_rows: Vec::new(),
+            host: host_name(),
+            sat: crate::daemon::sat::Snap::load(&agents::default_root()),
+            prompting: None,
+            notes: None,
+            selection: None,
+            toast: None,
+            recency: HashMap::new(),
+            seen_state: HashMap::new(),
+            term_focused: true,
+            view_scroll: HashMap::new(),
+        }
+    }
+
     fn send_op(&mut self, request: Request) -> io::Result<String> {
         self.next_id += 1;
         let id = self.next_id.to_string();
         let request = request.with_id(&id);
-        let mut line = serde_json::to_string(&request).map_err(io::Error::other)?;
-        line.push('\n');
-        self.stream.write_all(line.as_bytes())?;
-        self.stream.flush()?;
+        match &mut self.bridge {
+            Bridge::Socket { stream, .. } => {
+                let mut line = serde_json::to_string(&request).map_err(io::Error::other)?;
+                line.push('\n');
+                stream.write_all(line.as_bytes())?;
+                stream.flush()?;
+            }
+            Bridge::Local { sessions, attached } => {
+                let _ = crate::daemon::dispatch(request, sessions, attached);
+            }
+        }
         Ok(id)
     }
 
     fn recover(&mut self) -> io::Result<()> {
-        let sock = self.sock.clone();
+        let sock = match &self.bridge {
+            Bridge::Socket { sock, .. } => sock.clone(),
+            Bridge::Local { .. } => {
+                return Err(io::Error::other("local head has no socket"));
+            }
+        };
         let attached = self.attached.clone();
         let tty = self.tty;
         let mut last = io::Error::other("the daemon is not listening");
@@ -320,11 +392,62 @@ impl Client {
     }
 
     fn request(&mut self, request: Request) -> io::Result<Reply> {
-        let id = self.send_op(request)?;
-        loop {
-            let reply = Reply::read_from(&mut self.reader)?;
-            if reply.id == id {
-                return Ok(reply);
+        match &mut self.bridge {
+            Bridge::Socket { stream, reader, .. } => {
+                self.next_id += 1;
+                let id = self.next_id.to_string();
+                let request = request.with_id(&id);
+                let mut line = serde_json::to_string(&request).map_err(io::Error::other)?;
+                line.push('\n');
+                stream.write_all(line.as_bytes())?;
+                stream.flush()?;
+                loop {
+                    let reply = Reply::read_from(reader)?;
+                    if reply.id == id {
+                        return Ok(reply);
+                    }
+                }
+            }
+            Bridge::Local { sessions, attached } => {
+                self.next_id += 1;
+                let id = self.next_id.to_string();
+                let request = request.with_id(&id);
+                Ok(crate::daemon::dispatch(request, sessions, attached))
+            }
+        }
+    }
+
+    pub(crate) fn needs_pulse(&self) -> bool {
+        self.which_key.active || self.toast.is_some() || self.recency.values().any(|r| r.active)
+    }
+
+    pub(crate) fn apply_input(&mut self, ev: crate::proto::Input) -> io::Result<()> {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
+        match ev {
+            crate::proto::Input::Key { code, ch, mods } => {
+                let modifiers = KeyModifiers::from_bits_truncate(mods);
+                let key = KeyEvent::new(decode_key_code(&code, ch), modifiers);
+                self.key(key)
+            }
+            crate::proto::Input::Mouse {
+                button,
+                col,
+                row,
+                mods,
+            } => {
+                let modifiers = KeyModifiers::from_bits_truncate(mods);
+                let kind = decode_mouse(&button);
+                self.mouse(MouseEvent {
+                    kind,
+                    column: col,
+                    row,
+                    modifiers,
+                })
+            }
+            crate::proto::Input::Resize { cols, rows } => self.resize_tty(cols, rows),
+            crate::proto::Input::Focus { gained } => {
+                self.term_focused = gained;
+                Ok(())
             }
         }
     }
@@ -3460,23 +3583,246 @@ impl Request {
                 pane,
                 prompt,
             },
+            Request::Tty { .. } => Request::Tty { id: id.into() },
+            Request::Input { event, .. } => Request::Input {
+                id: id.into(),
+                event,
+            },
         }
     }
 }
 
-/// The client seat: attach, draw, forward keys. Prefix `q` detaches.
+/// The client seat: donate the tty, send keys. The daemon paints.
 pub fn run(sock: &Path) -> io::Result<()> {
     use ratatui::crossterm::event::{
-        DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+        self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+        Event, KeyEventKind,
     };
     use ratatui::crossterm::execute;
-    let mut client = Client::connect(sock)?;
-    let mut terminal = ratatui::init();
-    let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange);
-    let out = run_loop(&mut client, &mut terminal);
-    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
-    ratatui::restore();
-    out
+    use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+    use std::os::fd::AsRawFd;
+
+    enable_raw_mode()?;
+    let mut out = std::io::stdout();
+    let _ = execute!(out, EnableMouseCapture, EnableFocusChange);
+    let result = (|| {
+        let mut client = Thin::connect(sock)?;
+        client.attach_first()?;
+        let fd = out.as_raw_fd();
+        client.donate_tty(fd)?;
+        loop {
+            match event::read()? {
+                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    if client.input(encode_key(key))? {
+                        return Ok(());
+                    }
+                }
+                Event::Mouse(m) => {
+                    if client.input(encode_mouse(m))? {
+                        return Ok(());
+                    }
+                }
+                Event::Resize(cols, rows) => {
+                    let _ = client.input(crate::proto::Input::Resize { cols, rows });
+                }
+                Event::FocusGained => {
+                    let _ = client.input(crate::proto::Input::Focus { gained: true });
+                }
+                Event::FocusLost => {
+                    let _ = client.input(crate::proto::Input::Focus { gained: false });
+                }
+                _ => {}
+            }
+        }
+    })();
+    let _ = execute!(out, DisableMouseCapture, DisableFocusChange);
+    let _ = disable_raw_mode();
+    result
+}
+
+struct Thin {
+    stream: UnixStream,
+    reader: BufReader<UnixStream>,
+    next_id: u64,
+}
+
+impl Thin {
+    fn connect(sock: &Path) -> io::Result<Thin> {
+        let stream = UnixStream::connect(sock)?;
+        let reader = BufReader::new(stream.try_clone()?);
+        Ok(Thin {
+            stream,
+            reader,
+            next_id: 0,
+        })
+    }
+
+    fn call(&mut self, request: Request) -> io::Result<Reply> {
+        self.next_id += 1;
+        let id = self.next_id.to_string();
+        let request = request.with_id(&id);
+        let mut line = serde_json::to_string(&request).map_err(io::Error::other)?;
+        line.push('\n');
+        self.stream.write_all(line.as_bytes())?;
+        self.stream.flush()?;
+        loop {
+            let reply = Reply::read_from(&mut self.reader)?;
+            if reply.id == id {
+                return Ok(reply);
+            }
+        }
+    }
+
+    fn attach_first(&mut self) -> io::Result<()> {
+        let reply = self.call(Request::Enumerate { id: String::new() })?;
+        let names = match reply.value {
+            Some(Value::Sessions { sessions, .. }) => sessions,
+            _ => Vec::new(),
+        };
+        if let Some(name) = names.first().cloned() {
+            self.call(Request::Attach {
+                id: String::new(),
+                session: name,
+            })?;
+            return Ok(());
+        }
+        self.call(Request::Create {
+            id: String::new(),
+            session: "1".into(),
+            window: None,
+        })?;
+        self.call(Request::Attach {
+            id: String::new(),
+            session: "1".into(),
+        })?;
+        Ok(())
+    }
+
+    fn donate_tty(&mut self, fd: i32) -> io::Result<()> {
+        self.next_id += 1;
+        let id = self.next_id.to_string();
+        let mut line =
+            serde_json::to_string(&Request::Tty { id: id.clone() }).map_err(io::Error::other)?;
+        line.push('\n');
+        self.stream.write_all(line.as_bytes())?;
+        self.stream.flush()?;
+        crate::fd::send_fd(&self.stream, fd)?;
+        loop {
+            let reply = Reply::read_from(&mut self.reader)?;
+            if reply.id == id {
+                if !reply.ok {
+                    return Err(io::Error::other(
+                        reply.error.unwrap_or_else(|| "tty refused".into()),
+                    ));
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    fn input(&mut self, event: crate::proto::Input) -> io::Result<bool> {
+        let reply = self.call(Request::Input {
+            id: String::new(),
+            event,
+        })?;
+        Ok(!reply.ok && reply.error.as_deref() == Some("the tty is gone"))
+    }
+}
+
+fn encode_key(key: ratatui::crossterm::event::KeyEvent) -> crate::proto::Input {
+    use ratatui::crossterm::event::KeyCode;
+    let mods = key.modifiers.bits();
+    let (code, ch) = match key.code {
+        KeyCode::Char(c) => ("char".into(), Some(c)),
+        KeyCode::Enter => ("enter".into(), None),
+        KeyCode::Esc => ("esc".into(), None),
+        KeyCode::Backspace => ("backspace".into(), None),
+        KeyCode::Tab => ("tab".into(), None),
+        KeyCode::BackTab => ("backtab".into(), None),
+        KeyCode::Up => ("up".into(), None),
+        KeyCode::Down => ("down".into(), None),
+        KeyCode::Left => ("left".into(), None),
+        KeyCode::Right => ("right".into(), None),
+        KeyCode::Home => ("home".into(), None),
+        KeyCode::End => ("end".into(), None),
+        KeyCode::PageUp => ("pageup".into(), None),
+        KeyCode::PageDown => ("pagedown".into(), None),
+        KeyCode::Delete => ("delete".into(), None),
+        KeyCode::Insert => ("insert".into(), None),
+        KeyCode::F(n) => (format!("f{n}"), None),
+        _ => ("null".into(), None),
+    };
+    crate::proto::Input::Key { code, ch, mods }
+}
+
+fn encode_mouse(m: ratatui::crossterm::event::MouseEvent) -> crate::proto::Input {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    let button = match m.kind {
+        MouseEventKind::Down(MouseButton::Left) => "down_left",
+        MouseEventKind::Up(MouseButton::Left) => "up_left",
+        MouseEventKind::Drag(MouseButton::Left) => "drag_left",
+        MouseEventKind::Down(MouseButton::Right) => "down_right",
+        MouseEventKind::Up(MouseButton::Right) => "up_right",
+        MouseEventKind::Drag(MouseButton::Right) => "drag_right",
+        MouseEventKind::Down(MouseButton::Middle) => "down_middle",
+        MouseEventKind::Up(MouseButton::Middle) => "up_middle",
+        MouseEventKind::ScrollUp => "scroll_up",
+        MouseEventKind::ScrollDown => "scroll_down",
+        MouseEventKind::ScrollLeft => "scroll_left",
+        MouseEventKind::ScrollRight => "scroll_right",
+        _ => "moved",
+    };
+    crate::proto::Input::Mouse {
+        button: button.into(),
+        col: m.column,
+        row: m.row,
+        mods: m.modifiers.bits(),
+    }
+}
+
+fn decode_key_code(code: &str, ch: Option<char>) -> ratatui::crossterm::event::KeyCode {
+    use ratatui::crossterm::event::KeyCode;
+    if let Some(c) = ch {
+        return KeyCode::Char(c);
+    }
+    match code {
+        "enter" => KeyCode::Enter,
+        "esc" => KeyCode::Esc,
+        "backspace" => KeyCode::Backspace,
+        "tab" => KeyCode::Tab,
+        "backtab" => KeyCode::BackTab,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" => KeyCode::PageUp,
+        "pagedown" => KeyCode::PageDown,
+        "delete" => KeyCode::Delete,
+        "insert" => KeyCode::Insert,
+        s if s.starts_with('f') => s[1..].parse().map(KeyCode::F).unwrap_or(KeyCode::Null),
+        _ => KeyCode::Null,
+    }
+}
+
+fn decode_mouse(button: &str) -> ratatui::crossterm::event::MouseEventKind {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    match button {
+        "down_left" => MouseEventKind::Down(MouseButton::Left),
+        "up_left" => MouseEventKind::Up(MouseButton::Left),
+        "drag_left" => MouseEventKind::Drag(MouseButton::Left),
+        "down_right" => MouseEventKind::Down(MouseButton::Right),
+        "up_right" => MouseEventKind::Up(MouseButton::Right),
+        "drag_right" => MouseEventKind::Drag(MouseButton::Right),
+        "down_middle" => MouseEventKind::Down(MouseButton::Middle),
+        "up_middle" => MouseEventKind::Up(MouseButton::Middle),
+        "scroll_up" => MouseEventKind::ScrollUp,
+        "scroll_down" => MouseEventKind::ScrollDown,
+        "scroll_left" => MouseEventKind::ScrollLeft,
+        "scroll_right" => MouseEventKind::ScrollRight,
+        _ => MouseEventKind::Moved,
+    }
 }
 
 /// An error owns the footer only when no name draft is live.
@@ -3565,61 +3911,6 @@ fn step_pick(idx: usize, n: usize, down: bool) -> usize {
         (idx + 1) % n
     } else {
         (idx + n - 1) % n
-    }
-}
-
-fn run_loop(
-    client: &mut Client,
-    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
-) -> io::Result<()> {
-    use ratatui::crossterm::event;
-    let size = terminal.size()?;
-    client.resize_tty(size.width, size.height)?;
-    client.refresh()?;
-    loop {
-        client.bump_tick();
-        if event::poll(Duration::from_millis(16))? {
-            loop {
-                match event::read() {
-                    Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-                        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-                        if let Err(err) = client.key(key) {
-                            client.note_sock_err(err)?;
-                        }
-                    }
-                    Err(err) => return Err(err),
-                    Ok(event::Event::Key(key)) => {
-                        if let Err(err) = client.key(key) {
-                            client.note_sock_err(err)?;
-                        }
-                        if client.detached {
-                            return Ok(());
-                        }
-                    }
-                    Ok(event::Event::Resize(cols, rows)) => {
-                        if let Err(err) = client.resize_tty(cols, rows) {
-                            client.note_sock_err(err)?;
-                        }
-                    }
-                    Ok(event::Event::Mouse(m)) => {
-                        if let Err(err) = client.mouse(m) {
-                            client.note_sock_err(err)?;
-                        }
-                    }
-                    Ok(event::Event::FocusGained) => client.term_focused = true,
-                    Ok(event::Event::FocusLost) => client.term_focused = false,
-                    Ok(_) => {}
-                }
-                if !event::poll(Duration::ZERO)? {
-                    break;
-                }
-            }
-        }
-        if let Err(err) = client.refresh() {
-            client.note_sock_err(err)?;
-        }
-        terminal.draw(|frame| client.draw(frame))?;
     }
 }
 

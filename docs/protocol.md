@@ -70,6 +70,8 @@ the args tell them apart.
 | `write` | `data` | the data goes to the focused pane's process |
 | `write` | `data`, `pane` | the data goes to that pane's process |
 | `write` | `data`, `prompt` | a turn on the agent door: ACP `session/prompt`, or the TUI's HTTP session |
+| `tty` | — | the client donates stdout (SCM_RIGHTS); the daemon paints that tty |
+| `input` | a key, mouse, or resize | the daemon is the keyboard; prefix stays here |
 | `read` | `pane` | the pane's view as packed cells: cols, rows, runs, and whether the process asked for mouse |
 | `read` | `pane`, `scroll` | that view, `scroll` rows up in PTY history |
 | `read` | `pane`, `gen` | if the pane has not changed since `gen`, the reply is `same` and no cells follow |

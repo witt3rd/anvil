@@ -5,6 +5,7 @@
 pub mod catalog;
 pub mod catalog_cmd;
 pub mod daemon;
+pub mod fd;
 pub mod proto;
 pub mod tui;
 

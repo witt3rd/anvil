@@ -1,7 +1,7 @@
 # Kernel
 
 A multiplexer is a text-mode window manager. The daemon holds the
-processes. The client tiles them and sends keys.
+processes. The client donates its tty and sends keys. The daemon paints.
 
 **Radical simplicity:** every word below had to earn this page. Do not
 add a seventh.

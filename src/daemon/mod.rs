@@ -5,16 +5,18 @@
 
 pub mod acp;
 pub mod adopt;
+pub mod head;
 pub mod inhibit;
 pub mod keys;
 pub mod pane;
 pub mod sat;
 pub mod session;
 pub mod tiling;
+pub mod wake;
 pub mod watch;
 
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,6 +25,8 @@ use std::thread;
 
 use crate::proto::{Reply, Request, Value};
 use session::{Session, Sessions};
+use std::sync::mpsc::Sender;
+use wake::Msg;
 
 /// `$XDG_RUNTIME_DIR/anvil.sock`, or `/tmp/anvil-<uid>/anvil.sock`.
 /// `ANVIL_SOCK` overrides.
@@ -171,22 +175,59 @@ fn systemd_user(args: &[&str]) -> bool {
 
 /// One client connection. Each request gets one reply. EOF is a
 /// detach: the client drops; the sessions, windows, and panes stay.
-fn serve_client(stream: UnixStream, sessions: Arc<Sessions>) -> io::Result<()> {
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut writer = stream;
-    let mut attached: Option<String> = None;
-    let mut line = String::new();
+fn read_json_line(stream: &mut UnixStream, buf: &mut Vec<u8>) -> io::Result<usize> {
+    buf.clear();
+    let mut b = [0u8; 1];
     loop {
-        line.clear();
-        let n = reader.read_line(&mut line)?;
+        let n = stream.read(&mut b)?;
+        if n == 0 {
+            return Ok(buf.len());
+        }
+        if b[0] == b'\n' {
+            return Ok(buf.len() + 1);
+        }
+        buf.push(b[0]);
+    }
+}
+
+fn serve_client(mut stream: UnixStream, sessions: Arc<Sessions>) -> io::Result<()> {
+    let mut attached: Option<String> = None;
+    let mut head_tx: Option<Sender<Msg>> = None;
+    let mut line = Vec::new();
+    loop {
+        let n = read_json_line(&mut stream, &mut line)?;
         if n == 0 {
             return Ok(());
         }
-        let reply = match serde_json::from_str::<Request>(&line) {
+        let text = std::str::from_utf8(&line).unwrap_or("");
+        let reply = match serde_json::from_str::<Request>(text) {
+            Ok(Request::Tty { id }) => match crate::fd::recv_fd(&stream) {
+                Ok(fd) => {
+                    let (tx, rx) = sessions.wake.register();
+                    head_tx = Some(tx);
+                    let sessions = sessions.clone();
+                    let attached = attached.clone();
+                    thread::spawn(move || {
+                        let _ = head::run(fd, sessions, attached, rx);
+                    });
+                    Reply::ok(&id, Value::Empty {})
+                }
+                Err(err) => Reply::err(&id, err.to_string()),
+            },
+            Ok(Request::Input { id, event }) => match &head_tx {
+                Some(tx) => {
+                    if tx.send(Msg::Input(event)).is_err() {
+                        Reply::err(&id, "the tty is gone")
+                    } else {
+                        Reply::ok(&id, Value::Empty {})
+                    }
+                }
+                None => Reply::err(&id, "no tty"),
+            },
             Ok(request) => dispatch(request, &sessions, &mut attached),
             Err(err) => Reply::err("", format!("cannot read the request: {err}")),
         };
-        if let Err(err) = reply.write_to(&mut writer) {
+        if let Err(err) = reply.write_to(&mut stream) {
             if err.kind() == io::ErrorKind::BrokenPipe {
                 return Ok(());
             }
@@ -195,7 +236,11 @@ fn serve_client(stream: UnixStream, sessions: Arc<Sessions>) -> io::Result<()> {
     }
 }
 
-fn dispatch(request: Request, sessions: &Sessions, attached: &mut Option<String>) -> Reply {
+pub(crate) fn dispatch(
+    request: Request,
+    sessions: &Sessions,
+    attached: &mut Option<String>,
+) -> Reply {
     let id = request.id().to_string();
     if let Request::Read {
         pane: Some(pane),
@@ -363,6 +408,9 @@ fn handle(
                 .write(&data, pane.as_deref(), prompt)
                 .map(|_| Value::Empty {})
         }),
+        Request::Tty { .. } | Request::Input { .. } => {
+            Err(io::Error::other("tty is the client's screen"))
+        }
     }
 }
 

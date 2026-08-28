@@ -131,6 +131,7 @@ struct Window {
 }
 
 pub struct Session {
+    wake: Arc<crate::daemon::wake::Wake>,
     root: PathBuf,
     name: String,
     next_id: u64,
@@ -159,6 +160,7 @@ pub struct Session {
 pub struct Sessions {
     root: PathBuf,
     live: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
+    pub wake: Arc<crate::daemon::wake::Wake>,
 }
 
 impl Sessions {
@@ -167,6 +169,7 @@ impl Sessions {
         Ok(Sessions {
             root,
             live: Mutex::new(HashMap::new()),
+            wake: Arc::new(crate::daemon::wake::Wake::new()),
         })
     }
 
@@ -215,6 +218,7 @@ impl Sessions {
         fs::create_dir_all(&dir)?;
         persist(&dir, &file)?;
         let session = Arc::new(Mutex::new(Session {
+            wake: self.wake.clone(),
             root: dir,
             name: name.to_string(),
             next_id: file.next_id,
@@ -265,6 +269,7 @@ impl Sessions {
         let file = load(&dir)?;
         let agents = file.agents;
         let mut session = Session {
+            wake: self.wake.clone(),
             root: dir,
             name: name.to_string(),
             next_id: file.next_id,
@@ -789,6 +794,7 @@ impl Session {
             if let Some(sid) = child.session_id() {
                 self.inner.insert(pane_id.to_string(), sid);
             }
+            child.bind_wake(self.wake.clone());
             self.acp.insert(pane_id.to_string(), child);
             let _ = self.persist();
             return Ok(());
@@ -796,7 +802,14 @@ impl Session {
         let (_, _, cols, rows) = self
             .pane_geometry(pane_id)
             .ok_or_else(|| io::Error::other("no such pane"))?;
-        let pane = Pane::spawn(program, cols, rows, cwd.as_deref(), name.is_none())?;
+        let pane = Pane::spawn_wake(
+            program,
+            cols,
+            rows,
+            cwd.as_deref(),
+            name.is_none(),
+            Some(self.wake.clone()),
+        )?;
         self.panes.insert(pane_id.to_string(), pane);
         if let Some(url) = watch {
             self.start_http(pane_id, url, name);

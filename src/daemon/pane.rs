@@ -321,6 +321,7 @@ pub struct Pane {
     master: Mutex<Box<dyn MasterPty + Send>>,
     alive: AtomicBool,
     gen: AtomicU64,
+    wake: Option<Arc<super::wake::Wake>>,
 }
 
 impl Pane {
@@ -331,6 +332,17 @@ impl Pane {
         rows: u16,
         cwd: Option<&str>,
         isig: bool,
+    ) -> io::Result<Arc<Pane>> {
+        Self::spawn_wake(program, cols, rows, cwd, isig, None)
+    }
+
+    pub fn spawn_wake(
+        program: &str,
+        cols: u16,
+        rows: u16,
+        cwd: Option<&str>,
+        isig: bool,
+        wake: Option<Arc<super::wake::Wake>>,
     ) -> io::Result<Arc<Pane>> {
         let cols = cols.max(2);
         let rows = rows.max(2);
@@ -392,6 +404,7 @@ impl Pane {
             master: Mutex::new(pair.master),
             alive: AtomicBool::new(true),
             gen: AtomicU64::new(1),
+            wake,
         });
         let pump = pane.clone();
         thread::Builder::new()
@@ -409,12 +422,18 @@ impl Pane {
                                 keys.feed(&buf[..n]);
                             }
                             pump.gen.fetch_add(1, Ordering::Relaxed);
+                            if let Some(w) = &pump.wake {
+                                w.ping();
+                            }
                         }
                         Err(_) => break,
                     }
                 }
                 pump.alive.store(false, Ordering::Relaxed);
                 pump.gen.fetch_add(1, Ordering::Relaxed);
+                if let Some(w) = &pump.wake {
+                    w.ping();
+                }
             })
             .map_err(|err| io::Error::other(err.to_string()))?;
         Ok(pane)
