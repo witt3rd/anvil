@@ -3608,8 +3608,15 @@ pub fn run(sock: &Path) -> io::Result<()> {
     let result = (|| {
         let mut client = Thin::connect(sock)?;
         client.attach_first()?;
-        let fd = out.as_raw_fd();
-        client.donate_tty(fd)?;
+        let fd = unsafe { libc::dup(out.as_raw_fd()) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let donated = client.donate_tty(fd);
+        unsafe {
+            libc::close(fd);
+        }
+        donated?;
         loop {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -3635,7 +3642,13 @@ pub fn run(sock: &Path) -> io::Result<()> {
             }
         }
     })();
-    let _ = execute!(out, DisableMouseCapture, DisableFocusChange);
+    let _ = execute!(
+        out,
+        DisableMouseCapture,
+        DisableFocusChange,
+        ratatui::crossterm::cursor::Show,
+        ratatui::crossterm::terminal::LeaveAlternateScreen
+    );
     let _ = disable_raw_mode();
     result
 }

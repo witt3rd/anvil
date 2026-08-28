@@ -4,7 +4,7 @@
 
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,17 +12,20 @@ use std::time::Duration;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
     cursor::{Hide, Show},
-    event::EnableFocusChange,
-    event::{DisableFocusChange, DisableMouseCapture, EnableMouseCapture},
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::Terminal;
+use ratatui::layout::Rect;
+use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use super::session::Sessions;
 use super::wake::Msg;
 use crate::tui::Client;
 
+/// Crossterm's `terminal::size` ioctls `/dev/tty` or the daemon's
+/// stdout — neither is the donated screen under systemd. Size the
+/// viewport from this fd.
 pub fn run(
     fd: RawFd,
     sessions: Arc<Sessions>,
@@ -30,29 +33,34 @@ pub fn run(
     rx: Receiver<Msg>,
 ) -> io::Result<()> {
     let mut file = unsafe { File::from_raw_fd(fd) };
+    let restore_fd = unsafe { libc::dup(file.as_raw_fd()) };
+    if restore_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let _restore = Restore(restore_fd);
     let (cols, rows) = tty_size(file.as_raw_fd());
-    execute!(
-        file,
-        EnterAlternateScreen,
-        Hide,
-        EnableMouseCapture,
-        EnableFocusChange
-    )?;
+    execute!(file, EnterAlternateScreen, Hide, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(file);
-    let mut terminal = Terminal::new(backend)?;
+    let area = Rect::new(0, 0, cols.max(2), rows.max(2));
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Fixed(area),
+        },
+    )?;
     let mut client = Client::local(sessions, attached);
-    client.resize_tty(cols.max(2), rows.max(2))?;
+    client.resize_tty(area.width, area.height)?;
     client.refresh()?;
     terminal.draw(|frame| client.draw(frame))?;
     let mut tick = 0u32;
     loop {
         match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(msg) => {
-                if apply(&mut client, msg)? {
+                if apply(&mut client, &mut terminal, msg)? {
                     break;
                 }
                 while let Ok(more) = rx.try_recv() {
-                    if apply(&mut client, more)? {
+                    if apply(&mut client, &mut terminal, more)? {
                         break;
                     }
                 }
@@ -72,25 +80,37 @@ pub fn run(
         let _ = client.refresh();
         terminal.draw(|frame| client.draw(frame))?;
     }
-    let out = terminal.backend_mut();
-    let _ = execute!(
-        out,
-        DisableMouseCapture,
-        DisableFocusChange,
-        Show,
-        LeaveAlternateScreen
-    );
-    let _ = out.flush();
     Ok(())
 }
 
-fn apply(client: &mut Client, msg: Msg) -> io::Result<bool> {
+fn apply(
+    client: &mut Client,
+    terminal: &mut Terminal<CrosstermBackend<File>>,
+    msg: Msg,
+) -> io::Result<bool> {
     match msg {
         Msg::Wake => Ok(false),
+        Msg::Input(crate::proto::Input::Resize { cols, rows }) => {
+            let cols = cols.max(2);
+            let rows = rows.max(2);
+            client.resize_tty(cols, rows)?;
+            terminal.resize(Rect::new(0, 0, cols, rows))?;
+            Ok(false)
+        }
         Msg::Input(ev) => {
             client.apply_input(ev)?;
             Ok(client.detached)
         }
+    }
+}
+
+struct Restore(RawFd);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        let mut file = unsafe { File::from_raw_fd(self.0) };
+        let _ = execute!(file, DisableMouseCapture, Show, LeaveAlternateScreen);
+        let _ = file.flush();
     }
 }
 
@@ -104,5 +124,3 @@ fn tty_size(fd: RawFd) -> (u16, u16) {
         }
     }
 }
-
-use std::os::fd::AsRawFd;

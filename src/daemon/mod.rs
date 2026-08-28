@@ -208,7 +208,9 @@ fn serve_client(mut stream: UnixStream, sessions: Arc<Sessions>) -> io::Result<(
                     let sessions = sessions.clone();
                     let attached = attached.clone();
                     thread::spawn(move || {
-                        let _ = head::run(fd, sessions, attached, rx);
+                        if let Err(err) = head::run(fd, sessions, attached, rx) {
+                            eprintln!("anvil daemon: paint: {err}");
+                        }
                     });
                     Reply::ok(&id, Value::Empty {})
                 }
