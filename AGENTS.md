@@ -132,7 +132,8 @@ in `skills/dev/`.
 
 ## Caretaker
 
-A change earns its place by making the multiplexer simpler or more
+Custody is AGENTS.md + skills/; no `.agent/` folder, no inhabit, no formal
+handoff. A change earns its place by making the multiplexer simpler or more
 correct. New words go in `docs/kernel.md` only after they have
 earned it. `skills/dev/` is the lived how-to.
 
